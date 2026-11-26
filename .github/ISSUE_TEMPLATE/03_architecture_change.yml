@@ -1,0 +1,37 @@
+name: Architecture Change
+description: Propose a change to docs/architecture/ (requires Maintainer approval before coding)
+title: "docs(architecture): "
+labels: ["architecture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `docs/architecture/` is the single normative contract for Myrlet V1. Filing this Issue is a proposal, not approval. Prefer narrowing boundaries or deleting mechanisms over adding new ones.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Concrete problem & why current V1 contract is insufficient
+      description: What real supported use case fails under the current docs/architecture/ contract?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Minimal proposed change
+      description: Describe the smallest change to docs/architecture/ and affected boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: complexity_cost
+    attributes:
+      label: Net complexity cost
+      description: List every new table, state, HTTP route, WSS frame, config knob, or failure mode introduced—and what existing complexity can be removed or simplified.
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Security & invariant impact
+      description: Confirm V1 core invariants (auth, TLS/file safety, fencing, idempotency, non-invasive Harness, honest uncertainty) remain intact.
+    validations:
+      required: true

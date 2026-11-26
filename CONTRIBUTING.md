@@ -1,51 +1,62 @@
 # Contributing to Myrlet
 
-## Commit, Issue, and PR Naming
+## Naming Convention
 
-Use one convention for Issues, PRs, and squash commits:
+Use one format for Issues, PRs, and squash commits:
 
 ```text
 type(scope): description
 ```
 
 - **Types**: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `security`
-- **Scopes**: `hub`, `worker`, `engine`, `protocol`, `client`, `desktop`, `security`, `architecture`, `ci`, `repo`
+- **Scopes**: `hub`, `worker`, `protocol`, `client`, `cli`, `app`, `security`, `architecture`, `ci`, `repo`
 - English, lowercase imperative summary, <= 72 chars, no trailing period, no milestone prefixes (`Phase 1:`).
 - Link Issues in PR bodies: `Closes #123` only when all acceptance criteria are met; otherwise `Part of #123` or `Refs #123`.
 
-## Engineering Philosophy
+## Anti-Overengineering Rules (Read Before Coding)
 
-### Code Is a Liability, Not an Asset
+**Code is a liability, not an asset.** Retain the smallest amount of code, state, and schema that satisfies [docs/architecture/README.md](docs/architecture/README.md) and its invariants.
 
-Retain the **smallest amount of code, state, and schema** that reliably satisfies the [canonical architecture](docs/architecture/README.md) and its invariants.
+Before adding any new table, state, HTTP route, WSS frame, trait, config option, cache, lock, or retry/recovery path, answer all five questions:
 
-- Prefer deleting or simplifying over adding new abstractions, indirection layers, configuration knobs, or defensive recovery paths for hypothetical scenarios.
-- Do not build for unsupported topologies (multi-Hub, multi-tenant RBAC, hypothetical scale).
-- Never weaken core invariants: authentication, file/TLS safety, epoch/version fencing, Delivery idempotency, and honest uncertainty.
+1. Is it listed under **Explicit V1 Non-Goals** in `docs/architecture/README.md`? *(If yes, stop immediately.)*
+2. Can an existing table, state, or field represent it without adding a new mechanism?
+3. Does a concrete, supported V1 runtime path require it—not a hypothetical topology or test-only scenario?
+4. Does a new abstraction or config knob have **at least two** real callers today? *(If not, inline it.)*
+5. Can narrowing a responsibility boundary eliminate the need for coordination machinery altogether?
 
 ### Pre-Release Policy (No Compatibility Shims)
 
-Myrlet has no official release (`0.1.0` pre-release). Unreleased wire DTOs, SQLite schemas, config keys, and on-disk layouts carry **no backward-compatibility obligation**:
+Myrlet `0.1.0` is pre-release and carries **no backward-compatibility obligation** for unreleased wire DTOs, SQLite schemas, config keys, or on-disk layouts:
 
 - Change canonical formats in place and delete the obsolete path.
-- Do **not** add migration shims, dual-read paths, compatibility aliases, or `#[allow(dead_code)]` escapes.
+- Never add migration shims, dual-read paths, compatibility aliases, or `#[allow(dead_code)]` escapes.
 - Never silently rewrite or delete operator-owned files.
-- When changing a protocol contract, update the architecture doc, DTO/schema, clients, and tests together.
 
-## Branching, Scope, and Review
+## Branching, PR Size, and Review Standards
 
-- Work in an isolated feature branch / worktree; never force-push shared history or enable auto-merge.
-- Keep each PR focused on one cohesive, reviewable outcome.
-- If a change requires altering an accepted contract in `docs/architecture/`, state the decision explicitly before expanding scope.
-- **Review for correctness and net simplicity, not perfection:**
-  - **P0 / P1 (blocking)**: Credible security, data-integrity, availability, or contract-invariant defect. Fix and re-verify before merge.
-  - **P2 (non-blocking)**: Concrete maintainability defect or supported edge case; fix or track if worthwhile.
-  - **P3 (optional)**: Minor suggestion; no Issue required.
-- Authors cannot self-approve; if agents share one GitHub account, record the independent reviewer identity transparently and require human Maintainer review for sensitive architecture, security, or protocol changes.
+- Work in an isolated branch/worktree; never force-push shared history or enable auto-merge.
+- Keep each PR focused on one cohesive outcome (prefer **<= 500–800 net new LOC** for routine PRs; split milestones by crate/module).
+- Any change to accepted contracts in `docs/architecture/` requires an **Architecture Change** Issue and human Maintainer approval before implementation.
+
+### PR Review Rules
+
+Review for **correctness, boundary discipline, and net simplicity**—not defensive perfection:
+
+| Severity | Meaning | Disposition |
+| --- | --- | --- |
+| **P0** | Critical security, data-integrity, or availability bug with a credible trigger | Blocking |
+| **P1** | Material correctness/invariant violation, **or clear over-engineering** (unapproved states/tables/routes/non-goals, unused abstractions, test-only RBAC/scaffolding) | Blocking |
+| **P2** | Concrete maintainability issue or supported edge case | Fix or track if worthwhile |
+| **P3** | Minor suggestion | Optional, no Issue needed |
+
+- **Reviewers MUST NOT** demand extra abstractions, file splitting solely by line count, speculative edge-case guards, or support for excluded topologies.
+- **Reviewers SHOULD** actively ask whether code, tables, states, or config options can be deleted or simplified.
+- Authors cannot self-approve; if agents share one GitHub account, state the independent reviewer transparently and require human Maintainer approval for architecture, security, and protocol changes.
 
 ## Local Verification
 
-Run the checks relevant to what you changed and report only checks that actually executed against the PR head SHA (never claim a skipped check passed):
+Run and report only checks that actually executed on the PR head SHA (never claim a skipped check passed):
 
 ```bash
 cargo fmt --all -- --check
@@ -56,5 +67,5 @@ cargo test --workspace --all-targets
 
 ## Documentation Rules
 
-- **One home per durable fact**: Do not copy invariants, endpoint tables, or lifecycle rules across multiple files—link to the canonical file in `docs/architecture/`.
-- Keep dynamic project status (Issue/PR state, CI results, milestone progress) in GitHub, not in Markdown docs.
+- **One home per durable fact**: Define invariants, APIs, and lifecycle rules once in `docs/architecture/` and link to them—never copy-paste across docs.
+- Keep dynamic project status (Issue/PR state, CI results, milestones) in GitHub, not in Markdown docs.

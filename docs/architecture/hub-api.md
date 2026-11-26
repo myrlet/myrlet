@@ -2,6 +2,8 @@
 
 Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTTPS (or loopback HTTP for local development). Workers connect over WSS for control frames and call two dedicated Hub HTTP endpoints for Progress and Finish reporting.
 
+**Wire convention:** All HTTP request and response JSON bodies use **`camelCase`** consistently (no mixed `snake_case`/`camelCase` aliases). Error responses use `{ "error": "<StableCode>", "message": "<fixed safe message>" }` without leaking internal SQLite causes.
+
 ## V1 Endpoint Surface
 
 ### Public & Health
@@ -9,22 +11,22 @@ Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTT
 | Method & Path | Purpose |
 | --- | --- |
 | `GET /health`, `GET /v1/health` | Process liveness probe (unauthenticated, unbounded). |
-| `POST /v1/pair` | Redeem a one-time pairing code for a Worker credential (body/timeout/concurrency bounded). |
+| `POST /v1/pair` | Redeem a one-time pairing code (`{ enrollmentCode, workerId }`) for `{ hubId, workerId, credential }` in one step (body/timeout/concurrency bounded). |
 
 ### Admin / Client Control Plane (`Authorization: Bearer <admin-token>`)
 
 | Method & Path | Purpose |
 | --- | --- |
-| `GET /v1/snapshot` | Primary read view: cluster/Worker inventory, Task summaries, current Deliveries & latest Progress, and current `eventCursor`. |
+| `GET /v1/snapshot` | Primary read view: cluster/Worker inventory, bounded Task summaries, current Deliveries & latest Progress, and current `eventCursor`. |
 | `GET /v1/events` | Resumable SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). |
 | `POST /v1/tasks` | Create one `held` Task (`Idempotency-Key` required). |
 | `GET /v1/tasks/{id}` | Read one authoritative Task record, its current Delivery, and latest Progress. |
-| `GET /v1/tasks/{id}/tree` | Read bounded ancestors or descendants (depth & node cap; no view-fingerprint cursor). |
-| `POST /v1/tasks/{id}/dispatch` | Explicitly dispatch (`targeted` or `match`) or enqueue (`Idempotency-Key` + `expectedTaskVersion`). |
+| `GET /v1/tasks/{id}/tree` | Read bounded ancestors or descendants (depth & node cap; simple limit, no view-fingerprint cursor). |
+| `POST /v1/tasks/{id}/dispatch` | Explicitly dispatch (`targeted` or `match`, optional `queue` & `fallbackAllowed`) (`Idempotency-Key` + `expectedTaskVersion`). |
 | `POST /v1/tasks/{id}/cancel` | Cancel any non-terminal Task (`Idempotency-Key` + `expectedTaskVersion`). |
-| `POST /v1/tasks/{id}/finish` | Explicitly finish a coordination-only `held` Parent with no Delivery. |
+| `POST /v1/tasks/{id}/finish` | Explicitly finish a coordination-only `held` Parent with no Delivery (`Idempotency-Key` + `expectedTaskVersion`). |
 | `POST /v1/task-bundles/import` | Atomically create up to 100 `held` Tasks with local `clientRef` resolution (`Idempotency-Key`). |
-| `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code. |
+| `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code (`{ ttlSeconds, suggestedWorkerId? } -> { enrollmentCode, expiresAt }`). |
 | `GET /v1/workers` | List enrolled Workers, connectivity, and reported Slot/Executor inventory. |
 | `GET /v1/workers/{id}` | Read one Worker's detail and inventory. |
 | `POST /v1/workers/{id}/rotate` | Rotate a Worker's bearer credential (fences active WSS session). |
@@ -71,18 +73,18 @@ Progress and Finish are **HTTP-only** (not WSS frames). Both require the Worker'
 
 `GET /v1/snapshot` builds a consistent read from Hub SQLite and in-memory Worker connection state without calling Workers synchronously. It returns:
 
-- `schemaVersion`, `generatedAt`, and `eventCursor` (latest committed event sequence);
-- connected/disconnected Workers with their reported Slots, capabilities, Executors, and advisory capacity hints;
+- `schemaVersion` (`"myrlet.snapshot/v1"`), `generatedAt`, `eventCursor`, and `tasksTruncated` (boolean + total count when Task summaries exceed the Snapshot page bound);
+- connected/disconnected Workers with their reported Slots, capabilities, Executors, observation timestamps, and advisory capacity hints (absent capacity MUST be `null`, never `0`);
 - Task summaries (status, version, hierarchy, current Delivery, and latest `DeliveryProgressView` including `firstReceivedAtMs` / `receivedAtMs` / `text`).
 
 Snapshot is purely observational and never reserves capacity.
 
 ## Event Log and SSE
 
-Hub writes one row to a single append-only `hub_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind, payload, created_at_ms)` table inside each committed state-transition transaction, then immediately publishes the event to an in-process `broadcast` channel after commit. There is no separate multi-table polling Outbox worker.
+Hub writes one row to a single append-only `hub_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind, payload_json, created_at_ms)` table inside each committed state-transition transaction, then immediately publishes the event to an in-process `broadcast` channel after commit. There is no separate multi-table polling Outbox worker.
 
 - SSE frames are **invalidation hints**, not authoritative state. Clients refresh Snapshot or Task detail when needed.
-- Clients reconnect with `Last-Event-ID` (or `?cursor=<seq>`). Hub backfills from `hub_events` up to the retained window (e.g. last 10,000 events); if the cursor falls behind retention, Hub fails closed with `410 CursorExpired` so the client reloads `GET /v1/snapshot`.
+- Clients reconnect with `Last-Event-ID` (or `?cursor=<seq>`). Hub backfills from `hub_events` up to the retained window (e.g., last 10,000 events); if the cursor falls behind retention, Hub fails closed with `410 CursorExpired` so the client reloads `GET /v1/snapshot`.
 
 ## Ingress Bounds and Shutdown
 

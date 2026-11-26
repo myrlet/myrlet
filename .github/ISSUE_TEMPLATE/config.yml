@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Architecture & Documentation
+    url: https://github.com/myrlet/myrlet/tree/main/docs/architecture
+    about: Read the canonical V1 architecture and Explicit V1 Non-Goals before opening an Issue.
+  - name: Security Vulnerability
+    url: https://github.com/myrlet/myrlet/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public Issue.

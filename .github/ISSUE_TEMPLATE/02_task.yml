@@ -1,0 +1,32 @@
+name: Task / Feature
+description: Scoped implementation work aligned with docs/architecture/
+title: "feat(scope): "
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What concrete capability or simplification does this deliver?
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Explicit non-goals (what we will NOT build)
+      description: List adjacent features, abstractions, or edge cases intentionally excluded to prevent scope creep.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Affected crates / files & contract reference
+      description: Cite the governing section in docs/architecture/ and target crate(s).
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria & verification
+      description: Observable behavior and exact cargo test / E2E checks required to close this Issue.
+    validations:
+      required: true

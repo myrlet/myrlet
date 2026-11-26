@@ -1,0 +1,26 @@
+name: Bug Report
+description: Report a reproducible defect
+title: "fix(scope): "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Concisely describe the defect. Do not include tokens, secrets, or private logs.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, config, or test case that triggers the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_vs_actual
+    attributes:
+      label: Expected vs. actual behavior
+      description: Cite the relevant rule in docs/architecture/ if applicable.
+    validations:
+      required: true

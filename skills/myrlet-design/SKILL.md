@@ -12,7 +12,7 @@ Use this skill for any visual or interaction work in apps/app/: new screens, lay
 Read these repository files first:
 
 - docs/design/ui-system.md — Myrlet's normative visual and interaction system.
-- apps/app/AGENTS.md — implementation and verification requirements.
+- docs/architecture/README.md — canonical V1 product boundaries and Explicit V1 Non-Goals.
 
 Then load the official NSH skills:
 
@@ -31,13 +31,13 @@ Impeccable (https://github.com/pbakaus/impeccable) can provide optional critique
 4. Reuse src/theme/ and src/ui/. Do not add raw colors, arbitrary radii, ad-hoc typography or page-specific variants of shared controls.
 5. Before coding, write the screen's motion inventory: presses, selections, content arrival/removal, overlays, layout changes, loading and live states; include reduced-motion behavior.
 6. Keep the change within the requested scope. Do not turn a narrow UI fix into a wholesale redesign or platform rewrite.
-7. Add deterministic behavior tests. Add every new shared component and its meaningful states to ui::ComponentGallery.
+7. Add deterministic behavior tests. Keep fixtures or component previews under `#[cfg(test)]` only; never bundle them in production builds.
 8. Run the relevant Rust and NSH checks, then inspect the actual macOS/Web result in Porcelain and Graphite. Capture screenshots at representative desktop and narrow widths.
 9. Report what was actually verified and what remains unavailable. Headless tests do not prove visual quality or native input behavior.
 
 ## Product truth
 
-Never invent or infer Task, Delivery, Execution, Session, Worker, Owner, progress, authorization or process-lifecycle facts. Preserve stale, missing and uncertain states explicitly. Do not turn missing progress into a percentage or an uncertain outcome into success/failure.
+Never invent or infer Task, Delivery, Execution, Worker, progress, authorization, or process-lifecycle facts. Preserve stale, missing, and uncertain states explicitly. Do not turn missing progress into a percentage or `finished` / `cancelled` into a success/failure verdict.
 
 ## Review output
 

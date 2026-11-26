@@ -14,6 +14,7 @@ Executable: `myrlet`.
 | `myrlet [--json] tasks submit --file <file> --idempotency-key <key> [--dispatch-idempotency-key <key>]` | Create from JSON file + explicit Simple Match dispatch |
 | `myrlet [--json] tasks bundle-import --file <bundle> --idempotency-key <key>` | Atomically import `held` Tasks from a Bundle |
 | `myrlet [--json] tasks cancel <id>` | Cancel a non-terminal Task |
+| `myrlet [--json] tasks finish <id>` | Explicitly finish a coordination-only `held` Parent with no Delivery |
 | `myrlet [--json] workers list` | List enrolled Workers and connectivity |
 | `myrlet [--json] events watch` | Stream NDJSON snapshots and SSE events |
 
