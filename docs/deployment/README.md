@@ -33,43 +33,32 @@ cargo build --release -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli
 
 ```bash
 export MYRLET_HOME=/var/lib/myrlet
-export MYRLET_HUB_BIND_ADDR=127.0.0.1
-export MYRLET_HUB_PORT=4140
+export MYRLET_HUB_BIND=127.0.0.1:4140
 export MYRLET_ADMIN_TOKEN='<long-random-secret>'
 myrlet-hub
 ```
 
-Ingress defaults: `MYRLET_HUB_API_MAX_BODY_BYTES=2097152` (2 MiB), `MYRLET_HUB_API_REQUEST_TIMEOUT_MS=30000`, `MYRLET_HUB_API_MAX_CONCURRENT_REQUESTS=128`. Put a TLS reverse proxy in front of Hub for any non-loopback network.
+Optional overrides live in `$MYRLET_HOME/hub/config.toml` (defaults: 2 MiB max body, 1 MiB bundle import, 30s request timeout, 128 concurrent requests, `MYRLET_HUB_SHUTDOWN_TIMEOUT_MS=30000`). Put a TLS reverse proxy in front of Hub for any non-loopback network.
 
 ### 2. Enroll and Start Worker (Single-Step Pairing)
 
 ```bash
-code="$(curl --fail --silent --show-error \
-  --request POST http://127.0.0.1:4140/v1/enrollment-codes \
-  --header "Authorization: Bearer $MYRLET_ADMIN_TOKEN" \
-  --header 'Content-Type: application/json' \
-  --data '{"ttlSeconds":300,"suggestedWorkerId":"worker-prod-01"}' \
-  | jq -er '.enrollmentCode')"
-
-curl --fail --silent --show-error \
-  --request POST http://127.0.0.1:4140/v1/pair \
-  --header 'Content-Type: application/json' \
-  --data "{\"enrollmentCode\":\"$code\",\"workerId\":\"worker-prod-01\"}" \
-  | myrlet-worker credential-import
+export MYRLET_HUB_URL='https://hub.example.invalid'
+code="$(myrlet --json workers enroll | jq -er '.enrollmentCode')"
+myrlet-worker pair --hub-url "$MYRLET_HUB_URL" --code "$code"
 ```
 
 Configure `/var/lib/myrlet/worker/worker.yaml` (YAML only), validate with `check-config`, and run:
 
 ```bash
 export MYRLET_HOME=/var/lib/myrlet
-export MYRLET_HUB_WSS_URL='wss://hub.example.invalid/v1/workers/connect'
 myrlet-worker check-config
 myrlet-worker
 ```
 
 ### Worker TLS (`wss://`)
 
-`wss://` always verifies the Hub TLS certificate chain and hostname (never disabled). Public CA certificates work out of the box; for a private CA, set `MYRLET_HUB_CA_FILE=/etc/myrlet/hub-ca.pem` (replaces public roots). Plaintext `ws://` is for loopback or private container networks only.
+`wss://` always verifies the Hub TLS certificate chain and hostname (never disabled). Mozilla public CA roots work out of the box; for a private CA, set `MYRLET_HUB_CA_FILE=/etc/myrlet/hub-ca.pem` to trust your private CA bundle. Plaintext `ws://` is for loopback or private container networks only.
 
 ### Harness Environment Boundary
 

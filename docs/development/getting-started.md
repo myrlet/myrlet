@@ -40,27 +40,15 @@ In a second terminal (export the same `MYRLET_HOME` and `MYRLET_ADMIN_TOKEN`):
 
 ```bash
 export MYRLET_HUB_URL='http://127.0.0.1:4140'
-export WORKER_ID='worker-local-dev'
 
-code="$(curl --fail --silent --show-error \
-  --request POST "$MYRLET_HUB_URL/v1/enrollment-codes" \
-  --header "Authorization: Bearer $MYRLET_ADMIN_TOKEN" \
-  --header 'Content-Type: application/json' \
-  --data "{\"ttlSeconds\":300,\"suggestedWorkerId\":\"$WORKER_ID\"}" \
-  | jq -er '.enrollmentCode')"
-
-curl --fail-with-body --silent --show-error \
-  --request POST "$MYRLET_HUB_URL/v1/pair" \
-  --header 'Content-Type: application/json' \
-  --data "{\"enrollmentCode\":\"$code\",\"workerId\":\"$WORKER_ID\"}" \
-  | cargo run --quiet -p myrlet-worker-daemon -- credential-import
+code="$(cargo run --quiet -p myrlet-cli -- --json workers enroll | jq -er '.enrollmentCode')"
+cargo run -p myrlet-worker-daemon -- pair --hub-url "$MYRLET_HUB_URL" --code "$code"
 ```
 
 Create `$MYRLET_HOME/worker/worker.yaml`, validate it, and run the Worker:
 
 ```bash
 cargo run -p myrlet-worker-daemon -- check-config
-export MYRLET_HUB_WSS_URL='ws://127.0.0.1:4140/v1/workers/connect'
 cargo run -p myrlet-worker-daemon
 ```
 
