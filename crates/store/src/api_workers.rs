@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 
 use myrlet_protocol::{
-    CreateEnrollmentCodeResponse, DeliveryId, FinishReceipt, FinishReportRequest, HubEventEnvelope,
-    PairWorkerRequest, PairWorkerResponse, ProgressReceipt, ProgressReportRequest,
-    RotateWorkerCredentialResponse, SnapshotWorker, TaskCancelledPayload, TaskRejectedPayload,
-    WorkerId, WorkerInventory,
+    CreateEnrollmentCodeResponse, DeliveryId, DeliveryView, FinishReceipt, FinishReportRequest,
+    HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, ProgressReceipt,
+    ProgressReportRequest, RotateWorkerCredentialResponse, SnapshotWorker, TaskCancelledPayload,
+    TaskRejectedPayload, WorkerId, WorkerInventory,
 };
 
-use crate::{inventory, progress, reports, workers, HubStore, StoreError};
+use crate::{deliveries, inventory, progress, reports, workers, HubStore, StoreError};
 
 impl HubStore {
     pub async fn record_rejection(
@@ -186,6 +186,15 @@ impl HubStore {
     ) -> Result<Vec<SnapshotWorker>, StoreError> {
         self.db
             .call(move |conn| inventory::list_workers(conn, &online_map))
+            .await
+    }
+
+    pub async fn get_delivery(&self, delivery_id: DeliveryId) -> Result<DeliveryView, StoreError> {
+        self.db
+            .call(move |conn| {
+                let row = deliveries::load_delivery(conn, &delivery_id)?;
+                deliveries::delivery_view(conn, &row)
+            })
             .await
     }
 

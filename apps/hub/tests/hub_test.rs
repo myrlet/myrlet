@@ -1,0 +1,182 @@
+//! End-to-end Hub flows over an in-memory store and a real loopback listener.
+
+mod common;
+
+use std::time::Duration;
+
+use common::{is_closed, next_sse_event, read_frame, start, ADMIN};
+use myrlet_protocol::SNAPSHOT_SCHEMA_VERSION;
+use serde_json::json;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+#[tokio::test]
+async fn authentication_precedes_body_parsing_and_separates_principals() {
+    let hub = start(10_000).await;
+    let anonymous = hub
+        .request("POST", "/v1/tasks", None, Some("k1"), Some("{nope"))
+        .await;
+    assert_eq!(anonymous.0, 401);
+    let wrong = hub
+        .request("POST", "/v1/tasks", Some("bad"), Some("k1"), Some("{nope"))
+        .await;
+    assert_eq!(wrong.0, 401);
+    let malformed = hub.post_admin("/v1/tasks", Some("k1"), Some("{nope")).await;
+    assert_eq!(malformed.0, 400);
+    assert_eq!(malformed.1["error"], "BadRequest");
+
+    let (_, credential) = hub.pair().await;
+    let listed = hub
+        .request("GET", "/v1/workers", Some(&credential), None, None)
+        .await;
+    assert_eq!(listed.0, 401);
+    let progress = "/v1/worker/deliveries/delivery_x/progress";
+    assert_eq!(hub.post_admin(progress, None, Some("{}")).await.0, 401);
+    assert_eq!(hub.get_admin("/v1/workers/connect").await.0, 401);
+}
+
+#[tokio::test]
+async fn pairing_wss_handshake_and_reported_inventory() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (_socket, epoch) = hub.connect(&worker_id, &credential).await;
+    assert!(epoch >= 1);
+
+    let listed = hub.get_admin("/v1/workers").await;
+    assert_eq!(listed.0, 200);
+    let worker = &listed.1["workers"][0];
+    assert_eq!(worker["workerId"], worker_id);
+    assert_eq!(worker["online"], true);
+    assert_eq!(worker["inventory"]["slots"][0]["slotId"], "slot-a");
+    assert_eq!(
+        worker["inventory"]["slots"][0]["executors"][0]["id"],
+        "exec-claude"
+    );
+
+    let snapshot = hub.get_admin("/v1/snapshot").await;
+    assert_eq!(snapshot.1["schemaVersion"], SNAPSHOT_SCHEMA_VERSION);
+    assert_eq!(snapshot.1["workers"][0]["online"], true);
+}
+
+#[tokio::test]
+async fn match_dispatch_progress_and_finish_drive_the_task_to_finished() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "flow").await;
+
+    let progress = json!({ "epoch": epoch, "observedAtMs": 1_000, "text": "started" });
+    let path = format!("/v1/worker/deliveries/{delivery_id}/progress");
+    let reported = hub
+        .post_worker(&path, &credential, &progress.to_string())
+        .await;
+    assert_eq!(reported.0, 200, "{}", reported.1);
+    assert_eq!(reported.1["duplicate"], false);
+
+    let task_path = format!("/v1/tasks/{task_id}");
+    let detail = hub.get_admin(&task_path).await;
+    assert_eq!(detail.1["currentDelivery"]["state"], "accepted");
+    assert_eq!(detail.1["currentDelivery"]["progress"]["text"], "started");
+
+    let finish = json!({ "epoch": epoch }).to_string();
+    let path = format!("/v1/worker/deliveries/{delivery_id}/finish");
+    let finished = hub.post_worker(&path, &credential, &finish).await;
+    assert_eq!(finished.0, 200, "{}", finished.1);
+    assert_eq!(finished.1["taskStatus"], "finished");
+    assert_eq!(finished.1["changed"], true);
+}
+
+#[tokio::test]
+async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "cancel").await;
+
+    let task_path = format!("/v1/tasks/{task_id}");
+    let detail = hub.get_admin(&task_path).await;
+    let cancel = json!({ "expectedTaskVersion": detail.1["version"], "reason": "operator" });
+    let path = format!("/v1/tasks/{task_id}/cancel");
+    let cancelled = hub
+        .post_admin(&path, Some("cancel-key"), Some(&cancel.to_string()))
+        .await;
+    assert_eq!(cancelled.0, 200, "{}", cancelled.1);
+    assert_eq!(cancelled.1["status"], "cancelled");
+
+    let command = read_frame(&mut socket).await;
+    assert_eq!(command["kind"], "task.cancel");
+    assert_eq!(command["payload"]["deliveryId"], delivery_id);
+
+    let finish = json!({ "epoch": epoch }).to_string();
+    let path = format!("/v1/worker/deliveries/{delivery_id}/finish");
+    let late = hub.post_worker(&path, &credential, &finish).await;
+    assert_eq!(late.1["taskStatus"], "cancelled");
+    assert_eq!(late.1["changed"], false);
+    assert_eq!(hub.get_admin(&task_path).await.1["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn event_stream_backfills_streams_and_fails_closed_when_expired() {
+    let hub = start(10_000).await;
+    let definition = json!({ "title": "t", "prompt": "p" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("sse-1"), Some(&definition))
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+
+    let mut stream = reqwest::Client::new()
+        .get(format!("{}/v1/events", hub.base))
+        .bearer_auth(ADMIN)
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status().as_u16(), 200);
+    let backfilled = tokio::time::timeout(Duration::from_secs(5), next_sse_event(&mut stream));
+    let backfilled = backfilled.await.unwrap();
+    assert_eq!(backfilled["kind"], "task.created");
+
+    let live = hub.post_admin("/v1/tasks", Some("sse-2"), Some(&definition));
+    assert_eq!(live.await.0, 201);
+    let live = tokio::time::timeout(Duration::from_secs(5), next_sse_event(&mut stream));
+    let live = live.await.unwrap();
+    assert!(live["seq"].as_u64().unwrap() > backfilled["seq"].as_u64().unwrap());
+
+    let tiny = start(1).await;
+    for index in 0..3 {
+        let key = format!("tiny-{index}");
+        let created = tiny.post_admin("/v1/tasks", Some(&key), Some(&definition));
+        assert_eq!(created.await.0, 201);
+    }
+    let expired = tiny.get_admin("/v1/events?cursor=0").await;
+    assert_eq!(expired.0, 410);
+    assert_eq!(expired.1["error"], "CursorExpired");
+}
+
+#[tokio::test]
+async fn rotation_and_revocation_fence_the_live_worker_session() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (mut socket, _) = hub.connect(&worker_id, &credential).await;
+
+    let path = format!("/v1/workers/{worker_id}/rotate");
+    let rotated = hub.post_admin(&path, None, None).await;
+    assert_eq!(rotated.0, 200, "{}", rotated.1);
+    let rotated_credential = rotated.1["credential"].as_str().unwrap().to_string();
+    assert_ne!(rotated_credential, credential);
+    assert!(is_closed(&mut socket).await);
+
+    let mut request = hub.connect_url.clone().into_client_request().unwrap();
+    let stale = HeaderValue::from_str(&format!("Bearer {credential}")).unwrap();
+    request.headers_mut().insert("authorization", stale);
+    assert!(tokio_tungstenite::connect_async(request).await.is_err());
+
+    let (mut socket, _) = hub.connect(&worker_id, &rotated_credential).await;
+    let path = format!("/v1/workers/{worker_id}/revoke");
+    assert_eq!(hub.post_admin(&path, None, None).await.0, 204);
+    assert!(is_closed(&mut socket).await);
+
+    let listed = hub.get_admin("/v1/workers").await;
+    assert_eq!(listed.1["workers"][0]["revoked"], true);
+    assert_eq!(listed.1["workers"][0]["online"], false);
+}

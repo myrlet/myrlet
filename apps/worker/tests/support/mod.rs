@@ -1,0 +1,300 @@
+//! In-process Hub stub: Worker HTTP Progress/Finish endpoints plus one WSS control socket.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, State};
+use axum::http::header::AUTHORIZATION;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use futures::{SinkExt, StreamExt};
+use myrlet_protocol::{
+    DeliveryId, FinishReceipt, FinishReportRequest, ProgressReceipt, ProgressReportRequest, TaskId,
+    TaskStatus, WorkerId, WORKER_PROTOCOL_VERSION,
+};
+use serde_json::{json, Value};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Mutex;
+
+use myrlet_worker_daemon::credentials::WorkerCredentials;
+
+pub const WORKER_ID: &str = "wkr_000000000000";
+pub const CREDENTIAL: &str = "test-worker-credential";
+pub const SLOT_ID: &str = "slot-test";
+pub const EPOCH: u64 = 3;
+
+/// One HTTP report the Worker posted to the stub Hub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Report {
+    Progress {
+        delivery_id: String,
+        epoch: u64,
+        text: String,
+    },
+    Finish {
+        delivery_id: String,
+        epoch: u64,
+    },
+}
+
+#[derive(Clone)]
+struct HubState {
+    reports: UnboundedSender<Report>,
+    frames: UnboundedSender<Value>,
+    outbound: Arc<Mutex<UnboundedReceiver<Value>>>,
+    authorized: UnboundedSender<bool>,
+    stale_epoch: Option<u64>,
+}
+
+/// A running stub Hub with channels for observing and driving one Worker.
+pub struct StubHub {
+    pub url: String,
+    reports: UnboundedReceiver<Report>,
+    frames: UnboundedReceiver<Value>,
+    outbound: UnboundedSender<Value>,
+    authorized: UnboundedReceiver<bool>,
+}
+
+impl StubHub {
+    /// The Worker's WSS upgrade presented the expected bearer credential.
+    pub async fn expect_authorized(&mut self) {
+        let authorized = tokio::time::timeout(Duration::from_secs(5), self.authorized.recv())
+            .await
+            .expect("worker never upgraded the WSS connection")
+            .expect("authorization channel closed");
+        assert!(
+            authorized,
+            "worker WSS upgrade missed the bearer credential"
+        );
+    }
+
+    /// Next frame the Worker sent.
+    pub async fn next_frame(&mut self) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), self.frames.recv())
+            .await
+            .expect("worker sent no frame")
+            .expect("frame channel closed")
+    }
+
+    /// Push one Hub frame to the Worker.
+    pub fn send_frame(&self, frame: Value) {
+        self.outbound.send(frame).expect("worker socket closed");
+    }
+
+    /// Next HTTP report the Worker posted.
+    pub async fn next_report(&mut self) -> Report {
+        tokio::time::timeout(Duration::from_secs(15), self.reports.recv())
+            .await
+            .expect("worker posted no report")
+            .expect("report channel closed")
+    }
+}
+
+/// Start the stub Hub; `stale_epoch` makes Progress with that epoch return `409`.
+pub async fn start(stale_epoch: Option<u64>) -> StubHub {
+    let (reports_tx, reports) = mpsc::unbounded_channel();
+    let (frames_tx, frames) = mpsc::unbounded_channel();
+    let (outbound_tx, outbound) = mpsc::unbounded_channel();
+    let (authorized_tx, authorized) = mpsc::unbounded_channel();
+    let state = HubState {
+        reports: reports_tx,
+        frames: frames_tx,
+        outbound: Arc::new(Mutex::new(outbound)),
+        authorized: authorized_tx,
+        stale_epoch,
+    };
+    let router = Router::new()
+        .route("/v1/workers/connect", get(ws_handler))
+        .route(
+            "/v1/worker/deliveries/:delivery_id/progress",
+            post(progress),
+        )
+        .route("/v1/worker/deliveries/:delivery_id/finish", post(finish))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub hub");
+    let address = listener.local_addr().expect("stub address");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    StubHub {
+        url: format!("http://{address}"),
+        reports,
+        frames,
+        outbound: outbound_tx,
+        authorized,
+    }
+}
+
+fn bearer_ok(headers: &HeaderMap) -> bool {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == format!("Bearer {CREDENTIAL}"))
+}
+
+fn unauthorized() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "error": "Unauthorized", "message": "invalid credential" })),
+    )
+}
+
+async fn ws_handler(
+    upgrade: WebSocketUpgrade,
+    State(state): State<HubState>,
+    headers: HeaderMap,
+) -> Response {
+    let _ = state.authorized.send(bearer_ok(&headers));
+    upgrade.on_upgrade(move |socket| pump(socket, state))
+}
+
+async fn pump(socket: WebSocket, state: HubState) {
+    let (mut sink, mut source) = socket.split();
+    let mut outbound = state.outbound.lock().await;
+    loop {
+        tokio::select! {
+            incoming = source.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                        let _ = state.frames.send(value);
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            },
+            outgoing = outbound.recv() => {
+                let Some(value) = outgoing else { break };
+                let Ok(text) = serde_json::to_string(&value) else { break };
+                if sink.send(Message::Text(text)).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn progress(
+    State(state): State<HubState>,
+    Path(delivery_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ProgressReportRequest>,
+) -> (StatusCode, Json<Value>) {
+    if !bearer_ok(&headers) {
+        return unauthorized();
+    }
+    if state.stale_epoch == Some(body.epoch) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "StaleDelivery", "message": "stale epoch" })),
+        );
+    }
+    let receipt = ProgressReceipt {
+        delivery_id: DeliveryId::new(delivery_id.clone()),
+        accepted_at_ms: 2,
+        first_accepted_at_ms: 1,
+        duplicate: false,
+    };
+    let _ = state.reports.send(Report::Progress {
+        delivery_id,
+        epoch: body.epoch,
+        text: body.text,
+    });
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(receipt).expect("progress receipt json")),
+    )
+}
+
+async fn finish(
+    State(state): State<HubState>,
+    Path(delivery_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<FinishReportRequest>,
+) -> (StatusCode, Json<Value>) {
+    if !bearer_ok(&headers) {
+        return unauthorized();
+    }
+    let receipt = FinishReceipt {
+        delivery_id: DeliveryId::new(delivery_id.clone()),
+        task_id: TaskId::new("task_stub"),
+        task_status: TaskStatus::Finished,
+        changed: true,
+    };
+    let _ = state.reports.send(Report::Finish {
+        delivery_id,
+        epoch: body.epoch,
+    });
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(receipt).expect("finish receipt json")),
+    )
+}
+
+/// One Hub control frame with the canonical envelope.
+pub fn hub_frame(kind: &str, payload: Value) -> Value {
+    json!({
+        "v": WORKER_PROTOCOL_VERSION,
+        "kind": kind,
+        "messageId": format!("msg_{}", uuid::Uuid::new_v4().simple()),
+        "workerId": WORKER_ID,
+        "connectionEpoch": EPOCH,
+        "sentAtMs": 1,
+        "payload": payload,
+    })
+}
+
+/// `hub.welcome` for epoch [`EPOCH`].
+pub fn welcome_frame() -> Value {
+    hub_frame(
+        "hub.welcome",
+        json!({
+            "hubId": "hub_stub",
+            "workerId": WORKER_ID,
+            "connectionId": "connection_stub",
+            "connectionEpoch": EPOCH,
+            "heartbeatIntervalMs": 5_000,
+            "leaseTtlMs": 20_000,
+        }),
+    )
+}
+
+/// `task.offer` for one Delivery and Executor.
+pub fn offer_frame(delivery_id: &str, executor_id: &str) -> Value {
+    hub_frame(
+        "task.offer",
+        json!({
+            "taskId": format!("task_{delivery_id}"),
+            "deliveryId": delivery_id,
+            "slotId": SLOT_ID,
+            "executorId": executor_id,
+            "task": { "title": "Stub task", "prompt": "Write progress, then stop." },
+        }),
+    )
+}
+
+/// Credential document matching [`WORKER_ID`] and [`CREDENTIAL`].
+pub fn credentials() -> WorkerCredentials {
+    WorkerCredentials {
+        hub_id: "hub_stub".to_owned(),
+        worker_id: WorkerId::new(WORKER_ID),
+        credential: CREDENTIAL.to_owned(),
+    }
+}
+
+/// `worker.yaml` with one Enabled Slot and plain `Process` Executors.
+pub fn process_yaml(hub_url: &str, executors: &[(&str, &str)]) -> String {
+    let mut yaml = format!("hubUrl: {hub_url}\nslots:\n  - slotId: {SLOT_ID}\n    executors:\n");
+    for (id, script) in executors {
+        let script = format!("'{}'", script.replace('\'', "''"));
+        yaml.push_str(&format!(
+            "      - kind: process\n        id: {id}\n        program: /bin/sh\n        args: [\"-c\", {script}]\n"
+        ));
+    }
+    yaml
+}
