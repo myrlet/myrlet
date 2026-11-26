@@ -130,6 +130,8 @@ pub enum ConfigError {
     InvalidBindAddr(String),
     #[error("{name} must be a non-negative integer, got {value:?}")]
     InvalidNumber { name: String, value: String },
+    #[error("{name} must be one of true/false, 1/0, yes/no, on/off, got {value:?}")]
+    InvalidBool { name: String, value: String },
     #[error("hub/config.toml is not valid TOML: {0}")]
     Toml(#[from] toml::de::Error),
     #[error("hub/credentials.json is not a valid Hub credentials document: {0}")]

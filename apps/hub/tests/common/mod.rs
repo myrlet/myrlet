@@ -25,7 +25,7 @@ pub struct Hub {
     pub connect_url: String,
 }
 
-fn config(retention_window: usize) -> HubConfig {
+fn config(retention_window: usize, ui_enabled: bool) -> HubConfig {
     let home = tempfile::tempdir().unwrap();
     HubConfig {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -40,13 +40,19 @@ fn config(retention_window: usize) -> HubConfig {
         snapshot_max_tasks: 100,
         heartbeat_interval_ms: 1_000,
         lease_ttl_ms: 30_000,
+        ui_enabled,
     }
 }
 
 /// Start one Hub over an in-memory store and a real listener.
 pub async fn start(retention_window: usize) -> Hub {
+    start_with_ui(retention_window, true).await
+}
+
+/// Start one Hub with the embedded Web UI explicitly enabled or disabled.
+pub async fn start_with_ui(retention_window: usize, ui_enabled: bool) -> Hub {
     let state = HubState::new(
-        config(retention_window),
+        config(retention_window, ui_enabled),
         Arc::new(HubStore::open_in_memory().unwrap()),
         "hub_test".to_string(),
     );

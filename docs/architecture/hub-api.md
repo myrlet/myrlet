@@ -13,6 +13,16 @@ Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTT
 | `GET /health`, `GET /v1/health` | Process liveness probe (unauthenticated, unbounded). |
 | `POST /v1/pair` | Redeem a one-time pairing code (`{ enrollmentCode, workerId }`) for `{ hubId, workerId, credential }` in one step (body/timeout/concurrency bounded). |
 
+### Embedded Web UI (same-origin)
+
+`hub` embeds the built React/TypeScript/Vite Client (`apps/web`) in its binary and serves it from the Hub origin, so the browser talks to the same origin as the API (zero CORS).
+
+- `GET`/`HEAD` on any path outside `/v1/*` and `/health` serves a static asset; unknown non-asset paths fall back to `index.html` for client-side (SPA) routing.
+- Enabled by default (`uiEnabled = true`); set `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml` to disable it, after which UI paths return the JSON `404 NotFound` error body.
+- `/v1/*` NEVER falls back to HTML: an unknown `/v1/*` path always returns the JSON `404 NotFound` error body, whether or not the UI is enabled.
+- Every UI response carries strict security headers: `Content-Security-Policy` (self-only scripts and connections, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`.
+- The Admin bearer token stays in browser memory only — never written to `localStorage`/`sessionStorage`, cookies, or URLs.
+
 ### Admin / Client Control Plane (`Authorization: Bearer <admin-token>`)
 
 | Method & Path | Purpose |

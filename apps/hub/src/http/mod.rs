@@ -16,6 +16,7 @@ use crate::state::HubState;
 pub mod events;
 pub mod reports;
 pub mod tasks;
+pub mod ui;
 pub mod workers;
 
 /// Upper bound of an accepted `Idempotency-Key` header value.
@@ -53,6 +54,7 @@ pub fn build_router(state: HubState) -> Router {
             "/v1/worker/deliveries/:delivery_id/finish",
             post(reports::report_finish),
         )
+        .fallback(ui::serve_ui)
         .with_state(state)
 }
 

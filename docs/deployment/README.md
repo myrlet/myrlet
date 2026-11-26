@@ -2,7 +2,7 @@
 
 Covers native binaries, containers, TLS, backup/restore, and rollback for Myrlet V1. For local source development, see [Developer quickstart](../development/getting-started.md).
 
-V1 ships three binaries — `hub`, `worker`, and `myrlet` — or the equivalent pre-built container images (`ghcr.io/myrlet/{hub,worker,myrlet}`).
+V1 ships three binaries — `hub`, `worker`, and `myrlet` — or the equivalent pre-built container images (`ghcr.io/myrlet/{hub,worker,myrlet}`). The Hub (and the all-in-one image) also serves the built-in Web UI from the same origin.
 
 ## Canonical Local State (`MYRLET_HOME`)
 
@@ -38,10 +38,13 @@ cargo build --release -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli
 export MYRLET_HOME=/var/lib/myrlet
 export MYRLET_HUB_BIND=127.0.0.1:4140
 export MYRLET_ADMIN_TOKEN='<long-random-secret>'
+# export MYRLET_HUB_UI=false   # optional: disable the built-in Web UI (API only)
 hub
 ```
 
-Optional overrides live in `$MYRLET_HOME/hub/config.toml` (defaults: 2 MiB max body, 1 MiB bundle import, 30s request timeout, 128 concurrent requests, `MYRLET_HUB_SHUTDOWN_TIMEOUT_MS=30000`). Put a TLS reverse proxy in front of Hub for any non-loopback network.
+The Hub embeds and serves the Web UI same-origin on `http://127.0.0.1:4140/` by default. To run API-only, set `MYRLET_HUB_UI=false` (or `uiEnabled = false` in `$MYRLET_HOME/hub/config.toml`); UI paths then return `404 NotFound`.
+
+Optional overrides live in `$MYRLET_HOME/hub/config.toml` (defaults: 2 MiB max body, 1 MiB bundle import, 30s request timeout, 128 concurrent requests, `MYRLET_HUB_SHUTDOWN_TIMEOUT_MS=30000`, `MYRLET_HUB_UI=true`). Put a TLS reverse proxy in front of Hub for any non-loopback network.
 
 ### 2. Enroll and Start Worker (Single-Step Pairing)
 
@@ -69,13 +72,13 @@ Myrlet does not bundle Harnesses, manage Provider Credentials, or sandbox execut
 
 ## Containers
 
-The repo-root [`Dockerfile`](../../Dockerfile) is a multi-stage build with one target per binary — `hub`, `worker`, and `myrlet` — matching the published GHCR images 1:1:
+The repo-root [`Dockerfile`](../../Dockerfile) is a multi-stage build matching the three published GHCR images 1:1:
 
 | Target | Image | Entrypoint |
 | --- | --- | --- |
-| `hub` | `ghcr.io/myrlet/hub` | `hub` (bundles `myrlet` for in-container administration) |
-| `worker` | `ghcr.io/myrlet/worker` | `worker` (bundles `myrlet` for Harnesses inside the container) |
-| `myrlet` | `ghcr.io/myrlet/myrlet` | `myrlet` (CLI only) |
+| `hub` | `ghcr.io/myrlet/hub` | `hub` (Hub only, with the built-in Web UI embedded; toggle it with `MYRLET_HUB_UI=false`; bundles `myrlet` for in-container administration) |
+| `worker` | `ghcr.io/myrlet/worker` | `worker` (Worker only; bundles `myrlet` for Harnesses inside the container) |
+| `myrlet` | `ghcr.io/myrlet/myrlet` | all-in-one local/homelab image: Hub + built-in Web UI + auto-paired local Worker |
 
 ```bash
 docker build --target hub    -t myrlet/hub:0.1.0 .
@@ -84,18 +87,31 @@ docker build --target myrlet -t myrlet/myrlet:0.1.0 .
 
 # Or pull the published images
 docker pull ghcr.io/myrlet/hub:latest
+docker pull ghcr.io/myrlet/worker:latest
+docker pull ghcr.io/myrlet/myrlet:latest
 ```
 
-Images are lean and headless: release binaries plus `ca-certificates` on `debian:bookworm-slim`, with no Python, toolchain, dev tools, or demo fixtures. Each runs as unprivileged UID/GID `10001` with a private `0700` data root at `MYRLET_HOME=/var/lib/myrlet`. `--target hub` is the last stage, so a plain `docker build .` yields the Hub image.
+Images are lean and headless (no GUI dependencies): release binaries plus `ca-certificates` on `debian:bookworm-slim`, with no Python, toolchain, dev tools, or demo fixtures. Each runs as unprivileged UID/GID `10001` with a private `0700` data root at `MYRLET_HOME=/var/lib/myrlet`. `--target hub` is the last stage, so a plain `docker build .` yields the Hub image.
 
 ```bash
+# Hub only: serves the API and (by default) the built-in Web UI on the same origin
 docker run --rm \
   -e MYRLET_ADMIN_TOKEN="$MYRLET_ADMIN_TOKEN" \
   -e MYRLET_HUB_BIND=0.0.0.0:4140 \
   -v /var/lib/myrlet:/var/lib/myrlet \
   -p 4140:4140 \
   ghcr.io/myrlet/hub:latest
+
+# All-in-one local/homelab: Hub + built-in Web UI + auto-paired local Worker
+docker run --rm \
+  -e MYRLET_ADMIN_TOKEN="$MYRLET_ADMIN_TOKEN" \
+  -e MYRLET_HUB_BIND=0.0.0.0:4140 \
+  -v /var/lib/myrlet:/var/lib/myrlet \
+  -p 4140:4140 \
+  ghcr.io/myrlet/myrlet:latest
 ```
+
+Set `MYRLET_HUB_UI=false` on the `hub` or `myrlet` image to serve the API only.
 
 Published by [`.github/workflows/docker.yml`](../../.github/workflows/docker.yml) on `main` (tag `edge` + `sha-*`), on `v*` tags (`latest` + semver), and on `workflow_dispatch`. Pull requests build with `push: false` to verify the Dockerfile. Bind-mount data dirs with the `10001` owner so state stays readable/writable, and keep Hub/Workers on the same release per the rollback rules below.
 

@@ -3,7 +3,8 @@ name: Release
 # Publishes prebuilt `hub`, `worker`, and `myrlet` binaries for every supported
 # platform. Each target is built on a native runner — x86_64 on `ubuntu-latest`,
 # aarch64 Linux on `ubuntu-24.04-arm`, aarch64 macOS on `macos-latest` — so there
-# is no cross compilation to babysit.
+# is no cross compilation to babysit. The Web UI is built first on every runner so
+# the released `hub` binary bundles the real embedded SPA (`apps/web/dist`).
 
 on:
   push:
@@ -30,6 +31,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # `hub` embeds `apps/web/dist` at compile time, so the SPA must exist before
+      # any Cargo invocation below.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build Web UI
+        working-directory: apps/web
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

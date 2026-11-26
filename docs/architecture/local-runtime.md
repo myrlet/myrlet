@@ -43,7 +43,9 @@ crates/protocol (myrlet-protocol: canonical Task, Delivery, IDs, enums, HTTP/WSS
 ```
 
 - No library crate depends on an app crate. `apps/cli` and `crates/client` MUST NOT depend on any GUI framework.
-- Binary names (`hub`, `worker`, `myrlet`) map 1:1 to the [`Dockerfile`](../../Dockerfile) build targets and the published images `ghcr.io/myrlet/{hub,worker,myrlet}`, so a release never ships a container whose entrypoint disagrees with its package.
+- `apps/web` (React/TypeScript/Vite) builds to `apps/web/dist`, which the `hub` build script embeds into the `hub` binary at compile time (no runtime filesystem dependency). The same-origin Web UI is **enabled by default**; disable it with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. A build without `apps/web/dist` still compiles and serves API-only (UI paths return the JSON `404 NotFound`).
+- Binary names (`hub`, `worker`, `myrlet`) map 1:1 to the [`Dockerfile`](../../Dockerfile) build targets, so a release never ships a container whose entrypoint disagrees with its package.
+- Three images are published from those targets: `ghcr.io/myrlet/hub` (Hub plus the built-in Web UI), `ghcr.io/myrlet/worker` (Worker only), and `ghcr.io/myrlet/myrlet` (all-in-one local/homelab image with Hub + built-in Web UI + auto-paired local Worker).
 - Keep modules cohesive and cleanly decoupled (target **<= 300–400 LOC** per production `.rs` file; split distinct domain responsibilities instead of building monolithic files).
 - Production builds MUST NOT bundle test fixtures, demo datasets, or developer component galleries.
 
@@ -51,19 +53,19 @@ crates/protocol (myrlet-protocol: canonical Task, Delivery, IDs, enums, HTTP/WSS
 
 All clients are thin presentation/automation shells over the Hub HTTP/SSE API; none owns a second Task state machine or scheduler.
 
-V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`) and one Agent Skill. The graphical Client is deferred to the next iteration.
+V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the same-origin **Web UI** compiled into `hub` from `apps/web`, and one Agent Skill.
 
 | Surface | Binary / Crate | V1 Scope |
 | --- | --- | --- |
 | **CLI** | `myrlet` (`apps/cli`) | Headless Task create/dispatch/submit/bundle-import/list/show/cancel/finish, Worker list, and `events watch` (human + `--json` output). Also the supported interface for Harnesses. |
 | **Shared Client SDK** | `myrlet-client` (`crates/client`) | One `Client` over `native` (`reqwest`/Tokio) and `wasm` (`fetch`) transports using canonical `myrlet-protocol` DTOs. |
+| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List/Tree Task workspace**, **Task Detail** (hierarchy, dependencies, Delivery, latest Progress), Task create/dispatch/cancel dialogs, and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
 | **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Owner Agents. |
 
-### Graphical Client (next iteration)
+### Desktop Shell (next iteration)
 
 Planned, not shipped in V1:
 
-- **Web UI** — lightweight React/TypeScript/Vite app (`apps/web`) served **same-origin by `hub`**: zero CORS, a strict Content-Security-Policy, and an in-memory token only (never persisted). Scope: Hub connection, **List/Tree Task workspace**, **Task Detail** (hierarchy, dependencies, Delivery, latest Progress), Task create/dispatch/cancel dialogs, and Worker/pairing management.
-- **Desktop shell** — an optional Tauri 2 wrapper in a later iteration, hosting the same Web UI as a native window without forking the web surface.
+- **Desktop shell** — an optional Tauri 2 wrapper in a later iteration, hosting the same embedded Web UI as a native window without forking the web surface.
 - **Owner Agent (optional, BYOK)** — a future graphical Client MAY offer an optional BYOK Owner Agent (e.g., via Pi SDK) running strictly at the Client boundary through ordinary Hub APIs; it MUST NEVER become a Hub, Worker, CLI, or core Client dependency.
 - **Out of scope** — custom spatial graph canvases, saved view managers, and static login diagrams.

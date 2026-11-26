@@ -4,7 +4,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{is_closed, next_sse_event, read_frame, start, ADMIN};
+use common::{is_closed, next_sse_event, read_frame, start, start_with_ui, ADMIN};
 use myrlet_protocol::SNAPSHOT_SCHEMA_VERSION;
 use serde_json::json;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -255,4 +255,39 @@ async fn rotation_and_revocation_fence_the_live_worker_session() {
     let listed = hub.get_admin("/v1/workers").await;
     assert_eq!(listed.1["workers"][0]["revoked"], true);
     assert_eq!(listed.1["workers"][0]["online"], false);
+}
+
+#[tokio::test]
+async fn embedded_ui_never_shadows_the_api_and_respects_the_toggle() {
+    let hub = start(10_000).await;
+    let unknown = hub.get_admin("/v1/does-not-exist").await;
+    assert_eq!(unknown.0, 404, "{}", unknown.1);
+    assert_eq!(unknown.1["error"], "NotFound");
+
+    let disabled = start_with_ui(10_000, false).await;
+    for path in ["/", "/tasks/task_1"] {
+        let (status, body) = disabled.request("GET", path, None, None, None).await;
+        assert_eq!(status, 404, "{path}: {body}");
+        assert_eq!(body["error"], "NotFound", "{path}");
+    }
+
+    let enabled = start_with_ui(10_000, true).await;
+    let response = reqwest::Client::new()
+        .get(format!("{}/", enabled.base))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    assert!(status == 200 || status == 404, "unexpected status {status}");
+    if status == 200 {
+        let headers = response.headers();
+        let content_type = headers["content-type"].to_str().unwrap();
+        assert!(content_type.contains("text/html"), "{content_type}");
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert!(headers.contains_key("content-security-policy"));
+        let unknown = enabled.get_admin("/v1/unknown").await;
+        assert_eq!(unknown.0, 404, "{}", unknown.1);
+        assert_eq!(unknown.1["error"], "NotFound");
+    }
 }

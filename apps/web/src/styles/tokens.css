@@ -1,0 +1,181 @@
+/*
+ * Myrlet design tokens — "Quiet Precision".
+ *
+ * Semantic light theme (Porcelain, default) and dark theme (Graphite).
+ * Never scatter ad-hoc hex colours through feature views: consume these
+ * variables (or the shared classes in app.css) instead.
+ *
+ * Every status colour is always paired with text and a shape/icon in markup;
+ * colour alone never carries meaning.
+ */
+
+:root {
+  /* Typography -------------------------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* Spacing scale ----------------------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* Concentric radii -------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Motion: explicit transitions only, never `transition: all` -------- */
+  --duration-fast: 120ms;
+  --duration-slow: 180ms;
+  --ease-standard: ease;
+  --transition-control: background-color 120ms ease, border-color 120ms ease,
+    opacity 180ms ease, transform 120ms ease;
+
+  /* Layout ------------------------------------------------------------ */
+  --header-height: 48px;
+  --row-height: 34px;
+  --control-compact: 28px;
+  --control-default: 32px;
+  --detail-width: 420px;
+  --tree-indent: 14px;
+
+  /* Focus ------------------------------------------------------------- */
+  --focus-ring: #2f6f9f;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+}
+
+/* --------------------------------------------------------------------- */
+/* Porcelain — calm light surfaces (default)                              */
+/* --------------------------------------------------------------------- */
+:root,
+:root[data-theme="porcelain"] {
+  color-scheme: light;
+
+  --bg-canvas: #f7f6f3;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f0eee9;
+  --bg-hover: #ece9e3;
+  --bg-selected: #e4eaf1;
+  --bg-overlay: rgba(18, 20, 23, 0.38);
+
+  --border-subtle: #e8e5de;
+  --border-default: #d7d3c9;
+  --border-strong: #b6b1a5;
+
+  --text-primary: #1b1e22;
+  --text-secondary: #4b5158;
+  --text-muted: #7b818a;
+
+  --accent: #2f6f9f;
+
+  /* Primary / destructive controls */
+  --control-primary-bg: #24282e;
+  --control-primary-bg-hover: #343b44;
+  --control-primary-fg: #faf9f6;
+
+  /* Task status: held — neutral slate */
+  --status-held-fg: #4c545e;
+  --status-held-bg: #eeece7;
+  --status-held-border: #d6d2c8;
+
+  /* Task status: queued — calm amber */
+  --status-queued-fg: #7a5a13;
+  --status-queued-bg: #f8efd8;
+  --status-queued-border: #e5d4a6;
+
+  /* Task status: dispatched — steel blue */
+  --status-dispatched-fg: #24557f;
+  --status-dispatched-bg: #e5eff8;
+  --status-dispatched-border: #bdd4e9;
+
+  /* Task status: finished — muted sage/teal ("Handling ended", not a verdict) */
+  --status-finished-fg: #366156;
+  --status-finished-bg: #e4efe9;
+  --status-finished-border: #c0d8cd;
+
+  /* Task status: cancelled — muted rose/rust */
+  --status-cancelled-fg: #8a4838;
+  --status-cancelled-bg: #f7e9e4;
+  --status-cancelled-border: #e4c9c0;
+
+  /* Worker connectivity */
+  --status-online-fg: #2f6a5c;
+  --status-online-bg: #e4efe9;
+  --status-online-border: #c0d8cd;
+
+  --status-offline-fg: #6b7178;
+  --status-offline-bg: #efede8;
+  --status-offline-border: #d9d5cc;
+
+  --status-revoked-fg: #8a4838;
+  --status-revoked-bg: #f7e9e4;
+  --status-revoked-border: #e4c9c0;
+
+  --shadow-overlay: 0 12px 32px rgba(17, 19, 21, 0.16);
+}
+
+/* --------------------------------------------------------------------- */
+/* Graphite — dark, restrained surfaces                                   */
+/* --------------------------------------------------------------------- */
+:root[data-theme="graphite"] {
+  color-scheme: dark;
+
+  --bg-canvas: #111315;
+  --bg-surface: #181b1f;
+  --bg-subtle: #1f2329;
+  --bg-hover: #252a31;
+  --bg-selected: #27313b;
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+
+  --border-subtle: #24282e;
+  --border-default: #31363d;
+  --border-strong: #4b5159;
+
+  --text-primary: #ebe9e4;
+  --text-secondary: #b3b8bf;
+  --text-muted: #818891;
+
+  --accent: #6ba7de;
+
+  --control-primary-bg: #ecebe6;
+  --control-primary-bg-hover: #ffffff;
+  --control-primary-fg: #15171a;
+
+  --status-held-fg: #b9c0c9;
+  --status-held-bg: #232830;
+  --status-held-border: #343b45;
+
+  --status-queued-fg: #e0bd6a;
+  --status-queued-bg: #2e2818;
+  --status-queued-border: #4a3f22;
+
+  --status-dispatched-fg: #8dbfe8;
+  --status-dispatched-bg: #1b2a38;
+  --status-dispatched-border: #2c465e;
+
+  --status-finished-fg: #8fc4b2;
+  --status-finished-bg: #1b2a26;
+  --status-finished-border: #2d4840;
+
+  --status-cancelled-fg: #e0a08f;
+  --status-cancelled-bg: #2e211d;
+  --status-cancelled-border: #4a332c;
+
+  --status-online-fg: #8fc4b2;
+  --status-online-bg: #1b2a26;
+  --status-online-border: #2d4840;
+
+  --status-offline-fg: #a0a6ad;
+  --status-offline-bg: #232830;
+  --status-offline-border: #343b45;
+
+  --status-revoked-fg: #e0a08f;
+  --status-revoked-bg: #2e211d;
+  --status-revoked-border: #4a332c;
+
+  --focus-ring: #6ba7de;
+  --shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.55);
+}

@@ -15,6 +15,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Hub embeds `apps/web/dist`, so the Web UI is built first: every Cargo
+      # step below (check, clippy, build, test) then compiles against the real
+      # bundle instead of a stub, and Hub tests exercise the embedded UI.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Web UI dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Typecheck Web UI
+        working-directory: apps/web
+        run: npm run typecheck
+
+      - name: Test Web UI
+        working-directory: apps/web
+        run: npm test
+
+      - name: Build Web UI
+        working-directory: apps/web
+        run: npm run build
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

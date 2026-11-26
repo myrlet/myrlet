@@ -21,6 +21,7 @@ const LEASE_TTL_MS: u64 = 15_000;
 const ENV_ADMIN_TOKEN: &str = "MYRLET_ADMIN_TOKEN";
 const ENV_BIND: &str = "MYRLET_HUB_BIND";
 const ENV_SHUTDOWN_TIMEOUT_MS: &str = "MYRLET_HUB_SHUTDOWN_TIMEOUT_MS";
+const ENV_UI: &str = "MYRLET_HUB_UI";
 
 #[derive(Clone)]
 pub struct HubConfig {
@@ -36,6 +37,7 @@ pub struct HubConfig {
     pub snapshot_max_tasks: usize,
     pub heartbeat_interval_ms: u64,
     pub lease_ttl_ms: u64,
+    pub ui_enabled: bool,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -49,6 +51,7 @@ impl std::fmt::Debug for HubConfig {
             .field("request_timeout_ms", &self.request_timeout_ms)
             .field("max_concurrent_requests", &self.max_concurrent_requests)
             .field("shutdown_timeout_ms", &self.shutdown_timeout_ms)
+            .field("ui_enabled", &self.ui_enabled)
             .finish_non_exhaustive()
     }
 }
@@ -66,6 +69,7 @@ struct FileConfig {
     snapshot_max_tasks: Option<usize>,
     heartbeat_interval_ms: Option<u64>,
     lease_ttl_ms: Option<u64>,
+    ui_enabled: Option<bool>,
 }
 
 impl HubConfig {
@@ -81,6 +85,10 @@ impl HubConfig {
             Some(raw) => parse_u64(ENV_SHUTDOWN_TIMEOUT_MS, &raw)?,
             None => file.shutdown_timeout_ms.unwrap_or(SHUTDOWN_TIMEOUT_MS),
         };
+        let ui_enabled = match env_var(ENV_UI) {
+            Some(raw) => parse_bool(ENV_UI, &raw)?,
+            None => file.ui_enabled.unwrap_or(true),
+        };
         Ok(Self {
             bind_addr,
             admin_token: env_var(ENV_ADMIN_TOKEN).ok_or(ConfigError::MissingAdminToken)?,
@@ -94,6 +102,7 @@ impl HubConfig {
             snapshot_max_tasks: file.snapshot_max_tasks.unwrap_or(SNAPSHOT_MAX_TASKS),
             heartbeat_interval_ms: file.heartbeat_interval_ms.unwrap_or(HEARTBEAT_INTERVAL_MS),
             lease_ttl_ms: file.lease_ttl_ms.unwrap_or(LEASE_TTL_MS),
+            ui_enabled,
         })
     }
 }
@@ -108,6 +117,17 @@ fn parse_u64(name: &str, raw: &str) -> Result<u64, ConfigError> {
         name: name.to_string(),
         value: raw.to_string(),
     })
+}
+
+fn parse_bool(name: &str, raw: &str) -> Result<bool, ConfigError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(ConfigError::InvalidBool {
+            name: name.to_string(),
+            value: raw.to_string(),
+        }),
+    }
 }
 
 fn read_file_config(home: &MyrletHome) -> Result<FileConfig, ConfigError> {

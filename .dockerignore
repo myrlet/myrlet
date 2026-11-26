@@ -1,10 +1,18 @@
 # Keep the build context to what
 # `cargo build --release --locked -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli`
-# needs: `Cargo.toml`, `Cargo.lock`, `crates/`, and `apps/`.
+# needs — `Cargo.toml`, `Cargo.lock`, `crates/`, and `apps/` — plus `docker/` for
+# the all-in-one entrypoint. `apps/web/` stays included: the `web-builder` stage
+# compiles the built-in UI from source.
 
 # Build output and toolchain state
 target/
 **/target/
+
+# Web UI build state: `apps/web/` sources and `docker/` stay in the context, but a
+# stale local `node_modules/` or `dist/` must never leak into the image. The
+# `web-builder` stage installs its own dependencies and rebuilds `dist/`.
+apps/web/node_modules/
+apps/web/dist/
 
 # VCS metadata and CI configuration
 .git/

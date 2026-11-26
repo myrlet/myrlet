@@ -1,5 +1,7 @@
 /target
 /apps/app/target
+/apps/web/node_modules
+/apps/web/dist
 .playwright-cli/
 /output/
 **/*.rs.bk

@@ -1,12 +1,16 @@
 name: Docker
 
 # Builds and publishes the three OCI images as native multi-arch manifest lists:
-#   ghcr.io/myrlet/hub · ghcr.io/myrlet/worker · ghcr.io/myrlet/myrlet
+#   ghcr.io/myrlet/hub    — Hub only, with the built-in Web UI and the `myrlet` CLI
+#   ghcr.io/myrlet/worker — Worker only, with the `myrlet` CLI
+#   ghcr.io/myrlet/myrlet — All-in-One Hub + Web UI + auto-paired local Worker
+#                           for local machines and homelabs (`docker/myrlet-start.sh`)
 # Each matrix target maps 1:1 to a `Dockerfile` stage. Every platform is built on
-# a matching native runner (`ubuntu-latest` / `ubuntu-24.04-arm`), so the Rust
-# compile never runs under QEMU. Each `build` job pushes a single-platform image
-# by digest; the `merge` job then stitches the per-architecture digests into the
-# final multi-arch tags with `docker buildx imagetools create`.
+# a matching native runner (`ubuntu-latest` / `ubuntu-24.04-arm`), so neither the
+# Node Web UI build nor the Rust compile ever runs under QEMU. Each `build` job
+# pushes a single-platform image by digest; the `merge` job then stitches the
+# per-architecture digests into the final multi-arch tags with
+# `docker buildx imagetools create`.
 
 on:
   push:
@@ -16,6 +20,8 @@ on:
     paths:
       - "Dockerfile"
       - ".dockerignore"
+      - "docker/**"
+      - "apps/web/**"
       - ".github/workflows/docker.yml"
   workflow_dispatch:
 
@@ -34,6 +40,7 @@ env:
 jobs:
   # One job per (image, architecture). Builds natively on the matching runner
   # and pushes the single-platform image by digest — no tags are written here.
+  # `target` names double as the `Dockerfile` stage and the published image.
   build:
     name: ${{ matrix.target }} (${{ matrix.arch.platform }})
     runs-on: ${{ matrix.arch.runner }}
