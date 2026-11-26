@@ -1,0 +1,136 @@
+{
+  "version": "0.2",
+  "coordinateSystem": {
+    "viewBox": [
+      0,
+      0,
+      1024,
+      1024
+    ],
+    "fillRule": "evenodd",
+    "baseMark": "../myrlet-mark.svg",
+    "inverseMark": "../myrlet-mark-inverse.svg",
+    "sourceMethod": "Closed-contour RDP simplification, tangent-continuous cubic interpolation, with intentional antenna corners; eyes reconstructed as symmetric rounded capsules.",
+    "sourceMarkOriginal": "Approved polygon trace in git history",
+    "refinementToleranceSourceUnits": [
+      3.3,
+      2.5,
+      2
+    ],
+    "eyeCutouts": "rounded-capsule; transparent even-odd subpaths",
+    "referenceSizePx": 1024
+  },
+  "eyeAnchors": {
+    "left": [
+      432,
+      510.5
+    ],
+    "right": [
+      593.5,
+      510.5
+    ]
+  },
+  "description": "Eye cutouts are transparent; only eye vertices change. Outer mark, visor and collaboration nodes remain identical to the official mark.",
+  "expressions": {
+    "default": {
+      "left": {
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": 0,
+        "translateX": 0,
+        "translateY": 0
+      },
+      "right": {
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": 0,
+        "translateX": 0,
+        "translateY": 0
+      }
+    },
+    "working": {
+      "left": {
+        "scaleX": 0.87,
+        "scaleY": 1,
+        "rotationDeg": 10,
+        "translateX": 0,
+        "translateY": 0
+      },
+      "right": {
+        "scaleX": 0.87,
+        "scaleY": 1,
+        "rotationDeg": -10,
+        "translateX": 0,
+        "translateY": 0
+      }
+    },
+    "idle": {
+      "left": {
+        "scaleX": 0.76,
+        "scaleY": 1,
+        "rotationDeg": 0,
+        "translateX": 0,
+        "translateY": 12
+      },
+      "right": {
+        "scaleX": 0.76,
+        "scaleY": 1,
+        "rotationDeg": 0,
+        "translateX": 0,
+        "translateY": 12
+      }
+    },
+    "warning": {
+      "left": {
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotationDeg": 0,
+        "translateX": 0,
+        "translateY": 0
+      },
+      "right": {
+        "scaleX": 0.94,
+        "scaleY": 1,
+        "rotationDeg": -10,
+        "translateX": 0,
+        "translateY": -2
+      }
+    },
+    "offline": {
+      "left": {
+        "scaleX": 0.73,
+        "scaleY": 1,
+        "rotationDeg": -7,
+        "translateX": 0,
+        "translateY": 19
+      },
+      "right": {
+        "scaleX": 0.73,
+        "scaleY": 1,
+        "rotationDeg": 7,
+        "translateX": 0,
+        "translateY": 19
+      }
+    }
+  },
+  "motion": {
+    "stateTransitionMs": 200,
+    "easing": "cubic-bezier(0.2, 0.7, 0.2, 1)",
+    "loopingWarningOrOffline": false,
+    "idleBlink": "optional, infrequent, disabled by reduced-motion"
+  },
+  "stateMapping": {
+    "offline": "offline",
+    "degraded": "warning",
+    "healthyWorking": "working",
+    "healthyIdle": "idle",
+    "healthyActivityUnknown": "default",
+    "healthUnknown": "default + visible unknown label"
+  },
+  "attention": [
+    "none",
+    "awaiting_owner",
+    "human_input_required"
+  ],
+  "geometryRevision": "smoothed-bezier-v1"
+}
