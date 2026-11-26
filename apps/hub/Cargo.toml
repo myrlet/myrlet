@@ -1,17 +1,17 @@
 [package]
-name = "myrlet-worker-daemon"
+name = "myrlet-hub"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "myrlet-worker-daemon"
+name = "myrlet-hub"
 path = "src/main.rs"
 
 [dependencies]
 myrlet-protocol.workspace = true
-myrlet-worker.workspace = true
+myrlet-store.workspace = true
 
 [lints]
 workspace = true

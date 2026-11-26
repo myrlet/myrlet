@@ -25,6 +25,15 @@ Before adding any new table, state, HTTP route, WSS frame, trait, config option,
 4. Does a new abstraction or config knob have **at least two** real callers today? *(If not, inline it.)*
 5. Can narrowing a responsibility boundary eliminate the need for coordination machinery altogether?
 
+## Module Cohesion & Decoupling
+
+Keep the codebase easy to read and change without adding unnecessary abstraction layers:
+
+- **No monolithic god-files**: Aim to keep production `.rs` files around **<= 300–400 LOC**; files exceeding **~500 LOC** should be decomposed along clear responsibility boundaries into cohesive submodules.
+- **Clean decoupling**: Separate pure domain/validation rules, SQLite persistence, transport framing (HTTP/SSE/WSS), and process/UI wiring into distinct modules with clear boundaries.
+- **Keep tests out of production bloat**: Small unit tests may live beside the module; large test suites belong in `tests/` or a dedicated `tests.rs` submodule.
+- **Cohesion, not ceremony**: Split to clarify ownership and decouple concerns—never create empty wrapper traits or 1-line pass-through layers.
+
 ### Pre-Release Policy (No Compatibility Shims)
 
 Myrlet `0.1.0` is pre-release and carries **no backward-compatibility obligation** for unreleased wire DTOs, SQLite schemas, config keys, or on-disk layouts:
@@ -41,17 +50,17 @@ Myrlet `0.1.0` is pre-release and carries **no backward-compatibility obligation
 
 ### PR Review Rules
 
-Review for **correctness, boundary discipline, and net simplicity**—not defensive perfection:
+Review for **correctness, boundary discipline, clean decoupling, and net simplicity**—not defensive perfection:
 
 | Severity | Meaning | Disposition |
 | --- | --- | --- |
 | **P0** | Critical security, data-integrity, or availability bug with a credible trigger | Blocking |
-| **P1** | Material correctness/invariant violation, **or clear over-engineering** (unapproved states/tables/routes/non-goals, unused abstractions, test-only RBAC/scaffolding) | Blocking |
-| **P2** | Concrete maintainability issue or supported edge case | Fix or track if worthwhile |
+| **P1** | Material correctness/invariant violation, **clear over-engineering** (unapproved states/tables/routes/non-goals, unused abstractions, test-only RBAC/scaffolding), or **severe monolithic coupling** (unrelated concerns stuffed into one oversized file) | Blocking |
+| **P2** | Concrete maintainability issue, missed modular split, or supported edge case | Fix or track if worthwhile |
 | **P3** | Minor suggestion | Optional, no Issue needed |
 
-- **Reviewers MUST NOT** demand extra abstractions, file splitting solely by line count, speculative edge-case guards, or support for excluded topologies.
-- **Reviewers SHOULD** actively ask whether code, tables, states, or config options can be deleted or simplified.
+- **Reviewers MUST NOT** demand speculative traits/abstractions, defensive guards for excluded topologies, or arbitrary splitting of already small cohesive files.
+- **Reviewers SHOULD** actively ask both: *"Can this mechanism be deleted or simplified?"* and *"Are distinct responsibilities cleanly decoupled into focused modules?"*
 - Authors cannot self-approve; if agents share one GitHub account, state the independent reviewer transparently and require human Maintainer approval for architecture, security, and protocol changes.
 
 ## Local Verification

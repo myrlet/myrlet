@@ -6,6 +6,6 @@
 *.log
 .DS_Store
 .nsh/
-/apps/hub-daemon/web/
+/apps/hub/web/
 /dist
 /release-input

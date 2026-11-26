@@ -8,6 +8,9 @@
   - Use `camelCase` consistently across all HTTP and WSS JSON DTOs; keep one canonical type per concept (no duplicate domain vs. wire structs).
   - Wrap single-writer Hub SQLite work behind one-permit `block_in_place` on multi-thread Tokio (no actor threads, connection pools, or 3-table polling Outbox).
   - Do not introduce abstractions, traits, or config knobs for a single current call site.
+- **Modular file & decoupling discipline**:
+  - Split code into cohesive, single-responsibility modules rather than dumping unrelated logic into one monolithic file (keep production `.rs` files generally **<= 300–400 LOC**; treat **> 500 LOC** as a strong split signal).
+  - Separate concerns cleanly (e.g., transport/HTTP handlers vs. storage queries vs. pure validation/state rules; large tests in `tests/` or dedicated `tests.rs` modules). Split by clear domain cohesion—never by pointless wrapper layers.
 - **Pre-release policy**: no backward-compatibility shims, migration scripts, dual-read paths, or `#[allow(dead_code)]` escapes.
 - **Core invariants never weaken**: constant-time SHA-256 bearer verification (`Admin` / `Worker`), mandatory WSS TLS verification, POSIX `0600`/`0700` & symlink/traversal checks, `expectedTaskVersion` and `connectionEpoch` fencing, Delivery idempotency (never double-submit), and honest uncertainty (5 Task states, no success/failure verdict).
 - Work in an isolated branch/worktree per focused PR (keep routine PRs concise; split large milestones by crate/module). Never force-push shared history or auto-merge.

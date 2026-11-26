@@ -24,7 +24,7 @@ Pre-release development state has no in-place migration contract: back up and st
 ## Build from Source
 
 ```bash
-cargo build --release -p myrlet-hub-daemon -p myrlet-worker-daemon -p myrlet-cli
+cargo build --release -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli
 ```
 
 ## Native Hub and Worker
@@ -36,7 +36,7 @@ export MYRLET_HOME=/var/lib/myrlet
 export MYRLET_HUB_BIND_ADDR=127.0.0.1
 export MYRLET_HUB_PORT=4140
 export MYRLET_ADMIN_TOKEN='<long-random-secret>'
-myrlet-hub-daemon
+myrlet-hub
 ```
 
 Ingress defaults: `MYRLET_HUB_API_MAX_BODY_BYTES=2097152` (2 MiB), `MYRLET_HUB_API_REQUEST_TIMEOUT_MS=30000`, `MYRLET_HUB_API_MAX_CONCURRENT_REQUESTS=128`. Put a TLS reverse proxy in front of Hub for any non-loopback network.
@@ -55,7 +55,7 @@ curl --fail --silent --show-error \
   --request POST http://127.0.0.1:4140/v1/pair \
   --header 'Content-Type: application/json' \
   --data "{\"enrollmentCode\":\"$code\",\"workerId\":\"worker-prod-01\"}" \
-  | myrlet-worker-daemon credential-import
+  | myrlet-worker credential-import
 ```
 
 Configure `/var/lib/myrlet/worker/worker.yaml` (YAML only), validate with `check-config`, and run:
@@ -63,8 +63,8 @@ Configure `/var/lib/myrlet/worker/worker.yaml` (YAML only), validate with `check
 ```bash
 export MYRLET_HOME=/var/lib/myrlet
 export MYRLET_HUB_WSS_URL='wss://hub.example.invalid/v1/workers/connect'
-myrlet-worker-daemon check-config
-myrlet-worker-daemon
+myrlet-worker check-config
+myrlet-worker
 ```
 
 ### Worker TLS (`wss://`)

@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/myrlet-protocol",
-    "crates/myrlet-store",
-    "crates/myrlet-worker",
-    "crates/myrlet-client",
-    "apps/hub-daemon",
-    "apps/worker-daemon",
+    "crates/protocol",
+    "crates/store",
+    "crates/worker",
+    "crates/client",
+    "apps/hub",
+    "apps/worker",
     "apps/cli",
     "apps/app",
 ]
@@ -28,7 +28,7 @@ unimplemented = "deny"
 undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
-myrlet-protocol = { path = "crates/myrlet-protocol" }
-myrlet-store = { path = "crates/myrlet-store" }
-myrlet-worker = { path = "crates/myrlet-worker" }
-myrlet-client = { path = "crates/myrlet-client" }
+myrlet-protocol = { path = "crates/protocol" }
+myrlet-store = { path = "crates/store" }
+myrlet-worker = { path = "crates/worker" }
+myrlet-client = { path = "crates/client" }

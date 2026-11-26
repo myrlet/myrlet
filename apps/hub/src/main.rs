@@ -2,7 +2,7 @@
 
 fn main() {
     println!(
-        "myrlet-hub-daemon ({}) scaffold",
+        "myrlet-hub ({}) scaffold",
         myrlet_protocol::WORKER_PROTOCOL_VERSION
     );
 }

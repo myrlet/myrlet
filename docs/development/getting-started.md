@@ -25,7 +25,7 @@ Use an absolute `MYRLET_HOME` outside the Git checkout (startup rejects roots in
 export MYRLET_HOME="$HOME/.local/share/myrlet"
 export MYRLET_ADMIN_TOKEN='replace-with-local-admin-token'
 
-cargo run -p myrlet-hub-daemon
+cargo run -p myrlet-hub
 ```
 
 Check liveness:
