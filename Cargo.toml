@@ -8,7 +8,6 @@ members = [
     "apps/hub",
     "apps/worker",
     "apps/cli",
-    "apps/app",
 ]
 
 [workspace.package]

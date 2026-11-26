@@ -1,6 +1,6 @@
 # Myrlet UI Design System
 
-Normative visual and interaction contract for `apps/app/` (macOS native and packaged same-origin Web built with [NSH](https://github.com/longbridge/nsh)). Product semantics remain owned by [the canonical architecture](../architecture/README.md).
+Visual and interaction principles for the planned Myrlet Web UI (`apps/web/`, React/TypeScript/Vite served same-origin by `hub`, with an optional Tauri 2 desktop shell in a later iteration). Product semantics remain owned by [the canonical architecture](../architecture/README.md).
 
 ## 1. Design Intent — Quiet Precision
 
@@ -13,13 +13,12 @@ Myrlet is operational infrastructure, not a chatbot or decorative SaaS dashboard
 
 ## 2. Tokens and Shared Controls
 
-- **Palette (`src/theme/`)**: `tokens.rs` (semantic roles), `light.rs` (Porcelain), `dark.rs` (Graphite), `nsh.rs` (NSH mapping). Never use raw hex colors in feature views.
-- **Shared controls (`src/ui/`)**: `button.rs`, `field.rs`, `select.rs`, `modal.rs`, `disclosure.rs`, `spacing.rs`, `typography.rs`, `motion.rs`. Feature code composes `crate::ui` and NSH layout primitives rather than styling raw `nsh_base` controls.
-- **Fact wording (`src/facts.rs`)**: Single formatting source for Task status (`Held`, `Queued`, `Dispatched`, `Handling ended`, `Cancelled`), Delivery milestones, and Progress provenance.
-- **Spacing scale**: `4pt`, `8pt`, `12pt`, `16pt`, `24pt`. Compact desktop controls `28–32pt`; dense rows `28–36pt`.
+- **Palette**: Semantic light (**Porcelain**) and dark (**Graphite**) CSS/design tokens. Never scatter ad-hoc hex colors in feature views.
+- **Fact wording**: Single formatting source for Task status (`Held`, `Queued`, `Dispatched`, `Handling ended`, `Cancelled`), Delivery milestones, and Progress provenance.
+- **Spacing scale**: `4px`, `8px`, `12px`, `16px`, `24px`. Compact desktop controls `28–32px`; dense rows `28–36px`.
 - **Typography**: System sans for UI, monospace only for IDs, shortcuts, and aligned numbers.
-- **Motion**: Use `INSTANT_MS` (120ms) / `FAST_MS` (180ms) for state changes; disable transitions under reduced motion. No ambient animation.
-- **Storage**: Persist theme preference and client UI state through the single cross-platform NSH storage adapter (`src/client/storage.rs`). Never store credentials in client storage.
+- **Motion**: `120ms` / `180ms` for state changes; respect `prefers-reduced-motion`. No ambient animation.
+- **Storage**: Theme preference may persist in browser storage; **never** store bearer tokens in `localStorage`, URLs, or packaged assets (keep credentials in memory only).
 
 ## 3. V1 Workspace Information Architecture
 
@@ -35,6 +34,6 @@ V1 is a focused **List/Tree + Task Detail + Worker** operational workspace share
 ## 4. Verification
 
 Before shipping a UI change:
-1. Run `cargo fmt --all -- --check`, `cargo check -p myrlet-app --all-targets`, `cargo check -p myrlet-app --target wasm32-unknown-unknown`, and `cargo test -p myrlet-app --locked`.
-2. Inspect the running target (macOS and/or Web) in Porcelain and Graphite at desktop and narrow widths, checking keyboard focus, truncation, and reduced motion.
-3. Report headless tests and visual checks honestly as separate evidence.
+1. Run the frontend typecheck, lint, production build, and unit/E2E checks.
+2. Inspect the running Web UI served same-origin by `hub` in Porcelain and Graphite at desktop and mobile widths, checking keyboard focus, truncation, and reduced motion.
+3. Report automated tests and visual checks honestly as separate evidence.

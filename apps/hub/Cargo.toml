@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "myrlet-hub"
+name = "hub"
 path = "src/main.rs"
 
 [dependencies]

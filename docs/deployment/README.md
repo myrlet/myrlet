@@ -1,6 +1,8 @@
 # Deployment
 
-Covers native binaries, TLS, containers, backup/restore, and rollback for Myrlet V1. For local source development, see [Developer quickstart](../development/getting-started.md).
+Covers native binaries, containers, TLS, backup/restore, and rollback for Myrlet V1. For local source development, see [Developer quickstart](../development/getting-started.md).
+
+V1 ships three binaries — `hub`, `worker`, and `myrlet` — or the equivalent pre-built container images (`ghcr.io/myrlet/{hub,worker,myrlet}`).
 
 ## Canonical Local State (`MYRLET_HOME`)
 
@@ -24,6 +26,7 @@ Pre-release development state has no in-place migration contract: back up and st
 ## Build from Source
 
 ```bash
+# Produces binaries `hub`, `worker`, and `myrlet` under target/release/
 cargo build --release -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli
 ```
 
@@ -35,7 +38,7 @@ cargo build --release -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli
 export MYRLET_HOME=/var/lib/myrlet
 export MYRLET_HUB_BIND=127.0.0.1:4140
 export MYRLET_ADMIN_TOKEN='<long-random-secret>'
-myrlet-hub
+hub
 ```
 
 Optional overrides live in `$MYRLET_HOME/hub/config.toml` (defaults: 2 MiB max body, 1 MiB bundle import, 30s request timeout, 128 concurrent requests, `MYRLET_HUB_SHUTDOWN_TIMEOUT_MS=30000`). Put a TLS reverse proxy in front of Hub for any non-loopback network.
@@ -45,15 +48,15 @@ Optional overrides live in `$MYRLET_HOME/hub/config.toml` (defaults: 2 MiB max b
 ```bash
 export MYRLET_HUB_URL='https://hub.example.invalid'
 code="$(myrlet --json workers enroll | jq -er '.enrollmentCode')"
-myrlet-worker pair --hub-url "$MYRLET_HUB_URL" --code "$code"
+worker pair --hub-url "$MYRLET_HUB_URL" --code "$code"
 ```
 
 Configure `/var/lib/myrlet/worker/worker.yaml` (YAML only), validate with `check-config`, and run:
 
 ```bash
 export MYRLET_HOME=/var/lib/myrlet
-myrlet-worker check-config
-myrlet-worker
+worker check-config
+worker
 ```
 
 ### Worker TLS (`wss://`)
@@ -63,6 +66,38 @@ myrlet-worker
 ### Harness Environment Boundary
 
 Myrlet does not bundle Harnesses, manage Provider Credentials, or sandbox execution. Install Harnesses and configure OS users, container mounts, and network controls externally.
+
+## Containers
+
+The repo-root [`Dockerfile`](../../Dockerfile) is a multi-stage build with one target per binary — `hub`, `worker`, and `myrlet` — matching the published GHCR images 1:1:
+
+| Target | Image | Entrypoint |
+| --- | --- | --- |
+| `hub` | `ghcr.io/myrlet/hub` | `hub` (bundles `myrlet` for in-container administration) |
+| `worker` | `ghcr.io/myrlet/worker` | `worker` (bundles `myrlet` for Harnesses inside the container) |
+| `myrlet` | `ghcr.io/myrlet/myrlet` | `myrlet` (CLI only) |
+
+```bash
+docker build --target hub    -t myrlet/hub:0.1.0 .
+docker build --target worker -t myrlet/worker:0.1.0 .
+docker build --target myrlet -t myrlet/myrlet:0.1.0 .
+
+# Or pull the published images
+docker pull ghcr.io/myrlet/hub:latest
+```
+
+Images are lean and headless: release binaries plus `ca-certificates` on `debian:bookworm-slim`, with no Python, toolchain, dev tools, or demo fixtures. Each runs as unprivileged UID/GID `10001` with a private `0700` data root at `MYRLET_HOME=/var/lib/myrlet`. `--target hub` is the last stage, so a plain `docker build .` yields the Hub image.
+
+```bash
+docker run --rm \
+  -e MYRLET_ADMIN_TOKEN="$MYRLET_ADMIN_TOKEN" \
+  -e MYRLET_HUB_BIND=0.0.0.0:4140 \
+  -v /var/lib/myrlet:/var/lib/myrlet \
+  -p 4140:4140 \
+  ghcr.io/myrlet/hub:latest
+```
+
+Published by [`.github/workflows/docker.yml`](../../.github/workflows/docker.yml) on `main` (tag `edge` + `sha-*`), on `v*` tags (`latest` + semver), and on `workflow_dispatch`. Pull requests build with `push: false` to verify the Dockerfile. Bind-mount data dirs with the `10001` owner so state stays readable/writable, and keep Hub/Workers on the same release per the rollback rules below.
 
 ## Backup and Rollback
 

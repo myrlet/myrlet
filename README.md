@@ -29,6 +29,7 @@
   <a href="#quick-start">Quick Start</a> ·
   <a href="#why-myrlet">Why Myrlet</a> ·
   <a href="#how-it-works">How It Works</a> ·
+  <a href="#4-or-run-from-containers">Docker</a> ·
   <a href="docs/architecture/README.md">Architecture</a> ·
   <a href="skills/myrlet/SKILL.md">Agent Skill</a>
 </p>
@@ -60,7 +61,7 @@ Myrlet gives your fleet one durable, boring, self-hosted **Task Broker**:
       HTTP API + SSE (/v1/events)
                  ▼
   ┌──────────────────────────────┐
-  │         myrlet-hub           │   One Rust binary · One SQLite DB
+  │             hub              │   One Rust binary · One SQLite DB
   │  Tasks · Deliveries · Queue  │   Constant-time SHA-256 Auth
   └──────────────┬───────────────┘
                  │
@@ -68,7 +69,7 @@ Myrlet gives your fleet one durable, boring, self-hosted **Task Broker**:
       + Hub HTTP │ (optional Progress, Finish)
                  ▼
   ┌──────────────────────────────┐
-  │        myrlet-worker         │   No inbound ports · Verified TLS
+  │            worker            │   No inbound ports · Verified TLS
   │  Local Registry · Progress   │   2-method Adapter (submit/cancel)
   └──────────────┬───────────────┘
                  │
@@ -85,17 +86,18 @@ Myrlet gives your fleet one durable, boring, self-hosted **Task Broker**:
 
 ## Quick Start
 
-> **Pre-release (`0.1.0`)**: Build from source with stable Rust (`cargo`). Set `MYRLET_HOME` to an absolute path **outside** any Git checkout.
+> **Pre-release (`0.1.0`)**: Build from source with stable Rust (`cargo`), or run the pre-built [containers](#4-or-run-from-containers). Set `MYRLET_HOME` to an absolute path **outside** any Git checkout.
 
 ### 1. Build & Start the Hub
 
 ```bash
+# Builds `hub`, `worker`, and `myrlet` into target/release/
 cargo build --release -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli
 
 export MYRLET_HOME="$HOME/.local/share/myrlet"
 export MYRLET_ADMIN_TOKEN="$(openssl rand -hex 32)"
 
-./target/release/myrlet-hub
+./target/release/hub
 ```
 
 ### 2. Enroll & Start a Worker
@@ -107,7 +109,7 @@ export MYRLET_HUB_URL="http://127.0.0.1:4140"
 
 # Issue a short-lived one-time pairing code and pair in one step
 code="$(./target/release/myrlet --json workers enroll | jq -er '.enrollmentCode')"
-./target/release/myrlet-worker pair --hub-url "$MYRLET_HUB_URL" --code "$code"
+./target/release/worker pair --hub-url "$MYRLET_HUB_URL" --code "$code"
 ```
 
 Create `$MYRLET_HOME/worker/worker.yaml` (supports `claude`, `codex`, `pi`, and `process` executors):
@@ -132,8 +134,8 @@ slots:
 Validate and start the Worker:
 
 ```bash
-./target/release/myrlet-worker check-config
-./target/release/myrlet-worker
+./target/release/worker check-config
+./target/release/worker
 ```
 
 ### 3. Create, Dispatch & Watch a Task
@@ -159,6 +161,21 @@ task_id="$(./target/release/myrlet --json tasks create \
 
 Want an AI coding agent to drive Myrlet directly? Drop [skills/myrlet/SKILL.md](skills/myrlet/SKILL.md) into your agent's skill directory.
 
+### 4. Or Run from Containers
+
+The multi-stage [`Dockerfile`](Dockerfile) exposes one target per binary (`hub`, `worker`, `myrlet`), and [`docker.yml`](.github/workflows/docker.yml) publishes matching images to GHCR:
+
+```bash
+docker pull ghcr.io/myrlet/hub:latest
+docker pull ghcr.io/myrlet/worker:latest
+docker pull ghcr.io/myrlet/myrlet:latest
+
+docker run --rm -e MYRLET_ADMIN_TOKEN="$MYRLET_ADMIN_TOKEN" \
+  -v /var/lib/myrlet:/var/lib/myrlet -p 4140:4140 ghcr.io/myrlet/hub:latest
+```
+
+Images are lean and headless (release binaries + `ca-certificates` on `debian:bookworm-slim`, running as unprivileged UID `10001`) — no Python, no toolchain, no demo fixtures. See the [Deployment guide](docs/deployment/README.md).
+
 ---
 
 ## What Myrlet Is — and Is Not
@@ -176,23 +193,36 @@ Myrlet stays lean on purpose. Every boundary in V1 is explicit:
 
 ## Workspace & Surfaces
 
-Four binaries built on four small, single-responsibility Rust crates:
+V1 (`0.1.0`) ships **three pure-Rust binaries** over four small, single-responsibility crates:
+
+| Binary | Package / Path | Role |
+| --- | --- | --- |
+| **`hub`** | `myrlet-hub` · [apps/hub](apps/hub) | Single-SQLite Hub daemon (HTTP API, SSE `/v1/events`, Worker WSS server, FIFO queue). Image: `ghcr.io/myrlet/hub` |
+| **`worker`** | `myrlet-worker-daemon` · [apps/worker](apps/worker) | Outbound WSS Worker daemon, pairing, verified TLS, Progress/Finish HTTP reporter. Image: `ghcr.io/myrlet/worker` |
+| **`myrlet`** | `myrlet-cli` · [apps/cli](apps/cli) | Headless CLI (`--json` & human output) for humans, scripts, and Harnesses. Image: `ghcr.io/myrlet/myrlet` |
+
+Shared foundations:
 
 | Component | Path | Role |
 | --- | --- | --- |
-| **`myrlet-hub`** | [apps/hub](apps/hub) | Single-SQLite Hub daemon (HTTP API, SSE `/v1/events`, Worker WSS server, FIFO queue) |
-| **`myrlet-worker`** | [apps/worker](apps/worker) | Outbound WSS Worker daemon, pairing, verified TLS, Progress/Finish HTTP reporter |
-| **`myrlet`** | [apps/cli](apps/cli) | Headless CLI (`--json` & human output) for humans, scripts, and Harnesses |
-| **`myrlet-app`** | [apps/app](apps/app) | Graphical desktop (macOS) & same-origin Web workspace *(in progress for V1)* |
 | **Shared Crates** | `crates/{protocol,store,worker,client}` | Canonical wire DTOs, 8-table SQLite store, local Delivery registry & adapters, native/WASM HTTP+SSE SDK |
 | **Agent Skill** | [skills/myrlet/SKILL.md](skills/myrlet/SKILL.md) | Ready-to-use CLI operating instructions for external Owner Agents |
+
+### Roadmap: Graphical Client
+
+The graphical Client is planned for the **next iteration**, layered strictly on top of the Hub API:
+
+- **Web UI first** — a lightweight React/TypeScript/Vite app (`apps/web`) served **same-origin by `hub`**: zero CORS, a strict Content-Security-Policy, and an in-memory token only (never persisted to storage).
+- **Desktop shell later** — an optional Tauri 2 wrapper can host the same UI as a native window without forking the web surface.
+
+No graphical Client is bundled or required by V1: `hub`, `worker`, and `myrlet` stay headless and independently deployable.
 
 ---
 
 ## Documentation
 
 - **[Developer Quickstart](docs/development/getting-started.md)** — local setup, verification commands, and end-to-end walkthrough
-- **[Deployment Guide](docs/deployment/README.md)** — native binaries, TLS (`MYRLET_HUB_CA_FILE`), backup, and restore
+- **[Deployment Guide](docs/deployment/README.md)** — native binaries, containers, GHCR images, TLS (`MYRLET_HUB_CA_FILE`), backup, and restore
 - **[Architecture Contract](docs/architecture/README.md)** — normative V1 specs for [Task Model](docs/architecture/task-model.md), [Hub API](docs/architecture/hub-api.md), [Worker Protocol](docs/architecture/worker-protocol.md), [Security](docs/architecture/security.md), and [Local Runtime](docs/architecture/local-runtime.md)
 - **[Documentation Index](docs/README.md)** · **[Brand Assets](assets/brand/README.md)**
 

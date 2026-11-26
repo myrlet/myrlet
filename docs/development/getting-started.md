@@ -25,7 +25,7 @@ Use an absolute `MYRLET_HOME` outside the Git checkout (startup rejects roots in
 export MYRLET_HOME="$HOME/.local/share/myrlet"
 export MYRLET_ADMIN_TOKEN='replace-with-local-admin-token'
 
-cargo run -p myrlet-hub
+cargo run -p myrlet-hub            # runs the `hub` binary
 ```
 
 Check liveness:
@@ -41,6 +41,7 @@ In a second terminal (export the same `MYRLET_HOME` and `MYRLET_ADMIN_TOKEN`):
 ```bash
 export MYRLET_HUB_URL='http://127.0.0.1:4140'
 
+# `-p myrlet-cli` runs the `myrlet` binary; `-p myrlet-worker-daemon` runs `worker`.
 code="$(cargo run --quiet -p myrlet-cli -- --json workers enroll | jq -er '.enrollmentCode')"
 cargo run -p myrlet-worker-daemon -- pair --hub-url "$MYRLET_HUB_URL" --code "$code"
 ```
@@ -77,3 +78,4 @@ cargo run -p myrlet-cli -- events watch
 
 - [Architecture](../architecture/README.md) · [Owner Agent integration](agent-integration.md)
 - [E2E testing](e2e.md) · [CI](ci.md)
+- [Deployment](../deployment/README.md) — pre-built container images (`ghcr.io/myrlet/{hub,worker,myrlet}`) and the multi-stage `Dockerfile` targets.

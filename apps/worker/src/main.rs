@@ -9,7 +9,7 @@ use myrlet_worker_daemon::credentials::{self, WorkerCredentials};
 use myrlet_worker_daemon::{tls, wait_for_shutdown_signal, WorkerConfig, WorkerRuntime};
 use tokio::sync::watch;
 
-const USAGE: &str = "usage: myrlet-worker [run|check-config|pair|credential-import] [options]";
+const USAGE: &str = "usage: worker [run|check-config|pair|credential-import] [options]";
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("myrlet-worker: {message}");
+            eprintln!("worker: {message}");
             ExitCode::FAILURE
         }
     }
@@ -71,7 +71,7 @@ fn check_config() -> Result<(), String> {
     let config = owned(WorkerConfig::load(&home.worker_config()))?;
     let hub = &config.hub_url;
     println!(
-        "myrlet-worker: config OK ({} slots, hub {hub})",
+        "worker: config OK ({} slots, hub {hub})",
         config.slots.len()
     );
     Ok(())
@@ -92,7 +92,7 @@ fn pair(options: &[String]) -> Result<(), String> {
         worker_id,
         &home.worker_credentials(),
     ));
-    println!("myrlet-worker: paired as {}", owned(issued)?.worker_id);
+    println!("worker: paired as {}", owned(issued)?.worker_id);
     Ok(())
 }
 
@@ -110,10 +110,7 @@ fn import_credential(options: &[String]) -> Result<(), String> {
         &home.worker_credentials(),
         &credentials,
     ))?;
-    println!(
-        "myrlet-worker: imported credential for {}",
-        credentials.worker_id
-    );
+    println!("worker: imported credential for {}", credentials.worker_id);
     Ok(())
 }
 

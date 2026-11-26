@@ -1,0 +1,21 @@
+# Keep the build context to what
+# `cargo build --release --locked -p myrlet-hub -p myrlet-worker-daemon -p myrlet-cli`
+# needs: `Cargo.toml`, `Cargo.lock`, `crates/`, and `apps/`.
+
+# Build output and toolchain state
+target/
+**/target/
+
+# VCS metadata and CI configuration
+.git/
+.github/
+
+# Docs and brand assets are never compiled into the binaries
+docs/
+assets/
+*.md
+**/*.md
+
+# OS clutter
+.DS_Store
+**/.DS_Store
