@@ -12,7 +12,7 @@ use myrlet_protocol::{
     TaskBundleImportRequest, TaskCancelPayload, TaskDefinition, TaskId, TaskStatus,
     TaskTreeDirection, WorkerWireKind,
 };
-use myrlet_store::StoreError;
+use myrlet_store::{DispatchIdempotency, StoreError};
 
 use crate::auth;
 use crate::error::ApiError;
@@ -117,6 +117,14 @@ pub async fn dispatch_task(
         let request: DispatchTaskRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
         let task_id = TaskId::new(task_id);
+        if let Some((status, response)) = state
+            .store
+            .lookup_dispatch_replay(key.clone(), task_id.clone(), request.clone())
+            .await?
+        {
+            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+            return Ok((code, Json(response)).into_response());
+        }
         let record = state.store.get_task(task_id.clone()).await?;
         if record.version != request.expected_task_version {
             return Err(ApiError::from(StoreError::VersionConflict));
@@ -135,13 +143,19 @@ pub async fn dispatch_task(
             None
         };
         if let Some(target) = target {
+            let idempotency = Some(DispatchIdempotency {
+                key,
+                request: request.clone(),
+            });
             let created =
                 state
                     .store
-                    .create_delivery(Some(key), task_id, record.version, target, now_ms());
-            let (response, event, _) = created.await?;
+                    .create_delivery(idempotency, task_id, record.version, target, now_ms());
+            let (response, event, replay) = created.await?;
             state.publish_event(event);
-            send_offer_or_release(&state, response.delivery.clone(), &record.task, false).await;
+            if !replay {
+                send_offer_or_release(&state, response.delivery.clone(), &record.task, false).await;
+            }
             return Ok(Json(response).into_response());
         }
         if request.queue {

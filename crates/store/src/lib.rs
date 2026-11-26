@@ -27,7 +27,7 @@ pub mod schema;
 pub mod tasks;
 pub mod workers;
 
-pub use dispatch::DeliveryTarget;
+pub use dispatch::{DeliveryTarget, DispatchIdempotency};
 pub use error::StoreError;
 pub use myrlet_protocol::WORKER_PROTOCOL_VERSION;
 

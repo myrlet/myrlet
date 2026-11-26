@@ -7,7 +7,7 @@ use myrlet_protocol::{
     FinishTaskRequest, PairWorkerRequest, ProgressReportRequest, TaskBundleImportRequest,
     TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection, WorkerId, WorkerInventory,
 };
-use myrlet_store::{DeliveryTarget, HubStore, StoreError};
+use myrlet_store::{DeliveryTarget, DispatchIdempotency, HubStore, StoreError};
 
 const T0: i64 = 1_764_070_000_000;
 const WORKER: &str = "wkr_000000000000";
@@ -116,7 +116,10 @@ async fn dispatched(
         .unwrap();
     let (response, _, _) = store
         .create_delivery(
-            Some(format!("{key}-dispatch")),
+            Some(DispatchIdempotency {
+                key: format!("{key}-dispatch"),
+                request: dispatch_request(queued.version),
+            }),
             queued.task_id.clone(),
             queued.version,
             target(epoch),
@@ -154,7 +157,10 @@ async fn five_state_lifecycle_with_version_fencing() {
         .unwrap()
         .0;
     assert_eq!(queued.status, TaskStatus::Queued);
-    let request = Some("d".to_string());
+    let request = Some(DispatchIdempotency {
+        key: "d".to_string(),
+        request: dispatch_request(queued.version),
+    });
     let offered = store
         .create_delivery(request, root.id.clone(), queued.version, target(epoch), T0)
         .await
@@ -366,6 +372,73 @@ async fn idempotency_replay_and_conflicting_reuse() {
         store.list_events_after(0, 100, 10_000).await.unwrap().len(),
         1
     );
+}
+
+#[tokio::test]
+async fn dispatch_replay_survives_version_bump_and_rejects_cross_payload() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let record = create(&store, "replay", definition("replay")).await;
+    let request = dispatch_request(record.version);
+    let idempotency = || DispatchIdempotency {
+        key: "replay-key".to_string(),
+        request: request.clone(),
+    };
+    let (response, _, replay) = store
+        .create_delivery(
+            Some(idempotency()),
+            record.id.clone(),
+            record.version,
+            target(epoch),
+            T0,
+        )
+        .await
+        .unwrap();
+    assert!(!replay);
+    let delivery = response.delivery.unwrap();
+    let bumped = store.get_task(record.id.clone()).await.unwrap();
+    assert_eq!((bumped.status, bumped.version), (TaskStatus::Dispatched, 2));
+
+    let (status, hit) = store
+        .lookup_dispatch_replay("replay-key".into(), record.id.clone(), request.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(hit.delivery.unwrap().id, delivery.id);
+
+    let (replayed, _, replay) = store
+        .create_delivery(
+            Some(idempotency()),
+            record.id.clone(),
+            record.version,
+            target(epoch),
+            T0,
+        )
+        .await
+        .unwrap();
+    assert!(replay);
+    assert_eq!(replayed.delivery.unwrap().id, delivery.id);
+
+    let mut other = request.clone();
+    other.queue = true;
+    let conflict = store
+        .lookup_dispatch_replay("replay-key".into(), record.id.clone(), other.clone())
+        .await;
+    assert!(matches!(conflict, Err(StoreError::IdempotencyConflict)));
+    let cross = store
+        .create_delivery(
+            Some(DispatchIdempotency {
+                key: "replay-key".to_string(),
+                request: other,
+            }),
+            record.id,
+            bumped.version,
+            target(epoch),
+            T0,
+        )
+        .await;
+    assert!(matches!(cross, Err(StoreError::IdempotencyConflict)));
 }
 
 #[tokio::test]

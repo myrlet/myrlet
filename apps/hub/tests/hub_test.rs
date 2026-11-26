@@ -87,6 +87,82 @@ async fn match_dispatch_progress_and_finish_drive_the_task_to_finished() {
 }
 
 #[tokio::test]
+async fn dispatch_idempotency_replays_after_version_bump_and_rejects_cross_payload() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
+
+    let definition = json!({ "title": "Idempotent", "prompt": "replay me" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("idem-create"), Some(&definition))
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let task_id = created.1["id"].as_str().unwrap().to_string();
+    let path = format!("/v1/tasks/{task_id}/dispatch");
+    let dispatch = json!({
+        "expectedTaskVersion": created.1["version"],
+        "selection": { "mode": "match" },
+    })
+    .to_string();
+
+    let first = hub
+        .post_admin(&path, Some("k-disp-1"), Some(&dispatch))
+        .await;
+    assert_eq!(first.0, 200, "{}", first.1);
+    assert_eq!(first.1["status"], "dispatched");
+    let delivery_id = first.1["delivery"]["id"].as_str().unwrap().to_string();
+
+    let replay = hub
+        .post_admin(&path, Some("k-disp-1"), Some(&dispatch))
+        .await;
+    assert_eq!(replay.0, 200, "{}", replay.1);
+    assert_eq!(replay.1["delivery"]["id"], delivery_id);
+    assert_eq!(replay.1["version"], first.1["version"]);
+
+    let changed = json!({
+        "expectedTaskVersion": created.1["version"],
+        "selection": { "mode": "match" },
+        "queue": true,
+    })
+    .to_string();
+    let conflict = hub
+        .post_admin(&path, Some("k-disp-1"), Some(&changed))
+        .await;
+    assert_eq!(conflict.0, 409, "{}", conflict.1);
+    assert_eq!(conflict.1["error"], "IdempotencyConflict");
+
+    let queued_task = json!({ "title": "Queued", "prompt": "wait" }).to_string();
+    let queued = hub
+        .post_admin("/v1/tasks", Some("idem-create-queue"), Some(&queued_task))
+        .await;
+    assert_eq!(queued.0, 201, "{}", queued.1);
+    let queued_id = queued.1["id"].as_str().unwrap().to_string();
+    let queued_path = format!("/v1/tasks/{queued_id}/dispatch");
+    let queue_dispatch = json!({
+        "expectedTaskVersion": queued.1["version"],
+        "selection": {
+            "mode": "targeted",
+            "workerId": "wkr_ZZZZZZZZZZZZ",
+            "slotId": "slot-a",
+        },
+        "queue": true,
+    })
+    .to_string();
+    let accepted = hub
+        .post_admin(&queued_path, Some("k-disp-queue"), Some(&queue_dispatch))
+        .await;
+    assert_eq!(accepted.0, 202, "{}", accepted.1);
+    assert_eq!(accepted.1["status"], "queued");
+    assert_eq!(accepted.1["delivery"], serde_json::Value::Null);
+    let queued_replay = hub
+        .post_admin(&queued_path, Some("k-disp-queue"), Some(&queue_dispatch))
+        .await;
+    assert_eq!(queued_replay.0, 202, "{}", queued_replay.1);
+    assert_eq!(queued_replay.1["version"], accepted.1["version"]);
+    assert_eq!(queued_replay.1["delivery"], serde_json::Value::Null);
+}
+
+#[tokio::test]
 async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
     let hub = start(10_000).await;
     let (worker_id, credential) = hub.pair().await;

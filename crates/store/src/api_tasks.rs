@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 
 use myrlet_protocol::{
-    CancelTaskRequest, DeliveryId, DispatchTaskRequest, FinishTaskRequest, GlobalSnapshot,
-    HubEventEnvelope, TaskBundleImportRequest, TaskDefinition, TaskId, TaskRecord,
+    CancelTaskRequest, DeliveryId, DispatchTaskRequest, DispatchTaskResponse, FinishTaskRequest,
+    GlobalSnapshot, HubEventEnvelope, TaskBundleImportRequest, TaskDefinition, TaskId, TaskRecord,
     TaskTreeDirection, TaskTreeResponse, WorkerId,
 };
 
 use crate::{
     bundle, commands, dispatch, events, reads, tasks, BundleOutcome, CancellationOutcome,
-    DeliveryTarget, DispatchOutcome, HubStore, StoreError, TaskMutation,
+    DeliveryTarget, DispatchIdempotency, DispatchOutcome, HubStore, StoreError, TaskMutation,
 };
 
 impl HubStore {
@@ -143,9 +143,22 @@ impl HubStore {
             .await
     }
 
+    pub async fn lookup_dispatch_replay(
+        &self,
+        idempotency_key: String,
+        task_id: TaskId,
+        request: DispatchTaskRequest,
+    ) -> Result<Option<(u16, DispatchTaskResponse)>, StoreError> {
+        self.db
+            .call(move |conn| {
+                dispatch::lookup_dispatch_replay(conn, &idempotency_key, &task_id, &request)
+            })
+            .await
+    }
+
     pub async fn create_delivery(
         &self,
-        idempotency_key: Option<String>,
+        idempotency: Option<DispatchIdempotency>,
         task_id: TaskId,
         expected_version: u64,
         target: DeliveryTarget,
@@ -155,7 +168,7 @@ impl HubStore {
             .call(move |conn| {
                 dispatch::create_delivery(
                     conn,
-                    idempotency_key.as_deref(),
+                    idempotency.as_ref(),
                     &task_id,
                     expected_version,
                     &target,

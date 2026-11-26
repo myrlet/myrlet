@@ -18,7 +18,6 @@ use crate::tasks::{
 use crate::workers::load_worker;
 use crate::DispatchOutcome;
 
-const OP_ENQUEUE: &str = "tasks.enqueue";
 const OP_DISPATCH: &str = "tasks.dispatch";
 pub const EVENT_DELIVERY_RELEASED: &str = "delivery.released";
 
@@ -31,6 +30,40 @@ pub struct DeliveryTarget {
     pub connection_epoch: u64,
 }
 
+/// One `Idempotency-Key` paired with the dispatch request it was issued for.
+#[derive(Debug, Clone)]
+pub struct DispatchIdempotency {
+    pub key: String,
+    pub request: DispatchTaskRequest,
+}
+
+fn dispatch_digest(task_id: &TaskId, request: &DispatchTaskRequest) -> Result<String, StoreError> {
+    digest_request(&serde_json::json!({
+        "taskId": task_id.as_str(),
+        "request": request,
+    }))
+}
+
+/// Replay the committed response of a dispatch request, or report a cross-payload reuse.
+pub fn lookup_dispatch_replay(
+    conn: &mut Connection,
+    idempotency_key: &str,
+    task_id: &TaskId,
+    request: &DispatchTaskRequest,
+) -> Result<Option<(u16, DispatchTaskResponse)>, StoreError> {
+    let digest = dispatch_digest(task_id, request)?;
+    let tx = conn.transaction()?;
+    let hit = check_idempotency(&tx, OP_DISPATCH, idempotency_key, &digest)?;
+    tx.commit()?;
+    match hit {
+        Some(hit) => {
+            let response: DispatchTaskResponse = serde_json::from_str(&hit.response_json)?;
+            Ok(Some((hit.status_code, response)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Authorize a `held` Task into the FIFO queue without reserving any capacity.
 pub fn enqueue_task(
     conn: &mut Connection,
@@ -39,12 +72,9 @@ pub fn enqueue_task(
     request: &DispatchTaskRequest,
     now_ms: i64,
 ) -> Result<DispatchOutcome, StoreError> {
-    let digest = digest_request(&serde_json::json!({
-        "taskId": task_id.as_str(),
-        "request": request,
-    }))?;
+    let digest = dispatch_digest(task_id, request)?;
     let tx = conn.transaction()?;
-    if let Some(hit) = check_idempotency(&tx, OP_ENQUEUE, idempotency_key, &digest)? {
+    if let Some(hit) = check_idempotency(&tx, OP_DISPATCH, idempotency_key, &digest)? {
         let response: DispatchTaskResponse = serde_json::from_str(&hit.response_json)?;
         return Ok((response, None, true));
     }
@@ -87,7 +117,7 @@ pub fn enqueue_task(
     };
     record_idempotency(
         &tx,
-        OP_ENQUEUE,
+        OP_DISPATCH,
         idempotency_key,
         &digest,
         202,
@@ -101,27 +131,19 @@ pub fn enqueue_task(
 /// Commit one `offered` Delivery and move the Task to `dispatched`.
 pub fn create_delivery(
     conn: &mut Connection,
-    idempotency_key: Option<&str>,
+    idempotency: Option<&DispatchIdempotency>,
     task_id: &TaskId,
     expected_version: u64,
     target: &DeliveryTarget,
     now_ms: i64,
 ) -> Result<DispatchOutcome, StoreError> {
-    let mut digest = None;
-    if idempotency_key.is_some() {
-        let intent = serde_json::json!({
-            "taskId": task_id.as_str(),
-            "expectedTaskVersion": expected_version,
-            "workerId": target.worker_id.as_str(),
-            "slotId": target.slot_id.as_str(),
-            "executorId": target.executor_id.as_ref().map(ExecutorId::as_str),
-            "connectionEpoch": target.connection_epoch,
-        });
-        digest = Some(digest_request(&intent)?);
-    }
+    let digest = match idempotency {
+        Some(idem) => Some(dispatch_digest(task_id, &idem.request)?),
+        None => None,
+    };
     let tx = conn.transaction()?;
-    let replay = match (idempotency_key, digest.as_ref()) {
-        (Some(key), Some(digest)) => check_idempotency(&tx, OP_DISPATCH, key, digest)?,
+    let replay = match (idempotency, digest.as_ref()) {
+        (Some(idem), Some(digest)) => check_idempotency(&tx, OP_DISPATCH, &idem.key, digest)?,
         _ => None,
     };
     if let Some(hit) = replay {
@@ -181,11 +203,11 @@ pub fn create_delivery(
         version,
         delivery: Some(delivery),
     };
-    if let (Some(key), Some(digest)) = (idempotency_key, digest.as_ref()) {
+    if let (Some(idem), Some(digest)) = (idempotency, digest.as_ref()) {
         record_idempotency(
             &tx,
             OP_DISPATCH,
-            key,
+            &idem.key,
             digest,
             200,
             &serde_json::to_string(&response)?,
