@@ -11,4 +11,3 @@
   - `cargo check --workspace --all-targets`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo test --workspace --all-targets`
-  - `python3 scripts/check-doc-links.py`

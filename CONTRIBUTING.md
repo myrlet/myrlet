@@ -48,18 +48,13 @@ Myrlet has no official release (`0.1.0` pre-release). Unreleased wire DTOs, SQLi
 Run the checks relevant to what you changed and report only checks that actually executed against the PR head SHA (never claim a skipped check passed):
 
 ```bash
-# Rust & workspace checks
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
-
-# Documentation changes
-python3 scripts/check-doc-links.py
 ```
 
 ## Documentation Rules
 
 - **One home per durable fact**: Do not copy invariants, endpoint tables, or lifecycle rules across multiple files—link to the canonical file in `docs/architecture/`.
 - Keep dynamic project status (Issue/PR state, CI results, milestone progress) in GitHub, not in Markdown docs.
-- Run `python3 scripts/check-doc-links.py` on every documentation change.

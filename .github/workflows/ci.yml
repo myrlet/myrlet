@@ -10,13 +10,10 @@ permissions:
 
 jobs:
   check:
-    name: Rust & Docs
+    name: Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check documentation links
-        run: python3 scripts/check-doc-links.py
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

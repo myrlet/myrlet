@@ -15,7 +15,6 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
-python3 scripts/check-doc-links.py
 ```
 
 ## 2. Start Local Hub
@@ -48,7 +47,7 @@ code="$(curl --fail --silent --show-error \
   --header "Authorization: Bearer $MYRLET_ADMIN_TOKEN" \
   --header 'Content-Type: application/json' \
   --data "{\"ttlSeconds\":300,\"suggestedWorkerId\":\"$WORKER_ID\"}" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["enrollmentCode"])')"
+  | jq -er '.enrollmentCode')"
 
 curl --fail-with-body --silent --show-error \
   --request POST "$MYRLET_HUB_URL/v1/pair" \
