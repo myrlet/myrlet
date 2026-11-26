@@ -32,7 +32,7 @@ undocumented_unsafe_blocks = "deny"
 myrlet-protocol = { path = "crates/protocol" }
 myrlet-store = { path = "crates/store" }
 myrlet-worker = { path = "crates/worker" }
-myrlet-client = { path = "crates/client", default-features = false }
+myrlet-client = { path = "crates/client" }
 
 # Core utilities
 serde = { version = "1.0", features = ["derive"] }

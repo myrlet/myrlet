@@ -6,7 +6,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+jiff.workspace = true
 myrlet-protocol.workspace = true
+rand.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
