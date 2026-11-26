@@ -9,7 +9,7 @@ Myrlet tests drive real HTTP/WSS/CLI interfaces over disposable temporary `MYRLE
 | **Protocol & Store** | DTO round-trips, SQLite schema invariants, idempotency, version/epoch fencing, event backfill |
 | **Hub API & WSS** | Auth, pairing, Task CRUD/Tree/Bundle, dispatch/FIFO queue, cancel, SSE resume, HTTP Progress/Finish |
 | **Worker & Adapters** | Local Delivery registry idempotency, Progress file watch, Process/Harness adapter launch & cancel |
-| **Integration E2E** | Real `myrlet-hub` + `myrlet-worker` + `myrlet` CLI end-to-end over WSS/HTTP, including reconnect & restart |
+| **Integration E2E** | Real `hub` + `worker` + `myrlet` CLI end-to-end over WSS/HTTP, including reconnect & restart |
 
 ## Evidence Boundaries
 
