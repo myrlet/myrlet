@@ -9,13 +9,8 @@
 <h1 align="center">Myrlet</h1>
 
 <p align="center">
-  <strong>The task broker for whatever comes next.</strong>
-</p>
-
-<p align="center">
-  A lightweight, self-hosted Rust task broker connecting humans, owner agents, and coding harnesses<br>
-  (<strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Pi</strong>, and plain processes) across all of your machines.<br>
-  <strong>Your machines. Your agents. Your workflows.</strong>
+  <strong>A self-hosted task broker for coding agents working across machines.</strong><br>
+  Give your agents a way to delegate work to environments with the tools and permissions it needs.
 </p>
 
 <p align="center">
@@ -38,51 +33,25 @@
 
 ## Why Myrlet
 
-Your Mac builds iOS apps. Your Linux server runs containers. Your workstation has a GPU. Your AI coding agents keep getting better every month—but wiring them across machines still means brittle SSH loops, bloated DAG platforms, or proprietary cloud lock-in.
+Coding agents can already decide when to split a task, ask for a second opinion, or run a test on another machine. Myrlet gives them a small CLI for acting on those decisions. An owner agent can inspect available workers, create a task, choose where to send it, and check what happened. As agents get better at making those choices, they can use the same commands in new ways.
 
-Myrlet gives your fleet one durable, boring, self-hosted **Task Broker**:
+### An independent review on another machine
 
-- **Zero-intrusion Harness integration** — Launches **Claude Code**, **Codex**, **Pi**, or any CLI/process natively. No harness forks, no hook/MCP injection, no touching your `CLAUDE.md` or LLM API keys.
-- **Works behind NAT & firewalls** — Workers connect *outbound* to one Hub over verified TLS (`wss://`). Worker hosts need zero inbound open ports.
-- **Single Hub, single SQLite file** — Pure Rust control plane. No Redis, no Kafka, no Postgres cluster, no LLM calls inside the broker.
-- **Honest 5-state lifecycle** — `held` → `queued` / `dispatched` → `finished` | `cancelled`. Creation never auto-dispatches, and Hub never pretends to judge execution success or failure.
-- **Safe under retries & disconnects** — `Idempotency-Key`, optimistic `expectedTaskVersion`, monotonic WSS `connectionEpoch` fencing, and local atomic Delivery registration prevent silent double-execution.
-- **Built for both Humans & Owner Agents** — First-class `myrlet --json` CLI, resumable SSE event stream, native/WASM Rust SDK, and an agent skill ready to drop into your orchestrator.
+Suppose Codex has prepared a patch on your Mac and decides that a change to authentication deserves a second review. It can use `myrlet` to send a Linux worker a task naming the repository, base and head commits, and the question it wants Claude Code to investigate. The operator gives that worker read access to the repository and a writable directory for progress. The reviewer uses its own tools and session. Codex can read the reported findings and decide whether to revise the patch.
 
-> **Agents decide. Workers execute. Myrlet keeps the work moving.**
+The commit references matter. Each harness owns its workspace and conversation. The task supplies the context the next agent needs. A thin adapter starts or cancels the harness, which keeps its existing configuration, credentials, and skills. A harness can optionally write a small JSON progress file for the worker to relay.
 
----
+### Give each worker the access its work requires
+
+A Mac with Xcode, a Linux test runner, and a read-only review environment offer different capabilities. We recommend a separate Docker worker for each permission boundary where the toolchain supports containers. Run the harness inside that boundary. Mount only the files it needs, scope its network access, and supply only its own credentials. You can provision those credentials with an external secrets manager such as Infisical.
+
+Slots advertise where work can run. The OS or container enforces access. Keep the Hub admin token with trusted owners because it authorizes dispatch across the fleet. An enrolled worker uses its own credential to connect and report on its deliveries. [Security model](docs/architecture/security.md)
 
 ## How It Works
 
-```text
-  Humans · Owner Agents · CI · Apps
-                 │
-      HTTP API + SSE (/v1/events)
-                 ▼
-  ┌──────────────────────────────┐
-  │             hub              │   One Rust binary · One SQLite DB
-  │  Tasks · Deliveries · Queue  │   Constant-time SHA-256 Auth
-  └──────────────┬───────────────┘
-                 │
-    Outbound WSS │ (offers, cancel, resync)
-      + Hub HTTP │ (optional Progress, Finish)
-                 ▼
-  ┌──────────────────────────────┐
-  │            worker            │   No inbound ports · Verified TLS
-  │  Local Registry · Progress   │   2-method Adapter (submit/cancel)
-  └──────────────┬───────────────┘
-                 │
-                 ▼
-    Claude Code · Codex · Pi · Any Process
-    (reads/acts on Myrlet via `myrlet` CLI)
-```
-
-1. **Create as `held`**: Every Task starts durable in `held` (including atomic Task Tree bundles up to 100 Tasks and 5 levels deep).
-2. **Dispatch explicitly**: Target a specific `(workerId, slotId)` or let deterministic **Simple Match** pick an eligible online Slot by required capabilities, preferred role/executor, and load—or enqueue FIFO until a Worker is ready.
-3. **Run natively, report minimally**: The Worker durably registers the `deliveryId` before starting the Harness (so replays never double-submit), optionally relays one bounded local Progress JSON file (`firstReceivedAtMs` = execution-start evidence), and reports `finished` over Hub HTTP when handling ends.
-
----
+1. **Create a task.** A human or owner agent creates a task in `held`. One Hub keeps the task tree, dependencies, and worker inventory in SQLite.
+2. **Choose an environment.** Dispatch to a specific worker and slot, or ask the Hub to match the task to an eligible slot. Workers connect outbound to the Hub over WSS with TLS verification for remote deployments.
+3. **Observe the handoff.** Before starting a harness, the worker records the delivery ID so a replay cannot start it twice. It sends optional progress and reports when handling ends. A disconnected worker may still be executing. A `finished` task tells its owner when to inspect the work and decide what comes next.
 
 ## Quick Start
 
@@ -102,7 +71,7 @@ export MYRLET_ADMIN_TOKEN="$(openssl rand -hex 32)"
 
 ### 2. Enroll & Start a Worker
 
-In a second terminal (with the same `MYRLET_HOME` and `MYRLET_ADMIN_TOKEN`):
+For this loopback demo, open a second terminal with the same `MYRLET_HOME` and `MYRLET_ADMIN_TOKEN`.
 
 ```bash
 export MYRLET_HUB_URL="http://127.0.0.1:4140"
@@ -131,14 +100,18 @@ slots:
         id: pi-cli
 ```
 
-Validate and start the Worker:
+Set private file permissions, then validate and start the worker with its paired credential.
 
 ```bash
+chmod 600 "$MYRLET_HOME/worker/worker.yaml"
+unset MYRLET_ADMIN_TOKEN
 ./target/release/worker check-config
 ./target/release/worker
 ```
 
 ### 3. Create, Dispatch & Watch a Task
+
+In an owner terminal, set the same Hub URL and admin token used for enrollment.
 
 ```bash
 # Create a held Task
@@ -174,56 +147,13 @@ docker run --rm -e MYRLET_ADMIN_TOKEN="$MYRLET_ADMIN_TOKEN" \
   -v /var/lib/myrlet:/var/lib/myrlet -p 4140:4140 ghcr.io/myrlet/hub:latest
 ```
 
-Images are lean and headless (release binaries + `ca-certificates` on `debian:bookworm-slim`, running as unprivileged UID `10001`) — no Python, no toolchain, no demo fixtures. See the [Deployment guide](docs/deployment/README.md).
-
----
-
-## What Myrlet Is — and Is Not
-
-Myrlet stays lean on purpose. Every boundary in V1 is explicit:
-
-| Myrlet **IS** | Myrlet **IS NOT** |
-| --- | --- |
-| A durable, single-Hub cross-host **Task Broker** | A workflow/DAG engine, planner, or autonomous agent |
-| A thin, 2-method (`submit`/`cancel`) **Harness launcher** | A Harness fork, MCP injector, or Session/Workspace manager |
-| An **honest state & Delivery tracker** (5 states, no verdict) | A result verifier, approval engine, or LLM gateway |
-| A **control-plane security boundary** (SHA-256 auth, mandatory WSS TLS, `0600` files) | An OS/container sandbox (apply OS users/containers/VMs externally) |
-
----
-
-## Workspace & Surfaces
-
-V1 (`0.1.0`) ships **three pure-Rust binaries** over four small, single-responsibility crates:
-
-| Binary | Package / Path | Role |
-| --- | --- | --- |
-| **`hub`** | `myrlet-hub` · [apps/hub](apps/hub) | Single-SQLite Hub daemon (HTTP API, SSE `/v1/events`, Worker WSS server, FIFO queue). Image: `ghcr.io/myrlet/hub` |
-| **`worker`** | `myrlet-worker-daemon` · [apps/worker](apps/worker) | Outbound WSS Worker daemon, pairing, verified TLS, Progress/Finish HTTP reporter. Image: `ghcr.io/myrlet/worker` |
-| **`myrlet`** | `myrlet-cli` · [apps/cli](apps/cli) | Headless CLI (`--json` & human output) for humans, scripts, and Harnesses. Image: `ghcr.io/myrlet/myrlet` |
-
-Shared foundations:
-
-| Component | Path | Role |
-| --- | --- | --- |
-| **Shared Crates** | `crates/{protocol,store,worker,client}` | Canonical wire DTOs, 8-table SQLite store, local Delivery registry & adapters, native/WASM HTTP+SSE SDK |
-| **Agent Skill** | [skills/myrlet/SKILL.md](skills/myrlet/SKILL.md) | Ready-to-use CLI operating instructions for external Owner Agents |
-
-### Roadmap: Graphical Client
-
-The graphical Client is planned for the **next iteration**, layered strictly on top of the Hub API:
-
-- **Web UI first** — a lightweight React/TypeScript/Vite app (`apps/web`) served **same-origin by `hub`**: zero CORS, a strict Content-Security-Policy, and an in-memory token only (never persisted to storage).
-- **Desktop shell later** — an optional Tauri 2 wrapper can host the same UI as a native window without forking the web surface.
-
-No graphical Client is bundled or required by V1: `hub`, `worker`, and `myrlet` stay headless and independently deployable.
-
----
+The Hub image includes the web UI. The worker image includes the daemon and CLI. Supply the harness and toolchain for each worker environment. The all-in-one `myrlet` image runs a Hub and a paired local worker for trying the system on one machine. [Deployment guide](docs/deployment/README.md)
 
 ## Documentation
 
-- **[Developer Quickstart](docs/development/getting-started.md)** — local setup, verification commands, and end-to-end walkthrough
-- **[Deployment Guide](docs/deployment/README.md)** — native binaries, containers, GHCR images, TLS (`MYRLET_HUB_CA_FILE`), backup, and restore
-- **[Architecture Contract](docs/architecture/README.md)** — normative V1 specs for [Task Model](docs/architecture/task-model.md), [Hub API](docs/architecture/hub-api.md), [Worker Protocol](docs/architecture/worker-protocol.md), [Security](docs/architecture/security.md), and [Local Runtime](docs/architecture/local-runtime.md)
+- **[Developer Quickstart](docs/development/getting-started.md)** · local setup, verification commands, and end-to-end walkthrough
+- **[Deployment Guide](docs/deployment/README.md)** · native binaries, containers, GHCR images, TLS (`MYRLET_HUB_CA_FILE`), backup, and restore
+- **[Architecture Contract](docs/architecture/README.md)** · normative V1 specs for [Task Model](docs/architecture/task-model.md), [Hub API](docs/architecture/hub-api.md), [Worker Protocol](docs/architecture/worker-protocol.md), [Security](docs/architecture/security.md), and [Local Runtime](docs/architecture/local-runtime.md)
 - **[Documentation Index](docs/README.md)** · **[Brand Assets](assets/brand/README.md)**
 
 ---
@@ -232,5 +162,5 @@ No graphical Client is bundled or required by V1: `hub`, `worker`, and `myrlet` 
 
 Myrlet is in active **pre-release (`0.1.0`)** development. Wire and storage formats are evolving without backward-compatibility shims until `0.1.0` ships.
 
-- Contributions, issues, and architecture proposals are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [SUPPORT.md](SUPPORT.md).
+- Contributions, issues, and architecture proposals are welcome · please read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [SUPPORT.md](SUPPORT.md).
 - Dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE), at your option.
