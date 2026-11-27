@@ -1,5 +1,6 @@
 /**
- * Action dialogs for Task creation, Bundle import, Dispatch, Cancel, and Finish.
+ * Action dialogs for Task creation (including `+ Subtask` prefill), Bundle
+ * import, Dispatch, Cancel, and Finish.
  *
  * Every dialog is a plain `role="dialog" aria-modal="true"` panel that closes on
  * backdrop click and Escape, disables its submit control while busy, and shows
@@ -228,7 +229,10 @@ function DialogShell({
 
 export interface NewTaskDialogProps {
   readonly open: boolean;
+  /** Prefill the form with an existing Task (Copy / Retry), linked via `sourceTaskId`. */
   readonly sourceTask?: TaskRecord | null;
+  /** Prefill `parentTaskId` when opened via `+ Subtask`. */
+  readonly defaultParentTaskId?: string | null;
   readonly onClose: () => void;
   readonly onSubmit: (definition: TaskDefinitionInput) => Promise<void>;
 }
@@ -243,13 +247,21 @@ interface NewTaskFormState {
   preferredExecutorId: string;
 }
 
-function newTaskForm(sourceTask: TaskRecord | null | undefined): NewTaskFormState {
+/**
+ * Seed the form. A `sourceTask` wins over `defaultParentTaskId` because a copy
+ * already carries its own parent; otherwise a `+ Subtask` click pre-fills the
+ * parent so the new Task lands under the row the operator clicked.
+ */
+function newTaskForm(
+  sourceTask: TaskRecord | null | undefined,
+  defaultParentTaskId?: string | null,
+): NewTaskFormState {
   if (!sourceTask) {
     return {
       title: "",
       prompt: "",
       category: "",
-      parentTaskId: "",
+      parentTaskId: defaultParentTaskId?.trim() ?? "",
       requiredCapabilities: "",
       preferredWorkerId: "",
       preferredExecutorId: "",
@@ -259,27 +271,35 @@ function newTaskForm(sourceTask: TaskRecord | null | undefined): NewTaskFormStat
     title: `${sourceTask.task.title} (retry)`,
     prompt: sourceTask.task.prompt,
     category: sourceTask.task.category,
-    parentTaskId: sourceTask.task.parentTaskId ?? "",
+    parentTaskId: sourceTask.task.parentTaskId ?? defaultParentTaskId?.trim() ?? "",
     requiredCapabilities: (sourceTask.task.routing.requiredCapabilities ?? []).join(", "),
     preferredWorkerId: sourceTask.task.routing.preferredWorkerId ?? "",
     preferredExecutorId: sourceTask.task.routing.preferredExecutorId ?? "",
   };
 }
 
-export function NewTaskDialog({ open, sourceTask, onClose, onSubmit }: NewTaskDialogProps) {
-  const [form, setForm] = useState<NewTaskFormState>(() => newTaskForm(sourceTask));
+export function NewTaskDialog({
+  open,
+  sourceTask,
+  defaultParentTaskId,
+  onClose,
+  onSubmit,
+}: NewTaskDialogProps) {
+  const [form, setForm] = useState<NewTaskFormState>(() =>
+    newTaskForm(sourceTask, defaultParentTaskId),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showValidation, setShowValidation] = useState(false);
 
   useEffect(() => {
     if (open) {
-      setForm(newTaskForm(sourceTask));
+      setForm(newTaskForm(sourceTask, defaultParentTaskId));
       setError(null);
       setBusy(false);
       setShowValidation(false);
     }
-  }, [open, sourceTask]);
+  }, [open, sourceTask, defaultParentTaskId]);
 
   const update = useCallback(
     (patch: Partial<NewTaskFormState>) => {
@@ -336,14 +356,21 @@ export function NewTaskDialog({ open, sourceTask, onClose, onSubmit }: NewTaskDi
     }
   }, [form, onClose, onSubmit, promptMissing, sourceTask, titleMissing]);
 
+  const subtaskParent =
+    defaultParentTaskId != null && defaultParentTaskId.trim() !== ""
+      ? defaultParentTaskId.trim()
+      : null;
+
   return (
     <DialogShell
       open={open}
-      title={sourceTask ? "Copy Task as Retry" : "New Task"}
+      title={sourceTask ? "Copy Task as Retry" : subtaskParent ? "New Subtask" : "New Task"}
       description={
         sourceTask
           ? "Creates a new held Task linked to the source by sourceTaskId. The source Task is never modified."
-          : "Creates one durable held Task. Nothing executes until you dispatch it."
+          : subtaskParent
+            ? "Creates one durable held child Task under the selected Parent. Nothing executes until you dispatch it."
+            : "Creates one durable held Task. Nothing executes until you dispatch it."
       }
       wide
       busy={busy}
@@ -363,6 +390,11 @@ export function NewTaskDialog({ open, sourceTask, onClose, onSubmit }: NewTaskDi
             <span className="mono">{sourceTask.id}</span>
             <TaskStatusBadge status={sourceTask.status} />
           </span>
+        </div>
+      ) : subtaskParent ? (
+        <div className="alert alert-info">
+          <span className="alert-title">Parent Task</span>
+          <span className="mono">{subtaskParent}</span>
         </div>
       ) : null}
 
@@ -760,7 +792,7 @@ export function DispatchDialog({ task, workers, onClose, onSubmit }: DispatchDia
     >
       {task ? (
         <div className="inline">
-          <TaskStatusBadge status={task.status} showDescription />
+          <TaskStatusBadge status={task.status} />
         </div>
       ) : null}
 

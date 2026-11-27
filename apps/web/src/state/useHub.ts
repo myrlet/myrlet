@@ -21,6 +21,7 @@ import type {
   DispatchTaskResponse,
   FinishTaskRequest,
   GlobalSnapshot,
+  HealthResponse,
   HubEventEnvelope,
   RotateWorkerResponse,
   SnapshotTaskSummary,
@@ -32,7 +33,22 @@ import type {
   WorkerRecord,
 } from "../api/types";
 
-export type Theme = "porcelain" | "graphite";
+export type Theme = "porcelain" | "obsidian" | "paper" | "graphite";
+
+/** One selectable theme, with the `color-scheme` it should advertise. */
+export interface ThemeDescriptor {
+  readonly id: Theme;
+  readonly label: string;
+  readonly mode: "light" | "dark";
+}
+
+/** Ordered theme list used by theme pickers and the cycle shortcut. */
+export const THEMES: readonly ThemeDescriptor[] = [
+  { id: "porcelain", label: "Porcelain", mode: "light" },
+  { id: "obsidian", label: "Obsidian", mode: "dark" },
+  { id: "paper", label: "Paper", mode: "light" },
+  { id: "graphite", label: "Graphite", mode: "dark" },
+];
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting";
 
@@ -44,6 +60,7 @@ export interface HubSession {
 export interface UseHubResult {
   /* Theme */
   readonly theme: Theme;
+  readonly themeMode: "light" | "dark";
   setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
 
@@ -64,6 +81,12 @@ export interface UseHubResult {
   readonly eventCursor: number;
   readonly lastSyncedAtMs: number | null;
   refresh: () => Promise<void>;
+
+  /* Live SSE event log (newest first, capped) */
+  readonly events: readonly HubEventEnvelope[];
+  readonly eventsPaused: boolean;
+  toggleEventsPaused: () => void;
+  clearEvents: () => void;
 
   /* Selected Task detail */
   readonly selectedTaskId: string | null;
@@ -92,9 +115,73 @@ const THEME_STORAGE_KEY = "myrlet.theme";
 const REFRESH_DEBOUNCE_MS = 150;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 8_000;
+/** Live event ring buffer bound; older hints are dropped, never rewritten. */
+const MAX_LIVE_EVENTS = 500;
+
+const THEME_IDS: readonly Theme[] = THEMES.map((theme) => theme.id);
 
 const EMPTY_TASKS: readonly SnapshotTaskSummary[] = [];
 const EMPTY_WORKERS: readonly WorkerRecord[] = [];
+const EMPTY_EVENTS: readonly HubEventEnvelope[] = [];
+
+function isTheme(value: unknown): value is Theme {
+  return typeof value === "string" && (THEME_IDS as readonly string[]).includes(value);
+}
+
+function themeModeOf(theme: Theme): "light" | "dark" {
+  const match = THEMES.find((candidate) => candidate.id === theme);
+  return match ? match.mode : "light";
+}
+
+/** Normalize a Hub origin for a health probe (`""` means same-origin). */
+function normalizeProbeBase(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "/") {
+    return "";
+  }
+  return trimmed.replace(/\/+$/, "");
+}
+
+/**
+ * Unauthenticated reachability probe for the Auth gate.
+ *
+ * `GET /health` is public, so this needs no token and never touches session
+ * state. Any failure (network, CORS, non-OK status, unreadable body) resolves
+ * `{ ok: false }` rather than throwing, so the pill can state "Unreachable".
+ */
+export async function probeHubHealth(
+  baseUrl: string,
+): Promise<{ ok: boolean; version?: string }> {
+  let response: Response;
+  try {
+    response = await fetch(`${normalizeProbeBase(baseUrl)}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  if (!response.ok) {
+    return { ok: false };
+  }
+
+  try {
+    const body: unknown = await response.json();
+    if (typeof body === "object" && body !== null) {
+      const record = body as Partial<HealthResponse> & Record<string, unknown>;
+      return {
+        ok: true,
+        version: typeof record.version === "string" ? record.version : undefined,
+      };
+    }
+  } catch {
+    // A reachable process with an unreadable body is still reachable.
+  }
+
+  return { ok: true };
+}
 
 function defaultBaseUrl(): string {
   if (typeof window === "undefined" || typeof window.location === "undefined") {
@@ -104,13 +191,14 @@ function defaultBaseUrl(): string {
   return origin === "null" ? "" : origin;
 }
 
-function readStoredTheme(): Theme {
+/** Read a persisted theme id, accepting all four themes (default Porcelain). */
+export function readStoredTheme(): Theme {
   if (typeof window === "undefined") {
     return "porcelain";
   }
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored === "porcelain" || stored === "graphite") {
+    if (isTheme(stored)) {
       return stored;
     }
   } catch {
@@ -168,6 +256,9 @@ export function useHub(): UseHubResult {
   const [eventCursor, setEventCursor] = useState(0);
   const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
 
+  const [events, setEvents] = useState<readonly HubEventEnvelope[]>(EMPTY_EVENTS);
+  const [eventsPaused, setEventsPaused] = useState(false);
+
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [selectedTree, setSelectedTree] = useState<TaskTreeResponse | null>(null);
@@ -180,6 +271,8 @@ export function useHub(): UseHubResult {
   const cursorRef = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
   const selectTokenRef = useRef(0);
+  /** Read by the SSE handler; a ref keeps the callback identity stable. */
+  const eventsPausedRef = useRef(false);
 
   /* Theme: persisted in localStorage only and applied to <html data-theme>. */
   useEffect(() => {
@@ -195,8 +288,24 @@ export function useHub(): UseHubResult {
     setThemeState(next);
   }, []);
 
+  /** Cycle Porcelain -> Obsidian -> Paper -> Graphite -> Porcelain. */
   const toggleTheme = useCallback(() => {
-    setThemeState((current) => (current === "porcelain" ? "graphite" : "porcelain"));
+    setThemeState((current) => {
+      const index = THEME_IDS.indexOf(current);
+      return THEME_IDS[(index + 1) % THEME_IDS.length] ?? "porcelain";
+    });
+  }, []);
+
+  const toggleEventsPaused = useCallback(() => {
+    setEventsPaused((current) => {
+      const next = !current;
+      eventsPausedRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const clearEvents = useCallback(() => {
+    setEvents(EMPTY_EVENTS);
   }, []);
 
   const getClient = useCallback((): HubClient => {
@@ -214,6 +323,9 @@ export function useHub(): UseHubResult {
     setSnapshot(null);
     setEventCursor(0);
     setLastSyncedAtMs(null);
+    setEvents(EMPTY_EVENTS);
+    setEventsPaused(false);
+    eventsPausedRef.current = false;
     setSelectedTaskId(null);
     setSelectedTask(null);
     setSelectedTree(null);
@@ -252,14 +364,19 @@ export function useHub(): UseHubResult {
       // claiming it, so they can never invalidate a user-initiated selection.
       const requestToken = selectTokenRef.current;
       try {
-        const [task, tree] = await Promise.all([
-          client.getTask(taskId),
-          client.getTaskTree(taskId, "ancestors", 5, 200),
-        ]);
+        const task = await client.getTask(taskId);
         if (selectTokenRef.current !== requestToken || selectedIdRef.current !== taskId) {
           return;
         }
         setSelectedTask(task);
+
+        // Read the whole tree from the root so the Context Mini-Tree always
+        // contains the parent, siblings, the current Task, and its children —
+        // not only the ancestry path.
+        const tree = await client.getTaskTree(task.rootTaskId, "descendants", 5, 200);
+        if (selectTokenRef.current !== requestToken || selectedIdRef.current !== taskId) {
+          return;
+        }
         setSelectedTree(tree);
         setDetailError(null);
       } catch (refreshError) {
@@ -330,6 +447,16 @@ export function useHub(): UseHubResult {
         cursorRef.current = envelope.seq;
         setEventCursor(envelope.seq);
       }
+
+      // The visible log is pausable; cursor tracking and the Snapshot refresh
+      // below always run so the session never silently falls behind.
+      if (!eventsPausedRef.current) {
+        setEvents((current) => {
+          const next = [envelope, ...current];
+          return next.length > MAX_LIVE_EVENTS ? next.slice(0, MAX_LIVE_EVENTS) : next;
+        });
+      }
+
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
       }
@@ -488,6 +615,8 @@ export function useHub(): UseHubResult {
 
       selectedIdRef.current = taskId;
       setSelectedTaskId(taskId);
+      setSelectedTask(null);
+      setSelectedTree(null);
       setDetailError(null);
 
       const client = clientRef.current;
@@ -498,14 +627,18 @@ export function useHub(): UseHubResult {
       const requestToken = ++selectTokenRef.current;
       setDetailLoading(true);
       try {
-        const [task, tree] = await Promise.all([
-          client.getTask(taskId),
-          client.getTaskTree(taskId, "ancestors", 5, 200),
-        ]);
+        const task = await client.getTask(taskId);
         if (selectTokenRef.current !== requestToken) {
           return;
         }
         setSelectedTask(task);
+
+        // Root-scoped descendants give the Context Mini-Tree the parent,
+        // siblings, the current Task, and its children in one read.
+        const tree = await client.getTaskTree(task.rootTaskId, "descendants", 5, 200);
+        if (selectTokenRef.current !== requestToken) {
+          return;
+        }
         setSelectedTree(tree);
         setDetailError(null);
       } catch (selectError) {
@@ -623,6 +756,8 @@ export function useHub(): UseHubResult {
     [snapshot],
   );
 
+  const themeMode = useMemo(() => themeModeOf(theme), [theme]);
+
   useEffect(
     () => () => {
       clientRef.current = null;
@@ -638,6 +773,7 @@ export function useHub(): UseHubResult {
 
   return {
     theme,
+    themeMode,
     setTheme,
     toggleTheme,
 
@@ -655,6 +791,11 @@ export function useHub(): UseHubResult {
     eventCursor,
     lastSyncedAtMs,
     refresh: refreshAll,
+
+    events,
+    eventsPaused,
+    toggleEventsPaused,
+    clearEvents,
 
     selectedTaskId,
     selectedTask,

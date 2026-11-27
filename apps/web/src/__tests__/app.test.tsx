@@ -1,14 +1,16 @@
 /**
- * Frontend fact-honesty, transport, and end-to-end workspace tests.
+ * Frontend fact-honesty, transport, and end-to-end Work Atlas tests.
  *
  * These tests assert the truthful wording and provenance rules the design
  * system depends on (never "Completed"/"Succeeded", unknown capacity is `—`,
- * tokens never reach storage) rather than incidental markup.
+ * tokens never reach storage) plus the graph-centric top-chrome layout:
+ * 52px App Bar, 48px Board toolbar, Board as the default home, and the right
+ * Inspector — with no left sidebar rail.
  */
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
@@ -270,22 +272,44 @@ describe("HubClient.openEvents", () => {
 /* --------------------------------------------------------------------- */
 
 function buildSnapshot(): GlobalSnapshot {
+  const tasks: SnapshotTaskSummary[] = [
+    taskSummary({
+      id: "t1",
+      title: "Ship release",
+      status: "finished",
+      version: 3,
+      subtree: { total: 1, held: 0, queued: 0, dispatched: 0, finished: 1, cancelled: 0 },
+    }),
+    taskSummary({ id: "t2", title: "Draft notes", status: "held" }),
+    taskSummary({
+      id: "t3",
+      title: "Run tests",
+      status: "queued",
+      dependencies: ["t2"],
+      subtree: { total: 1, held: 0, queued: 1, dispatched: 0, finished: 0, cancelled: 0 },
+    }),
+    taskSummary({
+      id: "t4",
+      title: "Publish",
+      status: "dispatched",
+      subtree: { total: 1, held: 0, queued: 0, dispatched: 1, finished: 0, cancelled: 0 },
+    }),
+    taskSummary({
+      id: "t5",
+      title: "Old plan",
+      status: "cancelled",
+      subtree: { total: 1, held: 0, queued: 0, dispatched: 0, finished: 0, cancelled: 1 },
+    }),
+  ];
+
   return {
     schemaVersion: "myrlet.snapshot/v1",
     generatedAtMs: 1_700_000_000_500,
     eventCursor: 12,
     tasksTruncated: false,
-    totalTasks: 1,
+    totalTasks: tasks.length,
     workers: [workerRecord()],
-    tasks: [
-      taskSummary({
-        id: "t1",
-        title: "Ship release",
-        status: "finished",
-        version: 3,
-        subtree: { total: 1, held: 0, queued: 0, dispatched: 0, finished: 1, cancelled: 0 },
-      }),
-    ],
+    tasks,
   };
 }
 
@@ -336,18 +360,35 @@ function submitAuthGate(): void {
   fireEvent.submit(form);
 }
 
-function clickButtonMatching(pattern: RegExp): void {
-  const buttons = screen.getAllByRole("button");
-  for (const button of buttons) {
-    const label = `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""} ${
-      button.getAttribute("title") ?? ""
-    }`;
-    if (pattern.test(label)) {
-      fireEvent.click(button);
-      return;
-    }
-  }
-  throw new Error(`No button matched ${String(pattern)}.`);
+/** The top app bar's canonical workspace navigation. */
+function workspaceNav(): HTMLElement {
+  return screen.getByRole("navigation", { name: /workspace views/i });
+}
+
+function selectView(name: RegExp): void {
+  fireEvent.click(within(workspaceNav()).getByRole("button", { name }));
+}
+
+function modeSwitch(): HTMLElement {
+  return screen.getByRole("group", { name: /workspace mode/i });
+}
+
+/** Render the app, complete the Auth gate, and wait for the first Snapshot. */
+async function connectWorkspace(): Promise<void> {
+  render(<App />);
+  expect(screen.queryByText("Handling ended")).toBeNull();
+  const tokenField = findTokenInput();
+  fireEvent.change(tokenField, { target: { value: "admin-token-value" } });
+  submitAuthGate();
+  await waitFor(() => {
+    expect(document.querySelector(".app-bar")).not.toBeNull();
+  });
+}
+
+function localStorageKeys(): string[] {
+  return Array.from({ length: window.localStorage.length }, (_value, index) =>
+    window.localStorage.key(index),
+  ).filter((key): key is string => key !== null);
 }
 
 describe("App workspace flow", () => {
@@ -365,62 +406,186 @@ describe("App workspace flow", () => {
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });
       }
+      if (path.startsWith("/v1/tasks")) {
+        return jsonResponse(buildSnapshot().tasks[0]);
+      }
       return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
     });
   });
 
-  it("gates on auth, keeps the token out of storage, and shows honest facts", async () => {
+  it("gates on auth first and keeps the bearer token out of storage", async () => {
     render(<App />);
 
     // 1. Auth gate first: no workspace and no fabricated Task facts yet.
     expect(screen.queryByText("Handling ended")).toBeNull();
+    expect(document.querySelector(".app-frame")).toBeNull();
+
     const tokenField = findTokenInput();
     fireEvent.change(tokenField, { target: { value: "admin-token-value" } });
     submitAuthGate();
 
-    // 2. Connected workspace renders the Task tree with truthful wording.
-    expect(await screen.findByText("Ship release")).toBeInTheDocument();
-    const taskTable = screen.getByRole("table");
-    expect(taskTable).toHaveTextContent("Handling ended");
+    // 2. Connected workspace renders the Work Atlas chrome.
+    await waitFor(() => {
+      expect(document.querySelector(".app-bar")).not.toBeNull();
+    });
+    expect(document.querySelector(".app-frame")).not.toBeNull();
 
     // 3. The bearer token is memory-only; only the theme may be persisted.
-    const tokenKeys = Array.from({ length: window.localStorage.length }, (_value, index) =>
-      window.localStorage.key(index),
-    ).filter((key): key is string => key !== null);
-    expect(tokenKeys.filter((key) => /token|bearer|auth/i.test(key))).toEqual([]);
-    for (const value of tokenKeys.map((key) => window.localStorage.getItem(key) ?? "")) {
+    const tokenKeys = localStorageKeys().filter((key) => /token|bearer|auth/i.test(key));
+    expect(tokenKeys).toEqual([]);
+    for (const value of localStorageKeys().map((key) => window.localStorage.getItem(key) ?? "")) {
       expect(value).not.toContain("admin-token-value");
     }
+  });
 
-    // 4. Toggling the theme persists the preference and nothing else.
-    clickButtonMatching(/theme|porcelain|graphite|dark|light/i);
+  it("opens on the Board with top chrome, right Inspector, and no sidebar rail", async () => {
+    await connectWorkspace();
+
+    // The left rail is gone; navigation lives in the 52px app bar.
+    expect(document.querySelector(".sidebar")).toBeNull();
+    expect(document.querySelector(".sidebar-rail")).toBeNull();
+    expect(within(workspaceNav()).getByRole("button", { name: /workspace/i })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+
+    // Board is the default home view.
+    expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
+    expect(document.querySelector(".board-toolbar")).not.toBeNull();
+    expect(within(modeSwitch()).getByRole("button", { name: /^board$/i })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+
+    // The right Inspector is open by default and hosts the Workspace overview.
+    expect(document.querySelector(".inspector-slot")).not.toBeNull();
+    expect(document.querySelector(".inspector-pane")).not.toBeNull();
+
+    // Status bar carries live truth: counters High→low and the task/relationship facts.
+    const statusBar = document.querySelector(".status-bar");
+    expect(statusBar).not.toBeNull();
+    expect(statusBar?.textContent ?? "").toContain("Live · Event stream connected");
+    expect(statusBar?.textContent ?? "").toContain("relationships");
+    expect(within(statusBar as HTMLElement).getByRole("button", { name: /workers/i })).toHaveTextContent(
+      "1/1",
+    );
+  });
+
+  it("toggles Board and List without losing the Inspector, and never claims a verdict", async () => {
+    await connectWorkspace();
+
+    fireEvent.click(within(modeSwitch()).getByRole("button", { name: /list/i }));
     await waitFor(() => {
-      expect(window.localStorage.getItem("myrlet.theme")).toMatch(/porcelain|graphite/);
+      expect(document.querySelector('.view-body[data-view="list"]')).not.toBeNull();
     });
-    const storedKeys = Array.from({ length: window.localStorage.length }, (_value, index) =>
-      window.localStorage.key(index),
-    ).filter((key): key is string => key !== null);
-    expect(storedKeys).toEqual(["myrlet.theme"]);
-    expect(window.localStorage.getItem("myrlet.token")).toBeNull();
+    expect(within(modeSwitch()).getByRole("button", { name: /^list$/i })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(document.querySelector(".inspector-pane")).not.toBeNull();
 
-    // 5. Workers drawer: unknown advisory capacity renders as `—`, never `0`.
-    clickButtonMatching(/workers/i);
-    const workersDialog = await screen.findByRole("dialog", { name: /workers/i });
-    expect(workersDialog).toBeInTheDocument();
+    const taskTable = screen
+      .getAllByRole("table")
+      .find((table) => (table.textContent ?? "").includes("Ship release"));
+    expect(taskTable).toBeDefined();
+    expect(taskTable).toHaveTextContent("Handling ended");
+    expect(taskTable).not.toHaveTextContent("Completed");
+    expect(taskTable).not.toHaveTextContent("Success");
+
+    fireEvent.click(within(modeSwitch()).getByRole("button", { name: /^board$/i }));
+    await waitFor(() => {
+      expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
+    });
+  });
+
+  it("persists only myrlet.theme when the app-bar theme selector changes", async () => {
+    await connectWorkspace();
+
+    const themeSelect = document.querySelector<HTMLSelectElement>(
+      ".app-bar [data-theme-select]",
+    );
+    expect(themeSelect).not.toBeNull();
+    fireEvent.change(themeSelect as HTMLSelectElement, { target: { value: "graphite" } });
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("myrlet.theme")).toBe("graphite");
+    });
+
+    expect(localStorageKeys()).toEqual(["myrlet.theme"]);
+    expect(window.localStorage.getItem("myrlet.token")).toBeNull();
+  });
+
+  it("renders the Workers view with unknown advisory capacity as an em dash", async () => {
+    await connectWorkspace();
+
+    selectView(/^workers/i);
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="workers"]')).not.toBeNull();
+    });
+
     expect(screen.getAllByText("wkr_00000000000a").length).toBeGreaterThan(0);
 
-    const capacityLabels = screen
-      .getAllByText(/capacity/i)
-      .map((element) => element.textContent ?? "")
-      .join(" | ");
-    expect(capacityLabels).toContain("—");
-    expect(capacityLabels).not.toMatch(/capacity\s*0\b/);
+    const card = document.querySelector<HTMLElement>('[data-worker-id="wkr_00000000000a"]');
+    expect(card).not.toBeNull();
 
-    // 6. Escape closes the drawer without touching the session.
+    const slotLabel = within(card as HTMLElement).getByText("mac-default");
+    const slotRow = slotLabel.closest("tr");
+    expect(slotRow).not.toBeNull();
+
+    const slotRowElement = slotRow as HTMLElement;
+    expect(within(slotRowElement).getByText("—")).toBeInTheDocument();
+    expect(slotRowElement.textContent ?? "").toContain("mac-default");
+    expect(slotRowElement.textContent ?? "").not.toMatch(/capacity\s*0/i);
+    expect(slotRowElement.textContent ?? "").not.toContain("0");
+  });
+
+  it("switches to Events and returns to the Board from the subview bar", async () => {
+    await connectWorkspace();
+
+    selectView(/^events/i);
+    await waitFor(() => {
+      expect(document.querySelector('[data-view="events"]')).not.toBeNull();
+    });
+    expect(
+      within(document.querySelector(".events-view") as HTMLElement).getByText(/no live events yet/i),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to board/i }));
+    await waitFor(() => {
+      expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
+    });
+  });
+
+  it("filters the Board from the status bar counters", async () => {
+    await connectWorkspace();
+
+    const statusBar = document.querySelector(".status-bar") as HTMLElement;
+    fireEvent.click(within(statusBar).getByRole("button", { name: /^queued\b/i }));
+
+    await waitFor(() => {
+      const statusSelect = screen.getByLabelText("Filter by status") as HTMLSelectElement;
+      expect(statusSelect.value).toBe("queued");
+    });
+  });
+
+  it("opens the Command Palette with Ctrl+K, lists Board/List and board actions, and closes with Escape", async () => {
+    await connectWorkspace();
+
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: /command palette/i });
+    expect(palette).toBeInTheDocument();
+    expect(
+      within(palette).getByPlaceholderText(/search tasks, views, actions, themes/i),
+    ).toBeInTheDocument();
+
+    expect(within(palette).getByRole("option", { name: /^board/i })).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /^list/i })).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /fit board to view/i })).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /arrange board layout/i })).toBeInTheDocument();
+
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: /workers/i })).toBeNull();
+      expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull();
     });
-    expect(screen.getByText("Ship release")).toBeInTheDocument();
   });
 });

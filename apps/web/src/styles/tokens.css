@@ -1,148 +1,347 @@
 /*
- * Myrlet design tokens — "Quiet Precision".
+ * Myrlet design tokens — "Quiet Precision" 2.0.
  *
- * Semantic light theme (Porcelain, default) and dark theme (Graphite).
- * Never scatter ad-hoc hex colours through feature views: consume these
- * variables (or the shared classes in app.css) instead.
+ * One semantic contract, four switchable themes:
+ *   porcelain (default light) · obsidian (machined dark)
+ *   paper (warm editorial light) · graphite (classic Myrlet dark)
  *
- * Every status colour is always paired with text and a shape/icon in markup;
- * colour alone never carries meaning.
+ * Features never scatter ad-hoc hex colours; they consume these semantic
+ * variables (or the shared classes in app.css). Every status colour is always
+ * paired with explicit text and a shape glyph, so colour alone never carries
+ * meaning. Transitions are always explicit — never `transition: all`.
  */
 
 :root {
   /* Typography -------------------------------------------------------- */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
 
   /* Spacing scale ----------------------------------------------------- */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 20px;
   --space-6: 24px;
 
   /* Concentric radii -------------------------------------------------- */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
 
-  /* Motion: explicit transitions only, never `transition: all` -------- */
+  /* Motion: explicit curves and transitions only ---------------------- */
   --duration-fast: 120ms;
-  --duration-slow: 180ms;
-  --ease-standard: ease;
-  --transition-control: background-color 120ms ease, border-color 120ms ease,
-    opacity 180ms ease, transform 120ms ease;
+  --duration-base: 180ms;
+  --duration-slow: 240ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-standard: var(--ease-out);
+  --transition-colors: background-color 120ms var(--ease-out),
+    border-color 120ms var(--ease-out), color 120ms var(--ease-out);
+  --transition-control: background-color 120ms var(--ease-out),
+    border-color 120ms var(--ease-out), color 120ms var(--ease-out),
+    box-shadow 120ms var(--ease-out), transform 120ms var(--ease-out);
+  --transition-surface: background-color 120ms var(--ease-out),
+    border-color 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
 
   /* Layout ------------------------------------------------------------ */
-  --header-height: 48px;
-  --row-height: 34px;
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 56px;
+  --view-header-height: 52px;
+  --status-bar-height: 26px;
+  --row-height: 38px;
   --control-compact: 28px;
   --control-default: 32px;
+  --tree-indent: 18px;
+  --inspector-width: 420px;
+  /* Legacy aliases kept for the pre-Wave-7 component tree. */
+  --header-height: 52px;
   --detail-width: 420px;
-  --tree-indent: 14px;
 
   /* Focus ------------------------------------------------------------- */
-  --focus-ring: #2f6f9f;
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
+
+  /* Terminal surfaces: deliberately dark in every theme. */
+  --terminal-bg: #0d1117;
+  --terminal-fg: #e6edf3;
+  --terminal-muted: #8b949e;
+  --terminal-border: #21262d;
+
+  /* Overlay stacking order ------------------------------------------- */
+  --z-status-bar: 20;
+  --z-inspector: 60;
+  --z-overlay: 200;
+  --z-toast: 300;
 }
 
-/* --------------------------------------------------------------------- */
-/* Porcelain — calm light surfaces (default)                              */
-/* --------------------------------------------------------------------- */
+/* ===================================================================== */
+/* 1. Porcelain — cool luminous light (default)                          */
+/* ===================================================================== */
 :root,
 :root[data-theme="porcelain"] {
   color-scheme: light;
 
-  --bg-canvas: #f7f6f3;
+  --bg-canvas: #f6f7f9;
   --bg-surface: #ffffff;
-  --bg-subtle: #f0eee9;
-  --bg-hover: #ece9e3;
-  --bg-selected: #e4eaf1;
-  --bg-overlay: rgba(18, 20, 23, 0.38);
+  --bg-elevated: #ffffff;
+  --bg-well: #f0f2f5;
+  --bg-subtle: #f0f2f5;
+  --bg-hover: #f1f3f6;
+  --bg-active: #e9ecf1;
+  --bg-selected: #f3f1ff;
+  --bg-overlay: rgba(17, 24, 39, 0.32);
 
-  --border-subtle: #e8e5de;
-  --border-default: #d7d3c9;
-  --border-strong: #b6b1a5;
+  --border-subtle: #e4e7ec;
+  --border-default: #d5dae2;
+  --border-strong: #b7bfcc;
 
-  --text-primary: #1b1e22;
-  --text-secondary: #4b5158;
-  --text-muted: #7b818a;
+  --text-primary: #111827;
+  --text-secondary: #525c6a;
+  --text-muted: #8590a0;
+  --text-inverse: #ffffff;
 
-  --accent: #2f6f9f;
+  --accent: #5b4fcf;
+  --accent-hover: #4a3fba;
+  --accent-fg: #ffffff;
+  --accent-soft: #f3f1ff;
 
-  /* Primary / destructive controls */
-  --control-primary-bg: #24282e;
-  --control-primary-bg-hover: #343b44;
-  --control-primary-fg: #faf9f6;
+  --control-primary-bg: #181a1f;
+  --control-primary-bg-hover: #272b33;
+  --control-primary-fg: #ffffff;
+
+  --focus-ring: #5b4fcf;
+
+  --shadow-overlay: 0 16px 40px rgba(17, 24, 39, 0.16);
+  --shadow-popover: 0 8px 24px rgba(17, 24, 39, 0.12);
+  --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04);
 
   /* Task status: held — neutral slate */
-  --status-held-fg: #4c545e;
-  --status-held-bg: #eeece7;
-  --status-held-border: #d6d2c8;
+  --status-held-fg: #4b5563;
+  --status-held-bg: #f2f4f7;
+  --status-held-border: #dde2e9;
 
   /* Task status: queued — calm amber */
+  --status-queued-fg: #7a5a13;
+  --status-queued-bg: #fff7e6;
+  --status-queued-border: #edd9a8;
+
+  /* Task status: dispatched — steel blue */
+  --status-dispatched-fg: #1e5fa8;
+  --status-dispatched-bg: #eaf2fb;
+  --status-dispatched-border: #c9ddf2;
+
+  /* Task status: finished — sage ("Handling ended", never a verdict) */
+  --status-finished-fg: #2f6b57;
+  --status-finished-bg: #e8f4ee;
+  --status-finished-border: #c4e0d2;
+
+  /* Task status: cancelled — muted rust */
+  --status-cancelled-fg: #9a3f2e;
+  --status-cancelled-bg: #fcede9;
+  --status-cancelled-border: #f0cfc6;
+
+  /* Worker connectivity */
+  --status-online-fg: #2f6b57;
+  --status-online-bg: #e8f4ee;
+  --status-online-border: #c4e0d2;
+
+  --status-offline-fg: #626c7a;
+  --status-offline-bg: #f2f4f7;
+  --status-offline-border: #dde2e9;
+
+  --status-revoked-fg: #9a3f2e;
+  --status-revoked-bg: #fcede9;
+  --status-revoked-border: #f0cfc6;
+}
+
+/* ===================================================================== */
+/* 2. Obsidian — machined dark (mineral teal, zero neon glow)             */
+/* ===================================================================== */
+:root[data-theme="obsidian"] {
+  color-scheme: dark;
+
+  --bg-canvas: #0b0d11;
+  --bg-surface: #11141b;
+  --bg-elevated: #181c25;
+  --bg-well: #181c25;
+  --bg-subtle: #181c25;
+  --bg-hover: #171c25;
+  --bg-active: #1d232e;
+  --bg-selected: #132629;
+  --bg-overlay: rgba(0, 0, 0, 0.68);
+
+  --border-subtle: #232936;
+  --border-default: #2c3443;
+  --border-strong: #3c4658;
+
+  --text-primary: #edf0f5;
+  --text-secondary: #98a2b3;
+  --text-muted: #646f82;
+  --text-inverse: #0b0d11;
+
+  --accent: #2dd4bf;
+  --accent-hover: #5ce4d3;
+  --accent-fg: #062420;
+  --accent-soft: #132629;
+
+  --control-primary-bg: #edf0f5;
+  --control-primary-bg-hover: #ffffff;
+  --control-primary-fg: #0b0d11;
+
+  --focus-ring: #2dd4bf;
+
+  --shadow-overlay: 0 18px 44px rgba(0, 0, 0, 0.62);
+  --shadow-popover: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+  --status-held-fg: #aeb8c6;
+  --status-held-bg: #171b23;
+  --status-held-border: #2b3342;
+
+  --status-queued-fg: #e4b85e;
+  --status-queued-bg: #2a2313;
+  --status-queued-border: #4a3e1f;
+
+  --status-dispatched-fg: #7fb6f0;
+  --status-dispatched-bg: #12202f;
+  --status-dispatched-border: #24425f;
+
+  --status-finished-fg: #6fd3b5;
+  --status-finished-bg: #0f2420;
+  --status-finished-border: #1e4a3e;
+
+  --status-cancelled-fg: #f0907e;
+  --status-cancelled-bg: #2a1815;
+  --status-cancelled-border: #4e2b24;
+
+  --status-online-fg: #6fd3b5;
+  --status-online-bg: #0f2420;
+  --status-online-border: #1e4a3e;
+
+  --status-offline-fg: #98a2b3;
+  --status-offline-bg: #171b23;
+  --status-offline-border: #2b3342;
+
+  --status-revoked-fg: #f0907e;
+  --status-revoked-bg: #2a1815;
+  --status-revoked-border: #4e2b24;
+}
+
+/* ===================================================================== */
+/* 3. Paper — warm editorial light                                       */
+/* ===================================================================== */
+:root[data-theme="paper"] {
+  color-scheme: light;
+
+  --bg-canvas: #f4f0e8;
+  --bg-surface: #fcfbf8;
+  --bg-elevated: #fcfbf8;
+  --bg-well: #ece6da;
+  --bg-subtle: #ece6da;
+  --bg-hover: #f0eae0;
+  --bg-active: #e7e0d3;
+  --bg-selected: #f6eae5;
+  --bg-overlay: rgba(26, 24, 22, 0.3);
+
+  --border-subtle: #dfd8ca;
+  --border-default: #d0c7b7;
+  --border-strong: #b4a895;
+
+  --text-primary: #1a1816;
+  --text-secondary: #5f584e;
+  --text-muted: #8e867b;
+  --text-inverse: #fcfbf8;
+
+  --accent: #c84b31;
+  --accent-hover: #ae3d26;
+  --accent-fg: #fff9f5;
+  --accent-soft: #f6eae5;
+
+  --control-primary-bg: #1a1816;
+  --control-primary-bg-hover: #332f2a;
+  --control-primary-fg: #fcfbf8;
+
+  --focus-ring: #c84b31;
+
+  --shadow-overlay: 0 16px 40px rgba(26, 24, 22, 0.18);
+  --shadow-popover: 0 8px 24px rgba(26, 24, 22, 0.13);
+  --shadow-card: 0 1px 2px rgba(26, 24, 22, 0.05);
+
+  --status-held-fg: #5f584e;
+  --status-held-bg: #efeae0;
+  --status-held-border: #dcd3c4;
+
   --status-queued-fg: #7a5a13;
   --status-queued-bg: #f8efd8;
   --status-queued-border: #e5d4a6;
 
-  /* Task status: dispatched — steel blue */
-  --status-dispatched-fg: #24557f;
-  --status-dispatched-bg: #e5eff8;
-  --status-dispatched-border: #bdd4e9;
+  --status-dispatched-fg: #1e5fa8;
+  --status-dispatched-bg: #e8f0f8;
+  --status-dispatched-border: #c7daec;
 
-  /* Task status: finished — muted sage/teal ("Handling ended", not a verdict) */
-  --status-finished-fg: #366156;
-  --status-finished-bg: #e4efe9;
-  --status-finished-border: #c0d8cd;
+  --status-finished-fg: #356b58;
+  --status-finished-bg: #e6f0ea;
+  --status-finished-border: #c3d9cd;
 
-  /* Task status: cancelled — muted rose/rust */
-  --status-cancelled-fg: #8a4838;
-  --status-cancelled-bg: #f7e9e4;
-  --status-cancelled-border: #e4c9c0;
+  --status-cancelled-fg: #a03d28;
+  --status-cancelled-bg: #f9e7e1;
+  --status-cancelled-border: #edc9be;
 
-  /* Worker connectivity */
-  --status-online-fg: #2f6a5c;
-  --status-online-bg: #e4efe9;
-  --status-online-border: #c0d8cd;
+  --status-online-fg: #356b58;
+  --status-online-bg: #e6f0ea;
+  --status-online-border: #c3d9cd;
 
-  --status-offline-fg: #6b7178;
-  --status-offline-bg: #efede8;
-  --status-offline-border: #d9d5cc;
+  --status-offline-fg: #6b645a;
+  --status-offline-bg: #f0ebe1;
+  --status-offline-border: #ddd5c7;
 
-  --status-revoked-fg: #8a4838;
-  --status-revoked-bg: #f7e9e4;
-  --status-revoked-border: #e4c9c0;
-
-  --shadow-overlay: 0 12px 32px rgba(17, 19, 21, 0.16);
+  --status-revoked-fg: #a03d28;
+  --status-revoked-bg: #f9e7e1;
+  --status-revoked-border: #edc9be;
 }
 
-/* --------------------------------------------------------------------- */
-/* Graphite — dark, restrained surfaces                                   */
-/* --------------------------------------------------------------------- */
+/* ===================================================================== */
+/* 4. Graphite — classic Myrlet dark                                     */
+/* ===================================================================== */
 :root[data-theme="graphite"] {
   color-scheme: dark;
 
-  --bg-canvas: #111315;
-  --bg-surface: #181b1f;
-  --bg-subtle: #1f2329;
-  --bg-hover: #252a31;
-  --bg-selected: #27313b;
-  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-canvas: #101216;
+  --bg-surface: #171b22;
+  --bg-elevated: #202630;
+  --bg-well: #202630;
+  --bg-subtle: #202630;
+  --bg-hover: #1d222b;
+  --bg-active: #242b36;
+  --bg-selected: #26233a;
+  --bg-overlay: rgba(3, 4, 7, 0.66);
 
-  --border-subtle: #24282e;
-  --border-default: #31363d;
-  --border-strong: #4b5159;
+  --border-subtle: #2c333f;
+  --border-default: #363e4c;
+  --border-strong: #4a5464;
 
-  --text-primary: #ebe9e4;
-  --text-secondary: #b3b8bf;
-  --text-muted: #818891;
+  --text-primary: #e9ecf2;
+  --text-secondary: #a0aab9;
+  --text-muted: #768191;
+  --text-inverse: #14161b;
 
-  --accent: #6ba7de;
+  --accent: #b2a7f0;
+  --accent-hover: #c6bef6;
+  --accent-fg: #17142b;
+  --accent-soft: #26233a;
 
-  --control-primary-bg: #ecebe6;
+  --control-primary-bg: #ecebf0;
   --control-primary-bg-hover: #ffffff;
-  --control-primary-fg: #15171a;
+  --control-primary-fg: #14161b;
+
+  --focus-ring: #b2a7f0;
+
+  --shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-popover: 0 10px 28px rgba(0, 0, 0, 0.45);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
 
   --status-held-fg: #b9c0c9;
   --status-held-bg: #232830;
@@ -175,7 +374,6 @@
   --status-revoked-fg: #e0a08f;
   --status-revoked-bg: #2e211d;
   --status-revoked-border: #4a332c;
-
-  --focus-ring: #6ba7de;
-  --shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
+
+/* End of theme contract. app.css consumes only these semantic names. */
