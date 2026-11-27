@@ -3,14 +3,14 @@
 use std::io::{self, Write};
 
 use myrlet_protocol::{
-    DeliveryView, DispatchTaskResponse, GlobalSnapshot, HubEventEnvelope, TaskBundleImportResponse,
-    TaskRecord, TaskTreeResponse,
+    DeliveryView, GlobalSnapshot, HubEventEnvelope, LocalReply, TaskBundleImportResponse,
+    TaskListResponse, TaskRecord, TaskTreeResponse,
 };
 use serde::Serialize;
 
 mod workers;
 
-pub use workers::{enrollment, revoked, rotate, worker, worker_list};
+pub use workers::{enrollment, revoked, rotate, worker_detail, worker_list};
 
 fn to_json<W: Write, T: Serialize>(out: &mut W, value: &T) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
@@ -73,6 +73,14 @@ pub fn task_record<W: Write>(out: &mut W, record: &TaskRecord, as_json: bool) ->
     )?;
     writeln!(out, "Depth: {}", record.depth)?;
     writeln!(out, "Dependencies: {}", list(&record.task.dependencies))?;
+    if record.blocked_by.is_empty() {
+        writeln!(out, "BlockedBy: none")?;
+    } else {
+        writeln!(out, "BlockedBy:")?;
+        for blocker in &record.blocked_by {
+            writeln!(out, "  {} ({})", blocker.task_id, label(&blocker.status))?;
+        }
+    }
     match &record.current_delivery {
         None => writeln!(out, "Delivery: none")?,
         Some(delivery) => {
@@ -109,43 +117,37 @@ pub fn task_record<W: Write>(out: &mut W, record: &TaskRecord, as_json: bool) ->
     Ok(())
 }
 
-/// Print the Snapshot Task summary page.
-pub fn tasks_list<W: Write>(
-    out: &mut W,
-    snapshot: &GlobalSnapshot,
-    as_json: bool,
-) -> io::Result<()> {
+/// Print the bounded Task summary page.
+pub fn task_list<W: Write>(out: &mut W, page: &TaskListResponse, as_json: bool) -> io::Result<()> {
     if as_json {
-        let payload = serde_json::json!({
-            "tasks": &snapshot.tasks,
-            "metadata": {
-                "totalTasks": snapshot.total_tasks,
-                "tasksTruncated": snapshot.tasks_truncated,
-                "eventCursor": snapshot.event_cursor,
-            }
-        });
-        return to_json(out, &payload);
+        return to_json(out, page);
     }
     writeln!(out, "ID | STATUS | VER | TITLE | DELIVERY")?;
-    for task in &snapshot.tasks {
+    for task in &page.tasks {
         let delivery = task
             .current_delivery
             .as_ref()
             .map_or_else(|| "-".to_string(), delivery_summary);
+        let blocked = if task.blocked_by.is_empty() {
+            String::new()
+        } else {
+            format!(" blocked:{}", task.blocked_by.len())
+        };
         writeln!(
             out,
-            "{:<36} {:<10} {:>4}  {:<24} {}",
+            "{:<36} {:<10} {:>4}  {:<24} {}{}",
             task.id,
             label(&task.status),
             task.version,
             truncate(&task.title, 24),
-            delivery
+            delivery,
+            blocked
         )?;
     }
     writeln!(
         out,
         "total {} task(s), truncated: {}",
-        snapshot.total_tasks, snapshot.tasks_truncated
+        page.total_tasks, page.truncated
     )
 }
 
@@ -169,32 +171,6 @@ pub fn task_tree<W: Write>(out: &mut W, tree: &TaskTreeResponse, as_json: bool) 
     writeln!(out, "truncated: {}", tree.truncated)
 }
 
-/// Print a dispatch response.
-pub fn dispatch<W: Write>(
-    out: &mut W,
-    response: &DispatchTaskResponse,
-    as_json: bool,
-) -> io::Result<()> {
-    if as_json {
-        return to_json(out, response);
-    }
-    writeln!(out, "Task: {}", response.task_id)?;
-    writeln!(out, "Status: {}", label(&response.status))?;
-    writeln!(out, "Version: {}", response.version)?;
-    match &response.delivery {
-        None => writeln!(out, "Delivery: none")?,
-        Some(delivery) => writeln!(
-            out,
-            "Delivery: {} ({}) worker {} slot {}",
-            delivery.id,
-            label(&delivery.state),
-            delivery.worker_id,
-            delivery.slot_id
-        )?,
-    }
-    Ok(())
-}
-
 /// Print a Bundle import response.
 pub fn bundle_import<W: Write>(
     out: &mut W,
@@ -205,8 +181,39 @@ pub fn bundle_import<W: Write>(
         return to_json(out, response);
     }
     writeln!(out, "Imported {} task(s)", response.tasks.len())?;
+    writeln!(out, "Eligible now: {}", list(&response.eligible_task_ids))?;
     for (client_ref, id) in &response.client_ref_to_task_id {
-        writeln!(out, "  {client_ref} -> {id}")?;
+        let status = response
+            .tasks
+            .iter()
+            .find(|task| &task.id == id)
+            .map(|task| label(&task.status))
+            .unwrap_or_default();
+        writeln!(out, "  {client_ref} -> {id} ({status})")?;
+    }
+    Ok(())
+}
+
+/// Print the result of one execution-local command.
+pub fn local_reply<W: Write>(out: &mut W, reply: &LocalReply, as_json: bool) -> io::Result<()> {
+    if as_json {
+        return to_json(out, reply);
+    }
+    writeln!(out, "Operation: {}", reply.operation)?;
+    writeln!(out, "Delivery: {}", reply.delivery_id)?;
+    writeln!(out, "LocalReceipt: {}", reply.local_receipt)?;
+    if let Some(confirmed) = reply.hub_confirmed {
+        writeln!(out, "HubConfirmed: {confirmed}")?;
+    }
+    writeln!(out, "Outcome: {}", reply.outcome)?;
+    if let Some(local) = &reply.local_sha256 {
+        writeln!(out, "LocalSha256: {local}")?;
+    }
+    if let Some(hub) = &reply.hub_sha256 {
+        writeln!(out, "HubSha256: {hub}")?;
+    }
+    for warning in &reply.warnings {
+        writeln!(out, "Warning: {warning}")?;
     }
     Ok(())
 }

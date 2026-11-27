@@ -5,28 +5,54 @@ use std::io::{self, Write};
 
 use myrlet_client::{Client, ClientError, NativeTransport};
 use myrlet_protocol::{
-    CancelTaskRequest, CreateEnrollmentCodeRequest, DispatchSelection, DispatchTaskRequest,
-    FinishTaskRequest, TaskBundleImportRequest, TaskDefinition, TaskId, WorkerId,
+    CancelTaskRequest, FinishTaskRequest, LocalCommand, LocalReply, TaskBundleImportRequest,
+    TaskDefinition, TaskId, UpdateTaskRequest,
 };
 
-use crate::args::{Command, CreateSource};
+use crate::args::Command;
 use crate::output;
 use crate::CliError;
 
 type NativeClient = Client<NativeTransport>;
 
+/// Environment access shared by every command.
+pub struct Env<'a> {
+    pub hub_url: &'a str,
+    pub admin_token: Option<&'a str>,
+    pub worker_socket: Option<&'a str>,
+}
+
+/// The credential a command needs: execution-local commands use only the Worker socket.
+fn local_only(command: &Command) -> Option<&str> {
+    match command {
+        Command::Done { delivery_id }
+        | Command::ResultCheck { delivery_id }
+        | Command::ResultSync { delivery_id }
+        | Command::ResultStatus { delivery_id } => Some(delivery_id),
+        _ => None,
+    }
+}
+
 /// Execute one command, writing structured output to `stdout`.
 pub async fn execute<W: Write>(
-    client: &NativeClient,
+    env: &Env<'_>,
     command: Command,
     json: bool,
     stdout: &mut W,
 ) -> Result<(), CliError> {
+    if local_only(&command).is_some() {
+        return run_local(env, command, json, stdout);
+    }
+    let token = env
+        .admin_token
+        .ok_or_else(|| CliError::Usage("MYRLET_ADMIN_TOKEN is not set".to_string()))?;
+    let client =
+        Client::new(env.hub_url, token).map_err(|error| CliError::Runtime(error.to_string()))?;
     match command {
         Command::Help => Ok(()),
-        Command::TasksList => {
-            let snapshot = client.snapshot().await.map_err(runtime)?;
-            render(output::tasks_list(stdout, &snapshot, json))
+        Command::TasksList { limit } => {
+            let page = client.list_tasks(limit).await.map_err(runtime)?;
+            render(output::task_list(stdout, &page, json))
         }
         Command::TasksShow { id } => {
             let record = client.get_task(&TaskId::new(id)).await.map_err(runtime)?;
@@ -44,73 +70,60 @@ pub async fn execute<W: Write>(
                 .map_err(runtime)?;
             render(output::task_tree(stdout, &tree, json))
         }
-        Command::TasksCreate {
+        Command::TasksSubmit {
+            file,
             idempotency_key,
-            source,
+            definition,
         } => {
-            let definition = match source {
-                CreateSource::File(path) => read_json(&path)?,
-                CreateSource::Definition(definition) => *definition,
+            let definition = match (file, definition) {
+                (Some(path), _) => read_json(&path)?,
+                (None, Some(definition)) => *definition,
+                (None, None) => {
+                    return Err(CliError::Usage(
+                        "tasks submit requires --file or --title and --prompt".to_string(),
+                    ))
+                }
             };
+            let key = idempotency_key.unwrap_or_else(new_key);
             let record = client
-                .create_task(&idempotency_key, &definition)
+                .create_task(&key, &definition)
                 .await
                 .map_err(runtime)?;
             render(output::task_record(stdout, &record, json))
         }
-        Command::TasksDispatch {
-            id,
-            expected_version,
-            idempotency_key,
-            selection,
-            queue,
-        } => {
-            let request = DispatchTaskRequest {
-                expected_task_version: expected_version,
-                selection,
-                queue,
-            };
-            let response = client
-                .dispatch_task(&idempotency_key, &TaskId::new(id), &request)
-                .await
-                .map_err(runtime)?;
-            render(output::dispatch(stdout, &response, json))
-        }
-        Command::TasksSubmit {
-            file,
-            idempotency_key,
-            dispatch_idempotency_key,
-            fallback_allowed,
-            queue,
-        } => {
-            let definition: TaskDefinition = read_json(&file)?;
-            let created = client
-                .create_task(&idempotency_key, &definition)
-                .await
-                .map_err(runtime)?;
-            let dispatch_key =
-                dispatch_idempotency_key.unwrap_or_else(|| format!("{idempotency_key}-dispatch"));
-            let request = DispatchTaskRequest {
-                expected_task_version: created.version,
-                selection: DispatchSelection::Match { fallback_allowed },
-                queue,
-            };
-            let response = client
-                .dispatch_task(&dispatch_key, &created.id, &request)
-                .await
-                .map_err(runtime)?;
-            render(output::dispatch(stdout, &response, json))
-        }
-        Command::TasksBundleImport {
+        Command::TasksImport {
             file,
             idempotency_key,
         } => {
             let request: TaskBundleImportRequest = read_json(&file)?;
+            let key = idempotency_key.unwrap_or_else(new_key);
             let response = client
-                .import_bundle(&idempotency_key, &request)
+                .import_bundle(&key, &request)
                 .await
                 .map_err(runtime)?;
             render(output::bundle_import(stdout, &response, json))
+        }
+        Command::TasksUpdate {
+            id,
+            expected_version,
+            idempotency_key,
+            dependencies,
+        } => {
+            let task_id = TaskId::new(id);
+            let request = UpdateTaskRequest {
+                expected_task_version: expected_version,
+                update: myrlet_protocol::PendingTaskUpdate {
+                    dependencies: dependencies
+                        .map(|ids| ids.into_iter().map(TaskId::new).collect()),
+                    routing: None,
+                },
+            };
+            let key = idempotency_key.unwrap_or_else(new_key);
+            let record = client
+                .update_task(&key, &task_id, &request)
+                .await
+                .map_err(runtime)?;
+            render(output::task_record(stdout, &record, json))
         }
         Command::TasksCancel {
             id,
@@ -119,9 +132,9 @@ pub async fn execute<W: Write>(
             reason,
         } => {
             let task_id = TaskId::new(id);
-            let expected_task_version = current_version(client, &task_id, expected_version).await?;
-            let key = idempotency_key
-                .unwrap_or_else(|| format!("cancel-{}", uuid::Uuid::new_v4().simple()));
+            let expected_task_version =
+                current_version(&client, &task_id, expected_version).await?;
+            let key = idempotency_key.unwrap_or_else(new_key);
             let request = CancelTaskRequest {
                 expected_task_version,
                 reason,
@@ -138,9 +151,9 @@ pub async fn execute<W: Write>(
             idempotency_key,
         } => {
             let task_id = TaskId::new(id);
-            let expected_task_version = current_version(client, &task_id, expected_version).await?;
-            let key = idempotency_key
-                .unwrap_or_else(|| format!("finish-{}", uuid::Uuid::new_v4().simple()));
+            let expected_task_version =
+                current_version(&client, &task_id, expected_version).await?;
+            let key = idempotency_key.unwrap_or_else(new_key);
             let request = FinishTaskRequest {
                 expected_task_version,
             };
@@ -155,19 +168,19 @@ pub async fn execute<W: Write>(
             render(output::worker_list(stdout, &list, json))
         }
         Command::WorkersShow { id } => {
-            let worker = client
-                .get_worker(&WorkerId::new(id))
+            let detail = client
+                .get_worker(&myrlet_protocol::WorkerId::new(id))
                 .await
                 .map_err(runtime)?;
-            render(output::worker(stdout, &worker, json))
+            render(output::worker_detail(stdout, &detail, json))
         }
         Command::WorkersEnroll {
             ttl_seconds,
             suggested_worker_id,
         } => {
-            let request = CreateEnrollmentCodeRequest {
+            let request = myrlet_protocol::CreateEnrollmentCodeRequest {
                 ttl_seconds,
-                suggested_worker_id: suggested_worker_id.map(WorkerId::new),
+                suggested_worker_id: suggested_worker_id.map(myrlet_protocol::WorkerId::new),
             };
             let response = client
                 .create_enrollment_code(&request)
@@ -177,18 +190,70 @@ pub async fn execute<W: Write>(
         }
         Command::WorkersRotate { id } => {
             let response = client
-                .rotate_worker(&WorkerId::new(id))
+                .rotate_worker(&myrlet_protocol::WorkerId::new(id))
                 .await
                 .map_err(runtime)?;
             render(output::rotate(stdout, &response, json))
         }
         Command::WorkersRevoke { id } => {
-            let worker_id = WorkerId::new(id);
+            let worker_id = myrlet_protocol::WorkerId::new(id);
             client.revoke_worker(&worker_id).await.map_err(runtime)?;
             render(output::revoked(stdout, &worker_id, json))
         }
-        Command::EventsWatch { cursor, limit } => watch(client, cursor, limit, json, stdout).await,
+        Command::EventsWatch { cursor, limit } => watch(&client, cursor, limit, json, stdout).await,
+        Command::Done { .. }
+        | Command::ResultCheck { .. }
+        | Command::ResultSync { .. }
+        | Command::ResultStatus { .. } => unreachable!("local commands are handled above"),
     }
+}
+
+/// Execute one execution-local command through the Worker's private control socket.
+fn run_local<W: Write>(
+    env: &Env<'_>,
+    command: Command,
+    json: bool,
+    stdout: &mut W,
+) -> Result<(), CliError> {
+    let socket = env.worker_socket.ok_or_else(|| {
+        CliError::Usage(
+            "MYRLET_HOME is required for execution-local commands; the Worker control socket is \
+             under $MYRLET_HOME/worker"
+                .to_string(),
+        )
+    })?;
+    let request = to_local(command);
+    let reply = send_local(socket, &request)?;
+    render(output::local_reply(stdout, &reply, json))
+}
+
+/// Resolve the control-socket path from `MYRLET_HOME`, outside any Hub HTTP call.
+pub fn control_socket(home: &str) -> std::path::PathBuf {
+    std::path::Path::new(home)
+        .join("worker")
+        .join("control.sock")
+}
+
+fn to_local(command: Command) -> LocalCommand {
+    let delivery_id = local_only(&command)
+        .expect("only local commands reach the control socket")
+        .to_string();
+    match command {
+        Command::Done { .. } => LocalCommand::Done { delivery_id },
+        Command::ResultCheck { .. } => LocalCommand::ResultCheck { delivery_id },
+        Command::ResultSync { .. } => LocalCommand::ResultSync { delivery_id },
+        Command::ResultStatus { .. } => LocalCommand::ResultStatus { delivery_id },
+        _ => unreachable!("only local commands reach the control socket"),
+    }
+}
+
+fn send_local(socket: &str, request: &LocalCommand) -> Result<LocalReply, CliError> {
+    myrlet_protocol::send(std::path::Path::new(socket), request)
+        .map_err(|error| CliError::Runtime(error.to_string()))
+}
+
+fn new_key() -> String {
+    format!("myrlet-{}", uuid::Uuid::new_v4().simple())
 }
 
 async fn current_version(
@@ -266,4 +331,9 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, CliError> 
         .map_err(|error| CliError::Runtime(format!("failed to read {path}: {error}")))?;
     serde_json::from_str(&text)
         .map_err(|error| CliError::Runtime(format!("failed to decode {path}: {error}")))
+}
+
+/// Read a `TaskDefinition` file without going through a Hub call.
+pub fn read_definition(path: &str) -> Result<TaskDefinition, CliError> {
+    read_json(path)
 }

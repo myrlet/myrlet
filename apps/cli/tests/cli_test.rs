@@ -65,17 +65,45 @@ async fn capture(
 fn router(hub: Hub) -> Router {
     Router::new()
         .route("/v1/snapshot", get(|| async { Json(snapshot_value()) }))
-        .route("/v1/tasks", post(|| async { Json(task("held", 1, Value::Null)) }))
-        .route("/v1/tasks/:id", get(|| async { Json(task("dispatched", 3, delivery())) }))
-        .route("/v1/tasks/:id/dispatch", post(|| async {
-            Json(json!({"taskId":"task_01","status":"dispatched","version":4,"delivery":delivery()}))
-        }))
-        .route("/v1/tasks/:id/cancel", post(|| async { Json(task("cancelled", 5, Value::Null)) }))
-        .route("/v1/tasks/:id/finish", post(|| async { Json(task("finished", 6, Value::Null)) }))
-        .route("/v1/task-bundles/import", post(|| async {
-            Json(json!({"clientRefToTaskId":{"a":"task_01"},"tasks":[task("held",1,Value::Null)]}))
-        }))
-        .route("/v1/workers", get(|| async { Json(json!({"workers":[worker_value()]})) }))
+        .route(
+            "/v1/tasks",
+            get(|| async { Json(task_list()) }).post(|| async {
+                Json(json!({ "task": task("queued", 1, Value::Null), "eligible": true }))
+            }),
+        )
+        .route(
+            "/v1/tasks/:id",
+            get(|| async { Json(task("dispatched", 3, delivery())) })
+                .post(|| async { Json(task("queued", 4, Value::Null)) }),
+        )
+        .route(
+            "/v1/tasks/:id/cancel",
+            post(|| async { Json(task("cancelled", 5, Value::Null)) }),
+        )
+        .route(
+            "/v1/tasks/:id/finish",
+            post(|| async { Json(task("finished", 6, Value::Null)) }),
+        )
+        .route(
+            "/v1/task-bundles/import",
+            post(|| async {
+                Json(json!({
+                    "clientRefToTaskId": { "a": "task_01" },
+                    "tasks": [task("queued", 1, Value::Null)],
+                    "eligibleTaskIds": ["task_01"],
+                }))
+            }),
+        )
+        .route(
+            "/v1/workers",
+            get(|| async { Json(json!({ "workers": [worker_value()] })) }),
+        )
+        .route(
+            "/v1/workers/:id",
+            get(|| async {
+                Json(json!({ "worker": worker_value(), "claimableTaskIds": ["task_02"] }))
+            }),
+        )
         .route("/v1/events", get(events_route))
         .layer(axum::middleware::from_fn_with_state(hub, capture))
 }
@@ -117,7 +145,7 @@ fn temp_json(name: &str, contents: &str) -> String {
 fn delivery() -> Value {
     json!({
         "id":"delivery_01","taskId":"task_01","workerId":"wkr_000000000000","slotId":"slot-a",
-        "executorId":null,"connectionEpoch":7,"state":"accepted","rejectionCode":null,
+        "executorId":null,"connectionEpoch":7,"state":"accepted",
         "cancelState":null,"cancelReason":null,"createdAtMs":30,"updatedAtMs":40,
         "progress":{ "deliveryId":"delivery_01","taskId":"task_01","text":"hello progress",
             "observedAtMs":41,"receivedAtMs":42,"firstReceivedAtMs":42 }
@@ -130,8 +158,22 @@ fn task(status: &str, version: u64, current: Value) -> Value {
         "createdAtMs":10,"updatedAtMs":20,"finishedAtMs":null,
         "task":{ "title":"Verify the build","prompt":"Run the test suite." },
         "currentDelivery":current,
+        "blockedBy":[],
         "resultMarkdown":"# Findings\n\n- one","resultRecordedAtMs":45,
         "subtree":{"total":1,"held":1,"queued":0,"dispatched":0,"finished":0,"cancelled":0}
+    })
+}
+
+fn task_list() -> Value {
+    json!({
+        "tasks":[{
+            "id":"task_01","parentTaskId":null,"rootTaskId":"task_01","depth":1,
+            "sourceTaskId":null,"dependencies":[],"blockedBy":[],"category":"general",
+            "title":"Verify the build","status":"held","version":1,"createdAtMs":10,
+            "updatedAtMs":20,"finishedAtMs":null,"currentDelivery":null,
+            "subtree":{"total":1,"held":1,"queued":0,"dispatched":0,"finished":0,"cancelled":0}
+        }],
+        "totalTasks":1,"truncated":false,"eventCursor":41
     })
 }
 
@@ -139,13 +181,7 @@ fn snapshot_value() -> Value {
     json!({
         "schemaVersion":"myrlet.snapshot/v1","generatedAtMs":100,"eventCursor":41,
         "tasksTruncated":false,"totalTasks":1,"workers":[],
-        "tasks":[{
-            "id":"task_01","parentTaskId":null,"rootTaskId":"task_01","depth":1,
-            "sourceTaskId":null,"dependencies":[],"category":"general",
-            "title":"Verify the build","status":"held","version":1,"createdAtMs":10,
-            "updatedAtMs":20,"finishedAtMs":null,"currentDelivery":null,
-            "subtree":{"total":1,"held":1,"queued":0,"dispatched":0,"finished":0,"cancelled":0}
-        }]
+        "tasks":[]
     })
 }
 
@@ -157,7 +193,7 @@ fn worker_value() -> Value {
 }
 
 async fn events_route() -> Response {
-    let first = json!({"seq":42,"kind":"task.status_changed","createdAtMs":1,"payload":{}});
+    let first = json!({"seq":42,"kind":"task.created","createdAtMs":1,"payload":{}});
     let second = json!({"seq":43,"kind":"delivery.progress","createdAtMs":2,"payload":{}});
     let body = format!("data: {first}\n\ndata: {second}\n\n");
     Response::builder()
@@ -173,8 +209,8 @@ async fn json_flag_anywhere_and_usage_errors() {
     let url = start(hub.clone()).await;
     let (before, _) = ok(&["--json", "tasks", "list"], &url).await;
     let before: Value = serde_json::from_str(&before).unwrap();
-    assert_eq!(before["metadata"]["totalTasks"], 1);
-    assert_eq!(before["metadata"]["eventCursor"], 41);
+    assert_eq!(before["totalTasks"], 1);
+    assert_eq!(before["eventCursor"], 41);
     let (after, _) = ok(&["tasks", "list", "--json"], &url).await;
     let after: Value = serde_json::from_str(&after).unwrap();
     assert_eq!(after["tasks"][0]["id"], "task_01");
@@ -184,30 +220,37 @@ async fn json_flag_anywhere_and_usage_errors() {
     let (code, _, err) = run(&["bogus"], Some(url.as_str()), Some("admin-token")).await;
     assert_eq!(code, ExitCode::from(2u8));
     assert!(err.contains("unknown command"), "{err}");
+    // Execution-local commands do not need the Admin token, only `MYRLET_HOME`.
+    let (code, _, err) = run(&["done", "delivery_01"], Some(url.as_str()), None).await;
+    assert_eq!(code, ExitCode::from(2u8));
+    assert!(err.contains("MYRLET_HOME"), "{err}");
 }
 
 #[tokio::test]
-async fn create_show_dispatch_and_submit() {
+async fn submit_show_and_update() {
     let hub = Hub::default();
     let url = start(hub.clone()).await;
-    let _ = ok(
+    let (human, _) = ok(
         &[
             "tasks",
-            "create",
-            "--idempotency-key",
-            "k1",
+            "submit",
             "--title",
             "T",
             "--prompt",
             "P",
+            "--idempotency-key",
+            "k1",
         ],
         &url,
     )
     .await;
+    assert!(human.contains("Status: queued"), "{human}");
     let create = hub.all().pop().unwrap();
+    assert_eq!(create.method, "POST");
     assert_eq!(create.path, "/v1/tasks");
     assert_eq!(create.key.as_deref(), Some("k1"));
     assert_eq!(create.body["title"], "T");
+
     let (human, _) = ok(&["tasks", "show", "task_01"], &url).await;
     assert!(human.contains("Root: task_01"), "{human}");
     assert!(human.contains("FirstReceivedAtMs: 42"), "{human}");
@@ -222,52 +265,29 @@ async fn create_show_dispatch_and_submit() {
     );
     assert_eq!(show["resultMarkdown"], "# Findings\n\n- one");
     assert_eq!(show["resultRecordedAtMs"], 45);
+
     let _ = ok(
         &[
             "tasks",
-            "dispatch",
+            "update",
             "task_01",
             "--expected-version",
             "3",
+            "--depends-on",
+            "task_a",
             "--idempotency-key",
-            "d1",
-            "--match",
-            "--fallback-allowed",
-            "--queue",
+            "u1",
         ],
         &url,
     )
     .await;
-    let dispatch = hub.all().pop().unwrap();
-    assert_eq!(dispatch.body["expectedTaskVersion"], 3);
-    assert_eq!(dispatch.body["selection"]["mode"], "match");
-    assert_eq!(
-        dispatch.body["selection"]["fallbackAllowed"],
-        Value::Bool(true)
-    );
-    let _ = ok(
-        &[
-            "tasks",
-            "dispatch",
-            "task_01",
-            "--expected-version",
-            "3",
-            "--idempotency-key",
-            "d2",
-            "--worker-id",
-            "wkr_000000000000",
-            "--slot-id",
-            "slot-a",
-            "--connection-epoch",
-            "7",
-        ],
-        &url,
-    )
-    .await;
-    let targeted = hub.all().pop().unwrap();
-    assert_eq!(targeted.body["selection"]["mode"], "targeted");
-    assert_eq!(targeted.body["selection"]["workerId"], "wkr_000000000000");
-    let file = temp_json("submit", r#"{"title":"From file","prompt":"Do it"}"#);
+    let update = hub.all().pop().unwrap();
+    assert_eq!(update.method, "POST");
+    assert_eq!(update.path, "/v1/tasks/task_01");
+    assert_eq!(update.body["expectedTaskVersion"], 3);
+    assert_eq!(update.body["dependencies"], json!(["task_a"]));
+
+    let file = temp_json("submit-file", r#"{"title":"From file","prompt":"Do it"}"#);
     let _ = ok(
         &[
             "tasks",
@@ -280,16 +300,12 @@ async fn create_show_dispatch_and_submit() {
         &url,
     )
     .await;
-    let requests = hub.all();
-    assert_eq!(requests[requests.len() - 2].body["title"], "From file");
-    let dispatch = &requests[requests.len() - 1];
-    assert_eq!(dispatch.path, "/v1/tasks/task_01/dispatch");
-    assert_eq!(dispatch.key.as_deref(), Some("s1-dispatch"));
-    assert_eq!(dispatch.body["expectedTaskVersion"], 1);
+    let from_file = hub.all().pop().unwrap();
+    assert_eq!(from_file.body["title"], "From file");
 }
 
 #[tokio::test]
-async fn cancel_fetches_current_version_when_omitted() {
+async fn cancel_and_finish_fetch_the_current_version_when_omitted() {
     let hub = Hub::default();
     let url = start(hub.clone()).await;
     let _ = ok(
@@ -304,28 +320,28 @@ async fn cancel_fetches_current_version_when_omitted() {
     assert_eq!(requests[1].path, "/v1/tasks/task_01/cancel");
     assert_eq!(requests[1].body["expectedTaskVersion"], 3);
     assert_eq!(requests[1].body["reason"], "no longer needed");
-    assert!(requests[1].key.as_deref().unwrap().starts_with("cancel-"));
-}
+    assert!(
+        requests[1]
+            .key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("myrlet-")),
+        "a generated key is sent"
+    );
 
-#[tokio::test]
-async fn finish_fetches_current_version_when_omitted() {
-    let hub = Hub::default();
-    let url = start(hub.clone()).await;
     let _ = ok(
         &["tasks", "finish", "task_01", "--idempotency-key", "f1"],
         &url,
     )
     .await;
     let requests = hub.all();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].path, "/v1/tasks/task_01");
-    assert_eq!(requests[1].path, "/v1/tasks/task_01/finish");
-    assert_eq!(requests[1].body["expectedTaskVersion"], 3);
-    assert_eq!(requests[1].key.as_deref(), Some("f1"));
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[3].path, "/v1/tasks/task_01/finish");
+    assert_eq!(requests[3].body["expectedTaskVersion"], 3);
+    assert_eq!(requests[3].key.as_deref(), Some("f1"));
 }
 
 #[tokio::test]
-async fn list_bundle_workers_and_events_watch() {
+async fn list_import_workers_show_and_events_watch() {
     let hub = Hub::default();
     let url = start(hub.clone()).await;
 
@@ -337,7 +353,7 @@ async fn list_bundle_workers_and_events_watch() {
     let (bundle_out, _) = ok(
         &[
             "tasks",
-            "bundle-import",
+            "import",
             "--file",
             file.as_str(),
             "--idempotency-key",
@@ -347,12 +363,16 @@ async fn list_bundle_workers_and_events_watch() {
     )
     .await;
     assert!(bundle_out.contains("Imported 1 task"), "{bundle_out}");
+    assert!(bundle_out.contains("Eligible now: task_01"), "{bundle_out}");
     let import = hub.all().pop().unwrap();
     assert_eq!(import.path, "/v1/task-bundles/import");
 
     let (workers, _) = ok(&["--json", "workers", "list"], &url).await;
     let workers: Value = serde_json::from_str(&workers).unwrap();
     assert_eq!(workers["workers"][0]["workerId"], "wkr_000000000000");
+
+    let (detail, _) = ok(&["workers", "show", "wkr_000000000000"], &url).await;
+    assert!(detail.contains("ClaimableTasks: task_02"), "{detail}");
 
     let (events, _) = ok(&["events", "watch", "--limit", "1", "--json"], &url).await;
     let lines: Vec<&str> = events.lines().collect();
@@ -362,4 +382,18 @@ async fn list_bundle_workers_and_events_watch() {
     assert_eq!(snapshot["type"], "snapshot");
     assert_eq!(event["type"], "event");
     assert_eq!(event["event"]["seq"], 42);
+}
+
+#[tokio::test]
+async fn execution_local_commands_require_a_worker_socket() {
+    let url = "http://127.0.0.1:1";
+    for args in [
+        vec!["result", "check", "delivery_01"],
+        vec!["result", "sync", "delivery_01"],
+        vec!["result", "status", "delivery_01"],
+    ] {
+        let (code, _, err) = run(&args, Some(url), Some("admin-token")).await;
+        assert_eq!(code, ExitCode::from(2u8), "result {args:?}");
+        assert!(err.contains("MYRLET_HOME"), "result {args:?}: {err}");
+    }
 }
