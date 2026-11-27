@@ -98,6 +98,26 @@ pub enum InventoryValidationError {
     DuplicateSlotId,
 }
 
+impl SlotInventory {
+    /// Whether this enabled Slot satisfies the hard routing rules of one Task.
+    ///
+    /// Required capabilities must all be `available` and an explicitly requested
+    /// Executor must exist here. Worker, role, and other preferences never block a claim.
+    pub fn accepts(
+        &self,
+        routing: &crate::task::TaskRouting,
+        executor_id: Option<&ExecutorId>,
+    ) -> bool {
+        self.enabled
+            && routing.required_capabilities.iter().all(|required| {
+                self.capabilities.iter().any(|claim| {
+                    claim.name == *required && claim.state == CapabilityState::Available
+                })
+            })
+            && executor_id.is_none_or(|id| self.executors.iter().any(|exec| &exec.id == id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

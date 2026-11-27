@@ -32,6 +32,10 @@ impl TaskStatus {
     }
 
     /// Whether Hub may move a Task directly from `self` to `next`.
+    ///
+    /// Submission moves a Task straight to `queued` when its prerequisites are already
+    /// `finished`, and leaves it `held` otherwise. A claim commits the Delivery and moves
+    /// the Task to `dispatched`.
     pub fn can_transition_to(&self, next: TaskStatus) -> bool {
         use TaskStatus::*;
         if next == Cancelled {
@@ -39,12 +43,12 @@ impl TaskStatus {
         }
         matches!(
             (self, next),
-            (Held, Queued | Dispatched) | (Queued, Dispatched) | (Dispatched, Finished | Held)
+            (Held, Queued) | (Queued, Dispatched) | (Dispatched, Finished)
         )
     }
 }
 
-/// Routing constraints; capabilities are hard, the remaining fields are preferences.
+/// Routing constraints; capabilities and Slot choice are hard, the rest are soft.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskRouting {
@@ -141,6 +145,16 @@ impl TaskDefinition {
         }
         Ok(())
     }
+
+    /// The status submission gives this Task: `queued` only when every declared
+    /// dependency is already `finished`, otherwise `held`.
+    pub fn submitted_status(&self, dependencies_finished: bool) -> TaskStatus {
+        if dependencies_finished {
+            TaskStatus::Queued
+        } else {
+            TaskStatus::Held
+        }
+    }
 }
 
 fn is_category_byte(byte: u8) -> bool {
@@ -194,6 +208,14 @@ pub struct SubtreeCounts {
     pub cancelled: u64,
 }
 
+/// One declared dependency that keeps a Task `held`, with its current status.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockingDependency {
+    pub task_id: TaskId,
+    pub status: TaskStatus,
+}
+
 /// Authoritative Hub-owned Task record returned by Task reads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,10 +230,13 @@ pub struct TaskRecord {
     pub finished_at_ms: Option<i64>,
     pub task: TaskDefinition,
     pub current_delivery: Option<crate::delivery::DeliveryView>,
-    /// Immutable final Harness-written Markdown result, when the Worker synced one.
+    /// Dependencies that are not `finished`, with their status, in Task-ID order.
+    #[serde(default)]
+    pub blocked_by: Vec<BlockingDependency>,
+    /// Latest Harness-written Markdown result, when the Delivery has one.
     #[serde(default)]
     pub result_markdown: Option<String>,
-    /// When Hub accepted the result; independent of `finished_at_ms`.
+    /// When Hub stored the current result; independent of `finished_at_ms`.
     #[serde(default)]
     pub result_recorded_at_ms: Option<i64>,
     pub subtree: SubtreeCounts,
@@ -233,13 +258,19 @@ mod tests {
         assert!(TaskStatus::Cancelled.is_terminal());
         assert!(!TaskStatus::Held.is_terminal());
         assert!(TaskStatus::Held.can_transition_to(TaskStatus::Queued));
-        assert!(TaskStatus::Held.can_transition_to(TaskStatus::Dispatched));
+        assert!(!TaskStatus::Held.can_transition_to(TaskStatus::Dispatched));
         assert!(TaskStatus::Queued.can_transition_to(TaskStatus::Dispatched));
         assert!(TaskStatus::Dispatched.can_transition_to(TaskStatus::Finished));
-        assert!(TaskStatus::Dispatched.can_transition_to(TaskStatus::Held));
         assert!(TaskStatus::Dispatched.can_transition_to(TaskStatus::Cancelled));
         assert!(!TaskStatus::Finished.can_transition_to(TaskStatus::Cancelled));
         assert!(!TaskStatus::Cancelled.can_transition_to(TaskStatus::Queued));
+    }
+
+    #[test]
+    fn submission_authorizes_only_ready_tasks() {
+        let task = definition();
+        assert_eq!(task.submitted_status(true), TaskStatus::Queued);
+        assert_eq!(task.submitted_status(false), TaskStatus::Held);
     }
 
     #[test]
