@@ -2,9 +2,15 @@
 
 Myrlet secures its own control plane (HTTP, SSE, WSS, and Myrlet-owned files). It does **not** sandbox Harnesses or manage Harness Provider Credentials.
 
+## Proposed agent access
+
+Authorized Owner Agents and Harnesses can query all Tasks, dependency trees, Workers, and events. Read access alone cannot submit, cancel, rotate, or revoke. A Harness needs no Admin token for these proposed reads. The read credential or authenticated proxy and operator bootstrap require review before implementation. Until then, use the current credential matrix below.
+
+A Delivery ID identifies an execution and confers no authority. For local reporting the Worker resolves the recorded Delivery, verifies safe paths, and uses its own credential. The Hub checks Worker binding and current connection epoch at the write boundary. An unreadable or unsafe Result file provides no authority to clear the Hub copy. See [reporting semantics](hub-api.md#proposed-reporting-semantics).
+
 ## Control-Plane Authentication
 
-V1 has two authenticated Principal kinds:
+The current binary has two authenticated Principal kinds:
 
 | Principal | Credential | Authorized Surface |
 | --- | --- | --- |
@@ -15,7 +21,7 @@ Rules:
 - Hub stores only **SHA-256 verifiers** (never plaintext tokens or pairing codes) and compares verifiers in constant time.
 - Authentication runs **before** request bodies are buffered or parsed (`401` on missing/invalid/revoked tokens).
 - Credentials in URL query parameters are forbidden.
-- Worker credentials cannot call Admin routes; Admin credentials cannot spoof Worker Progress/Finish or WSS connections.
+- Worker credentials cannot call Admin routes; Admin credentials cannot spoof Worker Progress/Result/Finish or WSS connections.
 - Browser Clients keep tokens in memory only (never in `localStorage`, URLs, or packaged Web assets) and default to same-origin Hub hosting with a restrictive CSP.
 
 ## Pairing and Worker Credentials

@@ -2,7 +2,11 @@
 
 Recommended interaction loop for an external Owner Agent operating Myrlet through the `myrlet` CLI or Hub HTTP/SSE API. Myrlet imposes no mandatory Planner, DAG engine, or prompt format.
 
-## Standard Loop
+## Workflow proposed for Owners and Harnesses
+
+An Owner submits once, inspects blockers and eligible Slot requirements, and explicitly edits a pending Task if necessary. Cancelling a prerequisite leaves dependents held. A Harness can request a local sync and report `done` with its own Delivery ID as the last command before exit. Distinguish local receipt, Hub confirmation, and Worker-observed Finish. See the [Task transitions](../architecture/task-model.md#proposed-task-lifecycle) and [local commands](../architecture/local-runtime.md#proposed-agent-commands). These proposed operations require implementation before use.
+
+## Standard loop with current binaries
 
 1. **Observe**: Read `GET /v1/snapshot` (or `myrlet --json tasks list` / `workers list`) to inspect online Workers, capabilities, active Deliveries, and Task Trees.
 2. **Create**: Create a `held` Task (`POST /v1/tasks`) or atomic `held` Task Bundle (`POST /v1/task-bundles/import`) with up to 5 hierarchy levels and sibling dependencies. Creation never dispatches.

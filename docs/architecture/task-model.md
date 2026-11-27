@@ -3,7 +3,25 @@
 A **Task** is the durable unit of work owned by Hub. A Subtask is an ordinary Task with `parentTaskId` set.
 A **Delivery** identifies one Hub-to-Worker handoff of a Task. Harness Sessions and Workspaces are private to the Harness and are not Task fields or Myrlet identities.
 
+## Proposed Task lifecycle
+
+`submit` authorizes work in one operation. `import` authorizes an atomic batch with the same readiness rules. The five Task states retain distinct observable meanings:
+
+| State | Reason an agent observes it | Available decision |
+| --- | --- | --- |
+| `held` | At least one named prerequisite has a status other than `finished`, including `cancelled`. | Inspect blocker IDs and statuses, amend the dependencies, cancel the dependent, or wait. |
+| `queued` | All prerequisites finished and no Worker has claimed the Task. A wakeup leaves it queued. | Inspect Slot availability and capabilities, update requirements, cancel, or wait. |
+| `dispatched` | The Hub committed a claim for a particular Worker and Slot. | Inspect the Delivery or request cancellation. |
+| `finished` | For a Task with a Delivery, the Worker observed handling end. | Read the latest Progress and Result and decide on follow-up. |
+| `cancelled` | An explicit cancellation took effect. | Inspect affected dependents. Each keeps its existing dependencies. |
+
+Before claim, the Owner may edit dependencies, Slot and capability requirements, and optional preferences. The Hub validates sibling relationships and cycles and recomputes `held` or `queued`. Only Slot and capability constrain routing. Machine, session, and other preferences pass through to execution. Wakeup timing confers no priority over a concurrent Owner edit. At claim commit the Hub checks the latest Task conditions, dependency readiness, Slot eligibility, and absence of another effective Delivery. Pending edits use `expectedTaskVersion`. A losing edit reports the existing claim. The Delivery retains the accepted execution context.
+
+Missing reports never trigger an implicit retry or reassignment. How to represent and close a coordination-only parent under these readiness rules remains open. Parentage alone never finishes a parent. See the [claim protocol](worker-protocol.md#proposed-wakeup-and-claim).
+
 ## Task Tree and Dependencies
+
+The following sections document the current binary, including its explicit dispatch and parent-finish operations.
 
 - A Task Tree has at most **5 levels** including the Root (`depth` 1..=5).
 - A Root has `parentTaskId: null` and `rootTaskId == taskId`. `parentTaskId` is immutable.
@@ -14,7 +32,7 @@ A **Delivery** identifies one Hub-to-Worker handoff of a Task. Harness Sessions 
 
 ## Lifecycle
 
-Every Task has one Hub-owned `status` from five values:
+The current binary interprets the five Hub-owned states as follows. The [proposed lifecycle](#proposed-task-lifecycle) changes the first three.
 
 | Status | Meaning |
 | --- | --- |
@@ -36,7 +54,7 @@ Every Task has one Hub-owned `status` from five values:
 
 ## Task Definition
 
-Client-supplied fields are immutable after creation:
+In the current API, client-supplied fields are immutable after creation:
 
 - **Relationships**: `parentTaskId`, `sourceTaskId`, `dependencies`.
 - **Classification**: `category` (free ASCII token up to 64 chars, default `"general"`, retrieval/filter only), `tags`.
@@ -60,6 +78,8 @@ Task mutations (dispatch, cancel, finish coordination-only parent) require `expe
 ```
 
 ## Dispatch, Queueing, Bundles, and Retry
+
+The following selection rules apply to the current dispatch API. The proposed Worker claim replaces this ranking.
 
 - **Targeted Dispatch**: Names an exact `workerId`, `slotId`, and optional `executorId`. Hub never falls back to another Worker or Slot. If offline, Hub either rejects (`409`/`503`) or enqueues in FIFO order when `queue: true`.
 - **Simple Match**: Deterministically picks an online Worker/Slot where every `requiredCapabilities` entry is in the `available` state (closed set: `available`, `degraded`, `unavailable`), preferring:

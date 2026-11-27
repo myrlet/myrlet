@@ -55,6 +55,8 @@ cargo run -p myrlet-worker-daemon
 
 ## 4. Create and Dispatch a Task
 
+This walkthrough uses the CLI built from the current sources. Its `tasks submit` convenience command also performs explicit dispatch internally. The proposed single-step submission and Worker claim are described in the [Task model](../architecture/task-model.md#proposed-task-lifecycle).
+
 In a third terminal:
 
 ```bash

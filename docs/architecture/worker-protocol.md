@@ -2,6 +2,16 @@
 
 Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/firewalls require no inbound ports.
 
+## Proposed wakeup and claim
+
+1. For a `queued` Task the Hub checks prerequisites, required capabilities, and advertised Slot availability. It wakes one eligible Worker. This hint leaves the Task queued and creates neither a reservation nor a Delivery. If the Worker stays silent, the Hub may wake another.
+2. A prepared Worker selects an available local Slot and explicitly claims by Task ID and Slot ID. A shutting-down or unprepared Worker skips the claim. The Hub applies the [Task eligibility rules](task-model.md#proposed-task-lifecycle) atomically with creating the unique effective Delivery. Racing claims can yield one winner only.
+3. The winning Worker durably registers that Delivery ID before invoking its Harness. A lost claim acknowledgment recovers the committed binding. An uncertain launch enters recovery. Neither silence nor a new connection authorizes another launch.
+
+The Worker supplies the Task and Delivery IDs, Progress and Result paths, and the concrete `done <delivery-id>` command in the prompt. It asks the Harness to run that optional command last before exit. The local receipt requests reconciliation. Worker-observed exit drives final sync and Finish even if the Harness omits the signal. Replayed notifications resolve against the original Delivery, including after its Slot is reused. See [reporting semantics](hub-api.md#proposed-reporting-semantics). Wakeup and claim frame names, claim recovery exchange, and the local notification transport are open design details.
+
+## Current protocol reference
+
 **Channel split:**
 - **WSS** carries handshake, heartbeats, inventory updates, Delivery offers, pre-registration rejections, cancellation commands/responses, and reconnect resync.
 - **Hub HTTP** carries Harness-authored **Progress** (`POST /v1/worker/deliveries/{id}/progress`), the optional final Harness-written **Result** (`POST /v1/worker/deliveries/{id}/result`), and Worker-reported **Finish** (`POST /v1/worker/deliveries/{id}/finish`).
@@ -27,7 +37,7 @@ Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/
 
 ## Minimal WSS Frame Matrix
 
-Every WSS frame uses a closed `camelCase` JSON envelope (`deny_unknown_fields`):
+The current binary uses the following frame matrix. Wakeup and claim are proposed operations. Every implemented WSS frame uses a closed `camelCase` JSON envelope (`deny_unknown_fields`):
 `{ v, kind, messageId, workerId, slotId?, connectionId?, connectionEpoch?, sentAtMs, replyTo?, payload }`.
 Frames are capped at 512 KiB; inventory payloads are capped at 256 KiB and 256 Slots.
 
@@ -65,6 +75,8 @@ Frames are capped at 512 KiB; inventory payloads are capped at 256 KiB and 256 S
 
 ## Delivery Lifecycle and Idempotency
 
+Current offer-based wire behavior:
+
 ```text
 Hub commits offered Delivery ─> sends task.offer
   └─> Worker: Receive ─> Validate ─┬─ Missing local prerequisite ─> persist refusal ─> send task.rejected (Task ─> held)
@@ -84,11 +96,13 @@ Hub commits offered Delivery ─> sends task.offer
 
 ## Non-Invasive Harness Adapters & Progress File Boundary
 
+The following file and adapter behavior is implemented today; the proposed read, reconcile, and clear behavior is specified in [Hub reporting](hub-api.md#proposed-reporting-semantics).
+
 Adapters are thin, non-invasive bridges over existing Harness interfaces (preference order: native SDK/API → native event callbacks → CLI / structured output → external process bridge). Initial V1 targets are **Claude Code**, **Codex**, **Pi**, and plain **Process**.
 
 - **Strict 2-method common Adapter contract**: `submit(request)` and `cancel(execution_ref)` **only**.
 - **Explicitly forbidden on the generic Adapter trait**: `capabilities()`, `validate()`, `inspect()`, `reconcile()`, `reattach()`, `resume_execution()`, and interactive `input()` / `steer()` / `follow_up()`. Capability differences stay honest and unsupported fields remain absent.
-- **Short startup prompt**: Worker passes only minimal Task identification (`taskId` / `deliveryId` / prompt) and the Progress file path (`<worker>/progress/<delivery_id>.json`). Harnesses fetch extra Task context via the `myrlet` CLI when needed.
+- **Short startup prompt**: Worker passes only minimal Task identification (`taskId` / `deliveryId` / prompt) and local Progress and Result paths (`<worker>/progress/<delivery_id>.json`, `<worker>/results/<delivery_id>.md`). Harnesses fetch extra Task context via the `myrlet` CLI when needed.
 - **Progress file ownership**: Worker creates the `progress/` directory and **never** creates, writes, or edits the Progress file itself. The Harness optionally writes bounded JSON (`{ "text": "..." }`, unknown fields ignored, max 64 KiB file / 16 KiB text); Worker watches changes and relays them via Hub HTTP. Never make an extra LLM call to generate Progress.
 
 - **Result file ownership**: Worker creates the `results/` directory and **never** creates, writes, or edits `<delivery_id>.md`. The Harness optionally writes one UTF-8 Markdown result (max 64 KiB); when local handling ends, the Worker reads it **once**, persists the text in its local Delivery record, and posts it to Hub HTTP. Result sync is independent of Progress and Finish: it runs even after the Finish ACK, retries across reconnects and Worker restarts with the identical text (Hub accepts identical replays), and never invokes the Harness again. A missing, empty, oversized, invalid-UTF-8, symlinked, or group/world-accessible result file is ignored, never replaced.

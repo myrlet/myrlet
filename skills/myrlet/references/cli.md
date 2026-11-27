@@ -2,7 +2,9 @@
 
 Executable: `myrlet`.
 
-## Commands
+## Commands in the current binary
+
+`tasks submit` below composes create and dispatch. The top-level `submit` and `import` names, pending edits, and local `done` and `result` commands are under review in the [client surface proposal](../../../docs/architecture/local-runtime.md#proposed-agent-commands). Their availability should be checked against the installed CLI.
 
 | Command | Purpose |
 | --- | --- |
@@ -10,7 +12,7 @@ Executable: `myrlet`.
 | `myrlet [--json] tasks show <id>` | Read one authoritative Task record, including the immutable result Markdown |
 | `myrlet [--json] tasks create --idempotency-key <key> --title <t> --prompt <p>` | Create a `held` Task |
 | `myrlet [--json] tasks dispatch <id> --expected-version <n> --idempotency-key <key> --match` | Dispatch via Simple Match |
-| `myrlet [--json] tasks dispatch <id> --expected-version <n> --idempotency-key <key> --worker-id <id> --slot-id <id> --connection-epoch <n> [--executor-id <id>]` | Targeted Dispatch |
+| `myrlet [--json] tasks dispatch <id> --expected-version <n> --idempotency-key <key> --worker-id <id> --slot-id <id> [--executor-id <id>]` | Targeted Dispatch |
 | `myrlet [--json] tasks submit --file <file> --idempotency-key <key> [--dispatch-idempotency-key <key>]` | Create from JSON file + explicit Simple Match dispatch |
 | `myrlet [--json] tasks bundle-import --file <bundle> --idempotency-key <key>` | Atomically import `held` Tasks from a Bundle |
 | `myrlet [--json] tasks cancel <id>` | Cancel a non-terminal Task |

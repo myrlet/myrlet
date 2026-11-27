@@ -8,7 +8,11 @@ description: Create, dispatch, inspect, cancel, and monitor Myrlet Hub Tasks thr
 Use the `myrlet` CLI (built on `myrlet-client`). Do not build another HTTP client, scheduler, or Worker loop.
 See [references/cli.md](references/cli.md) for exact command syntax and [docs/architecture/README.md](../../docs/architecture/README.md) for the canonical V1 contract.
 
-## Authenticate
+## Choose the supported workflow
+
+Check `myrlet --help` for the installed command set. The commands below operate the current binary. The [proposed CLI](../../docs/architecture/local-runtime.md#proposed-agent-commands) has separate Hub queries, Owner writes, and Delivery-local reports. Use `done` only when the Worker startup prompt and installed CLI support it. Current prompts supply a file path for handing the result to the Worker on exit.
+
+## Authenticate as an Owner
 
 ```bash
 export MYRLET_HUB_URL='http://127.0.0.1:4140'
@@ -45,7 +49,7 @@ myrlet --json tasks bundle-import \
   --idempotency-key issue-42-bundle-1
 ```
 
-Targeted Dispatch requires explicit `--worker-id`, `--slot-id`, and `--connection-epoch` (`--executor-id` is optional).
+Targeted Dispatch requires explicit `--worker-id` and `--slot-id` (`--executor-id` is optional).
 
 ## Inspect, Watch, and Cancel
 
