@@ -366,6 +366,17 @@ a:hover {
   cursor: not-allowed;
 }
 
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23788292' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
+  cursor: pointer;
+}
+
 .textarea {
   height: auto;
   min-height: 96px;
@@ -1479,7 +1490,7 @@ a:hover {
 }
 
 /* ===================================================================== */
-/* 8. Task Tree Table                                                    */
+/* 8. Task Tree Outline (List Mode)                                      */
 /* ===================================================================== */
 
 .task-pane {
@@ -1489,7 +1500,7 @@ a:hover {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--bg-surface);
+  background: var(--bg-canvas);
 }
 
 .task-pane-header {
@@ -1498,9 +1509,9 @@ a:hover {
   gap: 8px;
   flex: none;
   height: 34px;
-  padding: 0 16px;
+  padding: 0 20px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-canvas);
+  background: var(--bg-surface);
   font-size: 11.5px;
 }
 
@@ -1514,7 +1525,7 @@ a:hover {
   align-items: center;
   gap: 8px;
   flex: none;
-  padding: 6px 16px;
+  padding: 6px 20px;
   background: var(--status-queued-bg);
   border-bottom: 1px solid var(--status-queued-border);
   color: var(--status-queued-fg);
@@ -1530,87 +1541,200 @@ a:hover {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  padding: 16px 20px 28px;
 }
 
-.tree-table {
+.list-outline {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   width: 100%;
-  min-width: 660px;
-  border-collapse: separate;
-  border-spacing: 0;
-  table-layout: fixed;
+  min-width: 720px;
 }
 
-.tree-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  height: 32px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
+.list-group-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
   background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.list-group-head,
+.list-row {
+  display: grid;
+  grid-template-columns:
+    minmax(310px, 1.45fr)
+    84px
+    126px
+    minmax(124px, 0.38fr)
+    126px
+    82px;
+  align-items: center;
+  column-gap: 10px;
+  padding: 0 12px 0 14px;
+}
+
+.list-group-head {
+  height: 34px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-canvas) 65%, var(--bg-surface));
+}
+
+.list-group-head-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.list-group-kicker {
+  flex: none;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.list-group-title {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.list-group-summary {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-well);
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.list-col-label {
+  color: var(--text-muted);
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  text-align: left;
   white-space: nowrap;
+  user-select: none;
 }
 
-.tree-table thead th:first-child {
-  padding-left: 16px;
+.list-group-rows {
+  display: flex;
+  flex-direction: column;
 }
 
-.tree-row {
+.list-row {
+  position: relative;
+  min-height: 52px;
   background: transparent;
   color: var(--text-primary);
-  font-size: 12.5px;
   cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-out);
+  transition: background-color 110ms var(--ease-out);
 }
 
-.tree-row:hover {
-  background: var(--bg-hover);
+.list-row + .list-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 12px;
+  height: 1px;
+  background: var(--border-subtle);
+  opacity: 0.72;
+  pointer-events: none;
 }
 
-.tree-row[data-selected="true"] {
+@media (hover: hover) and (pointer: fine) {
+  .list-row:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.list-row[data-selected="true"] {
   background: var(--bg-selected);
 }
 
-.tree-row:focus-visible {
+.list-row[data-selected="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2.5px;
+  background: var(--accent);
+}
+
+.list-row:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
+  z-index: 1;
 }
 
-.tree-table tbody td {
-  height: var(--row-height);
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  vertical-align: middle;
-  white-space: nowrap;
+.list-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.list-cell-task {
+  gap: 6px;
+  height: 52px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.tree-table tbody td:first-child {
-  padding-left: 16px;
-  padding-right: 8px;
+.list-task-stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.3;
 }
 
-.cell-task {
-  position: relative;
+.list-task-primary {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: var(--row-height);
   min-width: 0;
-  overflow: hidden;
 }
 
-.tree-guides-inline {
+.list-guides {
   display: inline-flex;
   align-self: stretch;
   flex: none;
+  color: var(--border-default);
+}
+
+.list-guide-slot {
+  position: relative;
+  display: inline-flex;
+  align-self: stretch;
+  flex: none;
+}
+
+.list-guide-stem {
+  position: absolute;
+  left: 10px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-default);
+}
+
+.list-guide-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
 .tree-toggle {
@@ -1618,14 +1742,14 @@ a:hover {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-muted);
-  transition: var(--transition-colors);
+  transition: background-color 110ms var(--ease-out), color 110ms var(--ease-out);
 }
 
 .tree-toggle:hover {
@@ -1634,47 +1758,51 @@ a:hover {
 }
 
 .tree-toggle svg {
-  transition: transform var(--duration-fast) var(--ease-out);
+  transition: transform 130ms var(--ease-out);
 }
 
 .tree-toggle[data-expanded="true"] svg {
   transform: rotate(90deg);
 }
 
-.tree-spacer {
+.list-leaf-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
-.task-title {
+.list-task-title {
   flex: 0 1 auto;
-  min-width: 48px;
+  min-width: 64px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
-  letter-spacing: -0.005em;
+  letter-spacing: -0.008em;
 }
 
-.tree-row[data-selected="true"] .task-title,
-.tree-row[data-match="true"] .task-title {
+.list-row[data-root="true"] .list-task-title,
+.list-row[data-selected="true"] .list-task-title,
+.list-row[data-match="true"] .list-task-title {
   font-weight: 600;
 }
 
-.task-id {
+.list-task-id {
   flex: none;
   color: var(--text-muted);
-  font-family: var(--font-mono);
   font-size: 10.5px;
-  opacity: 0.85;
+  opacity: 0.72;
 }
 
-.subtask-badge {
+.list-micro-pill {
   display: inline-flex;
   align-items: center;
+  gap: 3px;
   flex: none;
   height: 18px;
   padding: 0 6px;
@@ -1682,40 +1810,27 @@ a:hover {
   border-radius: var(--radius-xs);
   background: var(--bg-well);
   color: var(--text-secondary);
-  font-size: 10.5px;
-  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 10px;
   line-height: 1;
   white-space: nowrap;
 }
 
-.cell-task .row-actions {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%) translateX(4px);
+.list-cat-pill {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 2px 3px 26px;
-  background: linear-gradient(90deg, transparent, var(--bg-hover) 20px, var(--bg-hover));
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
+  max-width: 100%;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-well);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
 }
 
-.tree-row[data-selected="true"] .cell-task .row-actions {
-  background: linear-gradient(90deg, transparent, var(--bg-selected) 20px, var(--bg-selected));
-}
-
-.tree-row:hover .cell-task .row-actions,
-.tree-row:focus-within .cell-task .row-actions {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
-  pointer-events: auto;
-}
-
-.progress-cell {
+.list-progress-stack {
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -1723,7 +1838,7 @@ a:hover {
   line-height: 1.3;
 }
 
-.progress-text {
+.list-progress-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1731,13 +1846,110 @@ a:hover {
   font-size: 12px;
 }
 
-.progress-meta {
+.list-progress-muted {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-muted);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+
+.list-progress-age {
+  color: var(--text-muted);
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.list-empty-dot {
+  color: var(--text-muted);
+  opacity: 0.35;
+  user-select: none;
+}
+
+.list-worker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.list-worker-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.list-worker-id {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.list-worker-slot {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.list-cell-actions {
+  justify-content: flex-end;
+}
+
+.list-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0;
+  transform: translateX(3px);
+  pointer-events: none;
+  transition: opacity 110ms var(--ease-out), transform 110ms var(--ease-out);
+}
+
+.list-row:hover .list-row-actions,
+.list-row:focus-within .list-row-actions,
+.list-row[data-selected="true"] .list-row-actions {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.list-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  transition: background-color 110ms var(--ease-out), border-color 110ms var(--ease-out),
+    color 110ms var(--ease-out), transform 110ms var(--ease-out);
+}
+
+.list-action-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.list-action-btn:active {
+  transform: scale(0.95);
+}
+
+.list-action-dispatch {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border-subtle));
+  background: var(--accent-soft);
+}
+
+.list-action-dispatch:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .pane-empty {

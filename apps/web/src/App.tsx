@@ -892,6 +892,7 @@ export default function App() {
           {activeView === "list" ? (
             <TaskTreeTable
               rows={rows}
+              workers={hub.workers}
               totalTasks={totalTasks}
               loadedCount={tasks.length}
               tasksTruncated={tasksTruncated}
