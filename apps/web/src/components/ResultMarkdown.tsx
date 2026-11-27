@@ -23,6 +23,15 @@ export default function ResultMarkdown({ markdown }: ResultMarkdownProps) {
         skipHtml
         remarkPlugins={[remarkGfm]}
         components={{
+          // Wide tables scroll inside their own container instead of pushing
+          // the whole reader (or the narrow Overview pane) sideways.
+          table({ children }) {
+            return (
+              <div className="result-table-scroll">
+                <table>{children}</table>
+              </div>
+            );
+          },
           a({ href, children }) {
             const target = typeof href === "string" ? href : undefined;
             if (target === undefined || !isSafeHref(target)) {
