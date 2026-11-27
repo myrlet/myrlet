@@ -12,7 +12,7 @@ use myrlet_protocol::task::TaskDefinition;
 use myrlet_worker::adapter::ExecutorAdapter as _;
 use myrlet_worker::{
     build_startup_prompt, read_progress_if_changed, read_result, HandlingEnded, HarnessCliAdapter,
-    HarnessKind, LocalDeliveryRecord, LocalRegistry, ProcessAdapter, SubmitRequest,
+    HarnessKind, LocalDeliveryRecord, LocalRegistry, LocalResult, ProcessAdapter, SubmitRequest,
 };
 use tokio::sync::mpsc;
 
@@ -169,8 +169,9 @@ fn result_read_is_bounded_utf8_and_never_creates_the_file() {
     myrlet_protocol::ensure_private_dir(&dir).unwrap();
     let path = dir.join("delivery_01.md");
 
-    assert!(
-        read_result(&path).is_none(),
+    assert_eq!(
+        read_result(&path),
+        LocalResult::Absent,
         "missing output is not a result"
     );
     assert!(
@@ -179,27 +180,50 @@ fn result_read_is_bounded_utf8_and_never_creates_the_file() {
     );
 
     myrlet_protocol::paths::write_private_file_atomic(&path, b"   \n").unwrap();
-    assert!(read_result(&path).is_none(), "blank output is no result");
+    assert_eq!(
+        read_result(&path),
+        LocalResult::Empty,
+        "blank output is no result"
+    );
 
     myrlet_protocol::paths::write_private_file_atomic(&path, b"# Findings\n\n- one\n").unwrap();
-    assert_eq!(read_result(&path).as_deref(), Some("# Findings\n\n- one\n"));
+    assert_eq!(
+        read_result(&path),
+        LocalResult::Content("# Findings\n\n- one\n".to_string())
+    );
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let link = dir.join("linked.md");
         symlink(&path, &link).unwrap();
-        assert!(read_result(&link).is_none());
+        assert_eq!(
+            read_result(&link),
+            LocalResult::Unreadable,
+            "a symlink is never a result"
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(read_result(&path).is_none());
+        assert_eq!(
+            read_result(&path),
+            LocalResult::Unreadable,
+            "a group-readable file is unsafe"
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
     myrlet_protocol::paths::write_private_file_atomic(&path, &[0xff, 0xfe]).unwrap();
-    assert!(read_result(&path).is_none(), "invalid UTF-8 is ignored");
+    assert_eq!(
+        read_result(&path),
+        LocalResult::Unreadable,
+        "invalid UTF-8 is unsafe, never absence"
+    );
 
     let oversized = vec![b'x'; MAX_RESULT_BYTES + 1];
     myrlet_protocol::paths::write_private_file_atomic(&path, &oversized).unwrap();
-    assert!(read_result(&path).is_none(), "oversized is ignored");
+    assert_eq!(
+        read_result(&path),
+        LocalResult::Unreadable,
+        "oversized is unsafe, never absence"
+    );
     assert!(
         path.exists(),
         "observing a result never removes the Harness file"

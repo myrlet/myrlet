@@ -1,44 +1,39 @@
-//! Background reporting: end-of-handling → HTTP `/finish`, a final Markdown result →
-//! HTTP `/result`, and Progress file polls → HTTP `/progress`. All wait for a live
-//! non-zero `connectionEpoch`; the reports are independent, and none ever writes the
-//! Harness-owned files or invents a terminal verdict.
+//! Background reconciliation: Progress file polls, Result file polls, and the exit-driven
+//! Finish. Each report is independent, waits for a live non-zero `connectionEpoch`, and
+//! never writes a Harness-owned file or invents a terminal verdict.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
-use myrlet_protocol::{ProgressReportRequest, ResultReportRequest};
-use myrlet_worker::{read_progress_if_changed, read_result, LocalDeliveryRecord};
+use myrlet_protocol::{result_sha256, ProgressReportRequest, ResultReportRequest};
+use myrlet_worker::{read_progress_if_changed, read_result, LocalDeliveryRecord, LocalResultError};
 use tokio::task::JoinHandle;
 
-use super::{RuntimeCore, RuntimeError, PROGRESS_POLL};
+use super::{RuntimeCore, RuntimeError, REPORT_POLL};
 use crate::wss::HubSink;
 
 impl RuntimeCore {
-    /// Spawn the exit handler and the Progress poller for this runtime.
+    /// Spawn the exit handler and the Progress/Result poller for this runtime.
     pub(super) fn spawn_reports(self: Arc<Self>) -> (JoinHandle<()>, JoinHandle<()>) {
         let exit = tokio::spawn({
             let core = Arc::clone(&self);
             async move { core.run_exit_handler().await }
         });
-        let progress = tokio::spawn({
+        let poller = tokio::spawn({
             let core = Arc::clone(&self);
-            async move { core.run_progress_loop().await }
+            async move { core.run_report_loop().await }
         });
-        (exit, progress)
+        (exit, poller)
     }
 
-    /// Flush unacknowledged refusals, cancel reports, and pending finishes after resync.
+    /// Flush unacknowledged cancel reports and pending finishes after resync, then
+    /// reconcile both independent values.
     pub(super) async fn flush_pending(&self, sink: &mut HubSink) -> Result<(), RuntimeError> {
         let epoch = self.epoch.load(Ordering::SeqCst);
         if epoch == 0 {
             return Ok(());
         }
         for record in self.registry.load_all()? {
-            if let Some(code) = record.rejected {
-                if !record.rejected_acked {
-                    self.send_rejected(sink, &record, code).await?;
-                }
-            }
             if let Some((state, reason)) = record.cancel_report.clone() {
                 if !record.cancel_acked {
                     self.send_cancelled(sink, &record.task_id, &record.delivery_id, state, reason)
@@ -58,13 +53,15 @@ impl RuntimeCore {
                     ),
                 }
             }
-            self.relay_result(&record, epoch).await;
+            self.sync_progress(&record, epoch).await;
+            self.sync_result(&record, epoch).await;
         }
         Ok(())
     }
 
-    /// Record end of handling, relay final Progress, Finish, and result once an
-    /// epoch is live. The result text is captured durably even with no live epoch.
+    /// Record end of handling, relay the final Progress, Finish, and Result.
+    ///
+    /// A `done` signal and a Worker-observed exit both arrive here; either one is enough.
     async fn run_exit_handler(self: Arc<Self>) {
         let receiver = self
             .on_exit_rx
@@ -77,9 +74,6 @@ impl RuntimeCore {
         while let Some(ended) = receiver.recv().await {
             let Some(record) = self.update(&ended.delivery_id, |record| {
                 record.execution_ref = Some(ended.execution_ref.clone());
-                if !record.finish_pending {
-                    record.result_pending = read_result(&record.result_path);
-                }
                 record.finish_pending = true;
             }) else {
                 continue;
@@ -88,16 +82,19 @@ impl RuntimeCore {
             if epoch == 0 {
                 continue;
             }
-            self.relay_progress_once(&record, epoch).await;
             self.post_finish_if_pending(&record.delivery_id, epoch)
                 .await;
-            self.relay_result(&record, epoch).await;
+            let refreshed = self.registry.get(&record.delivery_id).ok().flatten();
+            if let Some(record) = refreshed {
+                self.sync_progress(&record, epoch).await;
+                self.sync_result(&record, epoch).await;
+            }
         }
     }
 
-    /// Relay newly observed Progress, a pending result, and deferred finishes.
-    async fn run_progress_loop(self: Arc<Self>) {
-        let mut ticker = tokio::time::interval(PROGRESS_POLL);
+    /// Poll every retained Delivery for changed Progress and Result content.
+    async fn run_report_loop(self: Arc<Self>) {
+        let mut ticker = tokio::time::interval(REPORT_POLL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
@@ -113,18 +110,12 @@ impl RuntimeCore {
                 }
             };
             for record in records {
-                if record.rejected.is_some() {
-                    continue;
+                if record.finish_pending && !record.finish_acked {
+                    self.post_finish_if_pending(&record.delivery_id, epoch)
+                        .await;
                 }
-                if !record.finish_acked {
-                    self.relay_progress_once(&record, epoch).await;
-                    if record.finish_pending {
-                        self.post_finish_if_pending(&record.delivery_id, epoch)
-                            .await;
-                    }
-                }
-                // A result syncs independently of Finish, including after its ACK.
-                self.relay_result(&record, epoch).await;
+                self.sync_progress(&record, epoch).await;
+                self.sync_result(&record, epoch).await;
             }
         }
     }
@@ -143,16 +134,12 @@ impl RuntimeCore {
         }
     }
 
-    async fn relay_progress_once(&self, record: &LocalDeliveryRecord, epoch: u64) {
-        let mut hash = self
-            .progress
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&record.delivery_id)
-            .copied();
+    /// Relay Progress only when the file's text differs from what the Hub last confirmed.
+    async fn sync_progress(&self, record: &LocalDeliveryRecord, epoch: u64) {
+        let mut last_hash = record.progress_acked_sha256.as_deref().and_then(hex_hash);
         let Some(observed) = read_progress_if_changed(
             &record.progress_path,
-            &mut hash,
+            &mut last_hash,
             record.last_progress_observed_ms.unwrap_or(0),
         ) else {
             return;
@@ -169,14 +156,9 @@ impl RuntimeCore {
             .await
         {
             Ok(_) => {
-                if let Some(hash) = hash {
-                    self.progress
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(record.delivery_id.clone(), hash);
-                }
                 self.update(&record.delivery_id, |record| {
                     record.last_progress_observed_ms = Some(observed_at_ms);
+                    record.progress_acked_sha256 = Some(result_sha256(&request.text));
                 });
             }
             Err(error) => tracing::debug!(
@@ -187,35 +169,97 @@ impl RuntimeCore {
         }
     }
 
-    /// Relay the final result once handling ended, independently of Finish ACK.
+    /// Reconcile the Hub Result with the current local content.
     ///
-    /// The text is persisted before the POST so a lost response or a restart replays
-    /// the identical payload; Hub treats an identical replay as a no-op. A retry never
-    /// starts the Harness again.
-    async fn relay_result(&self, record: &LocalDeliveryRecord, epoch: u64) {
-        if record.result_acked {
+    /// The file is reread on every attempt. Equal content needs no write. A complete local
+    /// recovery that finds no or empty content clears the Hub copy; an unreadable file is
+    /// never treated as absence, so the Hub value survives.
+    async fn sync_result(&self, record: &LocalDeliveryRecord, epoch: u64) {
+        let local = read_result(&record.result_path);
+        let wanted = match local.content() {
+            Ok(text) => text.map(str::to_owned),
+            Err(LocalResultError::Incomplete) => return,
+        };
+        let wanted_sha = wanted.as_deref().map(result_sha256);
+        if wanted_sha == record.result_acked_sha256 {
             return;
         }
-        let Some(text) = record.result_pending.clone() else {
-            return;
+        let request = ResultReportRequest {
+            epoch,
+            text: wanted,
         };
-        let delivery_id = record.delivery_id.clone();
         match self
             .reporter
-            .post_result(&delivery_id, &ResultReportRequest { epoch, text })
+            .post_result(&record.delivery_id, &request)
             .await
         {
             Ok(_) => {
-                self.update(&delivery_id, |record| {
-                    record.result_acked = true;
-                    record.result_pending = None;
+                self.update(&record.delivery_id, |record| {
+                    record.result_acked_sha256 = wanted_sha;
+                    record.result_recovery_incomplete = false;
                 });
             }
             Err(error) => tracing::debug!(
-                delivery = %delivery_id,
+                delivery = %record.delivery_id,
                 %error,
                 "result report not yet accepted; will retry"
             ),
         }
     }
+
+    /// The Hub's current Result digest for one owned Delivery; `Ok(None)` means no Result.
+    pub(super) async fn hub_result_sha(
+        &self,
+        delivery_id: &myrlet_protocol::DeliveryId,
+    ) -> Result<Option<String>, crate::reporting::ReportError> {
+        let view = self.reporter.get_result(delivery_id).await?;
+        Ok(view.result_sha256)
+    }
+
+    /// Force one reconciliation and return the digest the Hub now holds.
+    pub(super) async fn sync_result_now(
+        &self,
+        delivery_id: &myrlet_protocol::DeliveryId,
+    ) -> Result<Option<String>, crate::reporting::ReportError> {
+        let Some(record) = self
+            .registry
+            .get(delivery_id)
+            .map_err(|error| crate::reporting::ReportError::Transport(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        if epoch == 0 {
+            return Err(crate::reporting::ReportError::Transport(
+                "no live Hub connection".into(),
+            ));
+        }
+        let local = read_result(&record.result_path);
+        let wanted = local
+            .content()
+            .map_err(|_| crate::reporting::ReportError::Transport("incomplete local read".into()))?
+            .map(str::to_owned);
+        let request = ResultReportRequest {
+            epoch,
+            text: wanted,
+        };
+        let receipt = self.reporter.post_result(delivery_id, &request).await?;
+        self.update(delivery_id, |record| {
+            record.result_acked_sha256 = receipt.result_sha256.clone();
+        });
+        Ok(receipt.result_sha256)
+    }
+}
+
+/// Parse a stored lowercase hex digest back into the byte array the watcher tracks.
+fn hex_hash(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (index, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let text = std::str::from_utf8(chunk).ok()?;
+        bytes[index] = u8::from_str_radix(text, 16).ok()?;
+    }
+    Some(bytes)
 }

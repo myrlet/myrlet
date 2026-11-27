@@ -4,7 +4,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use myrlet_protocol::delivery::{CancelState, RejectionCode};
+use myrlet_protocol::delivery::CancelState;
 use myrlet_protocol::id::{DeliveryId, ExecutionRef, ExecutorId, SlotId, TaskId};
 use myrlet_protocol::paths::{
     ensure_private_dir, verify_private_file, write_private_file_atomic, PathError,
@@ -16,8 +16,11 @@ const DELIVERIES_DIR: &str = "deliveries";
 /// Persisted inventory revision document.
 const INVENTORY_FILE: &str = "inventory.json";
 
-/// One locally retained Delivery: durable correlation, pending report intent, and
-/// idempotency bookkeeping for HTTP Progress/Finish and WSS cancel reporting.
+/// One locally retained Delivery: durable correlation, pending report intent, and the
+/// last content hashes reconciled with the Hub.
+///
+/// The Worker is the Delivery's single Progress and Result writer, so the record keeps
+/// only "what the Hub last confirmed", never a revision or a history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalDeliveryRecord {
@@ -30,24 +33,26 @@ pub struct LocalDeliveryRecord {
     /// `worker/results/<delivery_id>.md`; the Worker never writes this file either.
     pub result_path: PathBuf,
     pub execution_ref: Option<ExecutionRef>,
-    /// Pre-registration local refusal, when the Worker declined the offer.
-    pub rejected: Option<RejectionCode>,
-    pub rejected_acked: bool,
     pub finish_pending: bool,
     pub finish_acked: bool,
-    /// Final result text observed locally but not yet acknowledged by Hub.
-    pub result_pending: Option<String>,
-    /// Hub accepted the result; it is never re-read or re-posted after this.
-    pub result_acked: bool,
+    /// SHA-256 of the Result text the Hub confirmed; `None` means "Hub holds no Result".
+    #[serde(default)]
+    pub result_acked_sha256: Option<String>,
+    /// Local reading of the Result file could not complete; never treated as absence.
+    #[serde(default)]
+    pub result_recovery_incomplete: bool,
     /// Backend cancel answer (and optional reason) kept until acknowledged.
     pub cancel_report: Option<(CancelState, Option<String>)>,
     pub cancel_acked: bool,
     /// Highest `observedAtMs` already relayed to Hub for this Delivery.
     pub last_progress_observed_ms: Option<i64>,
+    /// SHA-256 of the Progress text the Hub confirmed.
+    #[serde(default)]
+    pub progress_acked_sha256: Option<String>,
 }
 
 impl LocalDeliveryRecord {
-    /// A freshly accepted Delivery with nothing executed or reported yet.
+    /// A freshly claimed Delivery with nothing executed or reported yet.
     pub fn new(
         delivery_id: DeliveryId,
         task_id: TaskId,
@@ -63,15 +68,14 @@ impl LocalDeliveryRecord {
             progress_path,
             result_path,
             execution_ref: None,
-            rejected: None,
-            rejected_acked: false,
             finish_pending: false,
             finish_acked: false,
-            result_pending: None,
-            result_acked: false,
+            result_acked_sha256: None,
+            result_recovery_incomplete: false,
             cancel_report: None,
             cancel_acked: false,
             last_progress_observed_ms: None,
+            progress_acked_sha256: None,
         }
     }
 }
@@ -128,8 +132,9 @@ impl LocalRegistry {
         }
     }
 
-    /// Durably register a Delivery **before** submitting it. Returns `false` when the
-    /// `deliveryId` is already registered, so replayed offers never double-submit.
+    /// Durably register a claimed Delivery **before** invoking the Harness. Returns
+    /// `false` when the `deliveryId` is already registered, so a replayed claim reply can
+    /// never launch a second execution.
     pub fn register_if_absent(&self, record: &LocalDeliveryRecord) -> Result<bool, RegistryError> {
         let path = self.record_path(&record.delivery_id)?;
         let bytes = serde_json::to_vec(record).map_err(|source| record_error(&path, source))?;
