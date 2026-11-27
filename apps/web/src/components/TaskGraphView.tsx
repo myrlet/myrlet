@@ -24,8 +24,8 @@ import {
   X,
 } from "lucide-react";
 
-import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
-import { DELIVERY_STATUS_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../format";
+import type { DeliveryView, SnapshotTaskSummary, WorkerRecord } from "../api/types";
+import { CANCEL_STATE_LABELS, DELIVERY_STATUS_LABELS, REJECTION_CODE_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../format";
 import { TaskStatusBadge } from "./StatusBadge";
 import {
   NODE_HEIGHT,
@@ -73,15 +73,24 @@ const WHEEL_ZOOM_FACTOR = 1.12;
 const DRAG_THRESHOLD = 5;
 const SNAP_STEP = 12;
 const FIT_PAD_X = 48;
-const FIT_PAD_TOP = 52;
-const FIT_PAD_BOTTOM = 136;
+/* The dock row already clears the canvas, so padding only needs to keep the
+   floating Task Group label (34px above the first card) in frame. */
+const FIT_PAD_TOP = 44;
+const FIT_PAD_BOTTOM = 120;
 /** First view never shrinks below this scale: cards stay readable with their footer. */
 const COMFORTABLE_MIN_SCALE = 0.82;
 const COMFORTABLE_MAX_SCALE = 0.92;
-const COMFORTABLE_PAD = 48;
+const COMFORTABLE_PAD = 40;
+/** Below this stage width the default frame shows one root card instead of the atlas. */
+const NARROW_STAGE_WIDTH = 640;
+const MOBILE_ROOT_SCALE = 1;
+const MOBILE_ROOT_TOP = 56;
 const FIT_OPTIONS: AtlasFramingOptions = {
   minScale: MIN_SCALE,
-  maxScale: MAX_SCALE,
+  /* `Fit` frames the whole atlas but never magnifies past natural size, so a
+     small board does not fill the screen with two giant cards. `0` and `+`
+     remain the way to zoom in. */
+  maxScale: 1,
   padX: FIT_PAD_X,
   padTop: FIT_PAD_TOP,
   padBottom: FIT_PAD_BOTTOM,
@@ -105,6 +114,26 @@ type DragState =
   | { mode: "node"; pointerId: number; taskId: string; startX: number; startY: number; startOffset: AtlasPosition; scale: number; active: boolean };
 
 const clampScale = (scale: number): number => Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+/**
+ * Narrow default frame: the first Task Group's root card sits alone, fully in
+ * frame with its group label, centered horizontally. Everything else stays one
+ * `Fit` away.
+ */
+function mobileRootFrame(root: AtlasPosition, headerY: number, width: number, height: number) {
+  const inset = 16;
+  const top = Math.min(root.y, headerY);
+  const span = Math.max(NODE_HEIGHT, root.y + NODE_HEIGHT - top);
+  const scale = Math.min(
+    MOBILE_ROOT_SCALE,
+    Math.max(MIN_SCALE, (width - inset * 2) / NODE_WIDTH),
+    Math.max(MIN_SCALE, (height - MOBILE_ROOT_TOP - 24) / span),
+  );
+  return {
+    scale,
+    panX: (width - NODE_WIDTH * scale) / 2 - root.x * scale,
+    panY: MOBILE_ROOT_TOP - top * scale,
+  };
+}
 const shortId = (id: string): string => (id.length <= 12 ? id : id.slice(0, 12));
 const isWorkerOnline = (worker: WorkerRecord | undefined): boolean =>
   worker !== undefined && worker.online && !worker.revoked;
@@ -173,44 +202,67 @@ interface AtlasTaskNodeProps {
   onSelect: (taskId: string) => void;
 }
 
+/**
+ * Footer line under the card. Real Harness Progress always wins. Without it,
+ * only a Delivery fact the Task badge does not already imply earns a line: a
+ * rejection, a cancel response, a release, or an acceptance (Dispatched only
+ * says an offer went out). `offered` and `finished` repeat the Task state and
+ * stay silent.
+ */
+function deliveryFooter(delivery: DeliveryView): { text: string; live: boolean; ageMs: number | null } | null {
+  if (delivery.progress) {
+    return { text: delivery.progress.text, live: true, ageMs: delivery.progress.receivedAtMs };
+  }
+  let text: string | null = null;
+  if (delivery.rejectionCode) {
+    text = `${DELIVERY_STATUS_LABELS.rejected} · ${REJECTION_CODE_LABELS[delivery.rejectionCode]}`;
+  } else if (delivery.cancelState) {
+    text = CANCEL_STATE_LABELS[delivery.cancelState];
+  } else if (delivery.state === "accepted") {
+    text = "Delivery accepted";
+  } else if (delivery.state === "released") {
+    text = "Delivery released";
+  }
+  return text === null ? null : { text, live: false, ageMs: delivery.updatedAtMs };
+}
+
 function AtlasTaskNode(props: AtlasTaskNodeProps) {
   const { task, x, y, selected, hovered, dragging, dimmed, density, worker, onHover, onSelect } = props;
   const delivery = task.currentDelivery;
   const online = isWorkerOnline(worker);
   const title = task.title || task.id;
   const statusLabel = TASK_STATUS_META[task.status].label;
-  const chip = delivery?.executorId ?? delivery?.slotId ?? null;
   const descendantCount = Math.max(0, task.subtree.total - 1);
   const finishedDescendants = Math.max(
     0,
     task.subtree.finished - (task.status === "finished" ? 1 : 0),
   );
-  const meta = delivery ? (
-    <div className="atlas-node-meta">
-      <span className="atlas-node-worker" title={`Worker ${delivery.workerId} — ${online ? "online" : "offline"}`}>
-        <span className="connection-dot" data-state={online ? "online" : "offline"} aria-hidden="true" />
-        <span className="mono truncate">{shortId(delivery.workerId)}</span>
-      </span>
-      {chip === null ? null : (
-        <span className="atlas-node-chip truncate" title={delivery.executorId ? `Executor ${delivery.executorId}` : `Slot ${delivery.slotId}`}>
-          {shortId(chip)}
-        </span>
-      )}
-    </div>
+  const footer = delivery ? deliveryFooter(delivery) : null;
+  const executor = delivery?.executorId ?? delivery?.slotId ?? null;
+  const workerTitle = delivery
+    ? `Worker ${delivery.workerId} — ${online ? "online" : "offline"}` +
+      (executor === null ? "" : ` · ${delivery.executorId ? "Executor" : "Slot"} ${executor}`)
+    : "";
+  const context = delivery ? (
+    <span className="atlas-node-worker" title={workerTitle}>
+      <span className="connection-dot" data-state={online ? "online" : "offline"} aria-hidden="true" />
+      <span className="mono truncate">{shortId(delivery.workerId)}</span>
+    </span>
   ) : descendantCount > 0 ? (
-    <div className="atlas-node-meta"><span className="atlas-node-chip">
+    <span className="atlas-node-chip">
       {formatCount(descendantCount)} {descendantCount === 1 ? "subtask" : "subtasks"}
       {finishedDescendants > 0 ? ` · ${formatCount(finishedDescendants)} ended` : ""}
-    </span></div>
+    </span>
   ) : task.category ? (
-    <div className="atlas-node-meta"><span className="atlas-node-chip truncate">{task.category}</span></div>
+    <span className="atlas-node-chip truncate">{task.category}</span>
   ) : null;
   return (
     <div
       role="button" tabIndex={0} className="atlas-node" data-task-id={task.id}
+      data-status={task.status}
       data-selected={selected} data-hovered={hovered} data-dragging={dragging} data-density={density}
       data-dimmed={dimmed ? "true" : undefined}
-      aria-label={`${title} — ${statusLabel}${delivery ? ` — Worker ${delivery.workerId} ${online ? "online" : "offline"}` : ""}`}
+      aria-label={`${title} — ${statusLabel}${footer ? ` — ${footer.text}` : ""}${delivery ? ` — ${workerTitle}` : ""}`}
       title={`${title} (${task.id})`}
       style={{ ...NODE_STYLE, left: x, top: y, cursor: dragging ? "grabbing" : "grab" }}
       onClick={() => onSelect(task.id)}
@@ -223,26 +275,19 @@ function AtlasTaskNode(props: AtlasTaskNodeProps) {
         }
       }}
     >
-      <div className="atlas-node-head">
-        <span className="atlas-node-id mono" title={task.id}>{shortId(task.id)}</span>
-        <TaskStatusBadge status={task.status} />
-      </div>
       <div className="atlas-node-title">{title}</div>
-      {meta}
-      {density === "compact" ? null : (
-        <div className="atlas-node-footer">
-          {delivery?.progress ? (
-            <>
-              <span className="atlas-node-progress truncate" title={delivery.progress.text}>{delivery.progress.text}</span>
-              <span className="atlas-node-age tabular">{formatRelativeTime(delivery.progress.receivedAtMs)}</span>
-            </>
-          ) : delivery ? (
-            <span className="atlas-node-progress">{DELIVERY_STATUS_LABELS[delivery.state]} · No progress reported</span>
-          ) : (
-            <span className="atlas-node-progress">No Delivery created</span>
+      {density === "compact" || footer === null ? null : (
+        <div className="atlas-node-footer" data-live={footer.live ? "true" : undefined}>
+          <span className="atlas-node-progress truncate" title={footer.text}>{footer.text}</span>
+          {footer.ageMs === null ? null : (
+            <span className="atlas-node-age tabular">{formatRelativeTime(footer.ageMs)}</span>
           )}
         </div>
       )}
+      <div className="atlas-node-status">
+        <TaskStatusBadge status={task.status} />
+        {context}
+      </div>
     </div>
   );
 }
@@ -268,7 +313,13 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null);
   const [nodeDragId, setNodeDragId] = useState<string | null>(null);
   const [panning, setPanning] = useState(false);
-  const [minimapOpen, setMinimapOpen] = useState(true);
+  // Phones land on a single readable root card, so the overview starts folded.
+  const [minimapOpen, setMinimapOpen] = useState(
+    () =>
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function" ||
+      !window.matchMedia("(max-width: 720px)").matches,
+  );
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -442,6 +493,16 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   useEffect(() => {
     if (didAutoFitRef.current || bounds === null || viewport.width <= 0 || viewport.height <= 0) return;
     didAutoFitRef.current = true;
+    // Phones: one root card, fully in frame and readable, with its group label.
+    if (viewport.width < NARROW_STAGE_WIDTH) {
+      const first = [...layout.groups].sort((a, b) => a.y - b.y || a.x - b.x)[0];
+      const root = positions.get(first?.rootId ?? "");
+      if (first && root) {
+        setView(mobileRootFrame(root, first.y, viewport.width, viewport.height));
+        return;
+      }
+    }
+    // Desktop: never enlarge a small board past its natural size.
     const { view: fitted, zoomToFit } = fitAtlasFrame(
       viewport.width, viewport.height, bounds, FIT_OPTIONS,
     );
@@ -452,7 +513,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
     // Too much canvas to read at full fit: land on a crisp, readable top-left
     // origin instead of ants, and leave the rest one `Fit`/`F` away.
     setView(comfortableAtlasFrame(bounds, zoomToFit, COMFORT_OPTIONS));
-  }, [bounds, viewport.height, viewport.width]);
+  }, [bounds, layout.groups, positions, viewport.height, viewport.width]);
 
   useEffect(() => {
     onBoardMetaChange({ zoomPercent, relationCount: edges.length, canRestore: restoreSnapshot !== null });
@@ -566,275 +627,276 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   };
 
   return (
-    <section
-      ref={stageRef} className="atlas-stage atlas-viewport" aria-label="Task graph" data-panning={panning}
-      onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
-      onPointerUp={(event) => finishDrag(event, true)} onPointerCancel={(event) => finishDrag(event, false)}
-      style={{ touchAction: "none", userSelect: "none", cursor: panning ? "grabbing" : "grab" }}
-    >
-      {tasks.length === 0 ? (
-        <div className="pane-empty">
-          <Waypoints size={20} aria-hidden="true" />
-          {activeStatusLabel !== null ? (
-            <>
-              <span className="pane-empty-title">No Tasks match this status</span>
-              <button type="button" className="button button-sm" onClick={onClearFilter}>
-                Clear filter
-              </button>
-            </>
-          ) : (
-            <>
-              <span className="pane-empty-title">No Tasks in this Hub yet</span>
-              <span>
-                Submit Tasks from the Myrlet CLI or an enrolled agent to see them arranged
-                here.
-              </span>
-            </>
-          )}
-        </div>
-      ) : (
-        <>
-          <div
-            className="atlas-world"
-            style={{
-              position: "absolute", left: 0, top: 0, width: layout.width, height: layout.height,
-              transformOrigin: "0 0", transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`,
-            }}
-          >
-            <svg
-              className="atlas-edges" width={Math.max(1, layout.width)} height={Math.max(1, layout.height)}
-              aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none" }}
-            >
-              <defs>
-                <marker id="atlas-arrow-solid" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M0 0 L8 4 L0 8 Z" fill="var(--text-muted)" />
-                </marker>
-                <marker id="atlas-arrow-solid-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M0 0 L8 4 L0 8 Z" fill="var(--accent)" />
-                </marker>
-                <marker id="atlas-arrow-open" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M1 1 L7 4 L1 7" fill="none" stroke="var(--text-muted)" strokeWidth="1.2" />
-                </marker>
-                <marker id="atlas-arrow-open-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M1 1 L7 4 L1 7" fill="none" stroke="var(--accent)" strokeWidth="1.2" />
-                </marker>
-              </defs>
-              {edges.map((edge) => {
-                const highlighted = subgraph !== null && subgraph.edgeKeys.has(edge.key);
-                const dimmed = subgraph !== null && !highlighted;
-                const solid = edge.kind === "parent";
-                const marker = solid
-                  ? highlighted ? "atlas-arrow-solid-accent" : "atlas-arrow-solid"
-                  : highlighted ? "atlas-arrow-open-accent" : "atlas-arrow-open";
-                const pillText = edge.kind === "dependency" ? "dep" : edge.kind === "source" ? "retry" : null;
-                const pillWidth = pillText === null ? 0 : (pillText.length * 5.6 + 12);
-                return (
-                  <g key={edge.key}>
-                    <path
-                      className="atlas-edge" data-kind={edge.kind} d={edge.path} fill="none"
-                      data-highlighted={highlighted ? "true" : undefined}
-                      data-dimmed={dimmed ? "true" : undefined}
-                      stroke={highlighted ? "var(--accent)" : "var(--text-muted)"}
-                      strokeWidth={solid ? 1.4 : edge.kind === "dependency" ? 1.25 : 1.1}
-                      strokeDasharray={edge.kind === "parent" ? undefined : edge.kind === "dependency" ? "6 4" : "2 4"}
-                      opacity={dimmed ? 0.25 : edge.kind === "source" ? 0.62 : 0.9}
-                      markerEnd={`url(#${marker})`}
-                    />
-                    {highlighted && pillText !== null ? (
-                      <g className="atlas-edge-label" data-highlighted="true">
-                        <rect
-                          className="atlas-edge-pill" x={edge.labelX - pillWidth / 2} y={edge.labelY - 7}
-                          width={pillWidth} height={14} rx={7} ry={7}
-                          fill="var(--bg-canvas)" stroke="var(--border-subtle)" strokeWidth={1}
-                        />
-                        <text x={edge.labelX} y={edge.labelY} textAnchor="middle" dominantBaseline="middle">
-                          {pillText}
-                        </text>
-                      </g>
-                    ) : null}
-                    {highlighted ? (
-                      <g className="atlas-port" aria-hidden="true">
-                        <circle className="atlas-port-dot" cx={edge.sourceX} cy={edge.sourceY} r={3.5} fill="var(--accent)" />
-                        <circle className="atlas-port-dot" cx={edge.targetX} cy={edge.targetY} r={3.5} fill="var(--accent)" />
-                      </g>
-                    ) : null}
-                  </g>
-                );
-              })}
-            </svg>
-
-            {layout.groups.map((group) => (
-              <div
-                key={group.rootId} className="atlas-group-header" aria-hidden="true"
-                title={`${group.title} — ${formatCount(group.count)} ${group.count === 1 ? "Task" : "Tasks"}`}
-                style={{ left: group.x, top: group.y, width: group.width }}
-              >
-                <span className="atlas-group-kicker">TASK GROUP</span>
-                <span className="atlas-group-name truncate">{group.title}</span>
-                <span className="atlas-group-rule" />
-              </div>
-            ))}
-
-            {layout.nodes.map((node) => {
-              const position = positions.get(node.task.id) ?? node;
-              const delivery = node.task.currentDelivery;
-              return (
-                <AtlasTaskNode
-                  key={node.task.id} task={node.task} x={position.x} y={position.y}
-                  selected={node.task.id === selectedTaskId} hovered={node.task.id === hoveredTaskId}
-                  dragging={node.task.id === nodeDragId} density={density}
-                  dimmed={subgraph !== null && !subgraph.nodeIds.has(node.task.id)}
-                  worker={delivery ? workerById.get(delivery.workerId) : undefined}
-                  onHover={setHoveredTaskId} onSelect={onSelectTask}
-                />
-              );
-            })}
-          </div>
-
-          <div className="atlas-minimap" data-collapsed={!minimapOpen}>
-            <div className="atlas-minimap-head">
-              <span className="atlas-minimap-title">OVERVIEW</span>
-              <button
-                type="button" className="atlas-minimap-collapse" aria-expanded={minimapOpen}
-                aria-label={minimapOpen ? "Collapse minimap" : "Expand minimap"}
-                title={minimapOpen ? "Collapse minimap" : "Expand minimap"}
-                onClick={() => setMinimapOpen((open) => !open)}
-              >
-                {minimapOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronUp size={12} aria-hidden="true" />}
-              </button>
-            </div>
-            {minimapOpen && bounds !== null ? (
-              <button
-                type="button" className="atlas-minimap-body"
-                aria-label="Minimap overview — click to pan the canvas"
-                onClick={handleMinimapClick}
-                style={{ position: "relative", width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT, padding: 0 }}
-              >
-                {layout.nodes.map((node) => {
-                  const position = positions.get(node.task.id);
-                  if (!position) return null;
-                  return (
-                    <span
-                      key={node.task.id} className="atlas-minimap-node" data-tone={node.task.status} aria-hidden="true"
-                      style={{
-                        position: "absolute",
-                        left: (position.x - bounds.minX) * minimapScale,
-                        top: (position.y - bounds.minY) * minimapScale,
-                        width: Math.max(2, NODE_WIDTH * minimapScale),
-                        height: Math.max(2, NODE_HEIGHT * minimapScale),
-                      }}
-                    />
-                  );
-                })}
-                <span
-                  className="atlas-minimap-viewport" aria-hidden="true"
-                  style={{
-                    position: "absolute",
-                    left: (viewWorld.x - bounds.minX) * minimapScale,
-                    top: (viewWorld.y - bounds.minY) * minimapScale,
-                    width: Math.max(2, viewWorld.width * minimapScale),
-                    height: Math.max(2, viewWorld.height * minimapScale),
-                  }}
-                />
-              </button>
-            ) : null}
-          </div>
-
-          <div className="atlas-zoom">
-            <button type="button" className="atlas-zoom-btn" onClick={() => zoomTo((scale) => scale / ZOOM_FACTOR)}
-              disabled={view.scale <= MIN_SCALE + 0.001} aria-label="Zoom out" title="Zoom out">
-              <Minus size={13} aria-hidden="true" />
-            </button>
-            <button type="button" className="atlas-zoom-value tabular" onClick={() => zoomTo(() => 1)}
-              aria-label={`Zoom ${zoomPercent}% — reset to 100%`} title="Reset zoom to 100%">
-              {zoomPercent}%
-            </button>
-            <button type="button" className="atlas-zoom-btn" onClick={() => zoomTo((scale) => scale * ZOOM_FACTOR)}
-              disabled={view.scale >= MAX_SCALE - 0.001} aria-label="Zoom in" title="Zoom in">
-              <Plus size={13} aria-hidden="true" />
-            </button>
-          </div>
-
-          <div className="atlas-hint">Drag empty space or scroll to pan · Drag cards to move · ⌘/Ctrl + scroll to zoom · F fits all</div>
-        </>
-      )}
-
-      {activeStatusLabel === null ? null : (
-        <div
-          className="active-filter-pill"
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <span>Filtered: {activeStatusLabel}</span>
-          <button
-            type="button"
-            className="active-filter-clear"
-            aria-label="Clear status filter"
-            onClick={onClearFilter}
-          >
-            <X size={12} aria-hidden="true" />
-          </button>
-        </div>
-      )}
-
+    <div className="atlas-board">
       <div
-        className="atlas-floating-bar"
+        className="atlas-dock"
         role="toolbar"
         aria-label="Board controls"
-        onPointerDown={(event) => event.stopPropagation()}
       >
-        <button
-          type="button"
-          className="atlas-floating-btn"
-          title="Fit all groups (F)"
-          onClick={fit}
-        >
-          <Maximize2 size={12} aria-hidden="true" />
-          <span>Fit</span>
-        </button>
-        {selectedTaskId === null ? null : (
+        <span className="atlas-dock-label">Relationships</span>
+        {activeStatusLabel === null ? null : (
+          <span className="active-filter-pill">
+            <span>Filtered: {activeStatusLabel}</span>
+            <button
+              type="button"
+              className="active-filter-clear"
+              aria-label="Clear status filter"
+              onClick={onClearFilter}
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          </span>
+        )}
+        <span className="atlas-dock-spacer" />
+        <div className="atlas-dock-actions">
           <button
             type="button"
             className="atlas-floating-btn"
-            title="Center selected Task (Shift+F)"
-            onClick={focusSelected}
+            title="Fit all groups (F)"
+            onClick={fit}
           >
-            <Crosshair size={12} aria-hidden="true" />
-            <span>Focus</span>
+            <Maximize2 size={12} aria-hidden="true" />
+            <span>Fit</span>
           </button>
-        )}
-        {restoreSnapshot === null ? null : (
+          {selectedTaskId === null ? null : (
+            <button
+              type="button"
+              className="atlas-floating-btn"
+              title="Center selected Task (Shift+F)"
+              onClick={focusSelected}
+            >
+              <Crosshair size={12} aria-hidden="true" />
+              <span>Focus</span>
+            </button>
+          )}
+          {restoreSnapshot === null ? null : (
+            <button
+              type="button"
+              className="atlas-floating-btn"
+              title="Restore previous layout"
+              onClick={restore}
+            >
+              <RotateCcw size={12} aria-hidden="true" />
+              <span>Restore</span>
+            </button>
+          )}
           <button
             type="button"
             className="atlas-floating-btn"
-            title="Restore previous layout"
-            onClick={restore}
+            title="Arrange board layout"
+            onClick={arrange}
           >
-            <RotateCcw size={12} aria-hidden="true" />
-            <span>Restore</span>
+            <LayoutGrid size={12} aria-hidden="true" />
+            <span>Arrange</span>
           </button>
-        )}
-        <button
-          type="button"
-          className="atlas-floating-btn atlas-floating-btn-accent"
-          title="Arrange board layout"
-          onClick={arrange}
-        >
-          <LayoutGrid size={12} aria-hidden="true" />
-          <span>Arrange</span>
-        </button>
-        <span className="atlas-floating-divider" aria-hidden="true" />
-        <button
-          type="button"
-          className="atlas-floating-btn"
-          data-active={inspectorOpen}
-          aria-pressed={inspectorOpen}
-          title="Toggle Inspector (I)"
-          onClick={onToggleInspector}
-        >
-          <PanelRight size={12} aria-hidden="true" />
-          <span>Inspector</span>
-        </button>
+          <span className="atlas-floating-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className="atlas-floating-btn"
+            data-active={inspectorOpen}
+            aria-pressed={inspectorOpen}
+            title="Toggle Inspector (I)"
+            onClick={onToggleInspector}
+          >
+            <PanelRight size={12} aria-hidden="true" />
+            <span>Inspector</span>
+          </button>
+        </div>
       </div>
-    </section>
+
+      <section
+        ref={stageRef} className="atlas-stage" aria-label="Task graph canvas" data-panning={panning}
+        onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
+        onPointerUp={(event) => finishDrag(event, true)} onPointerCancel={(event) => finishDrag(event, false)}
+        style={{ touchAction: "none", userSelect: "none", cursor: panning ? "grabbing" : "grab" }}
+      >
+        {tasks.length === 0 ? (
+          <div className="pane-empty">
+            <Waypoints size={20} aria-hidden="true" />
+            {activeStatusLabel !== null ? (
+              <>
+                <span className="pane-empty-title">No Tasks match this status</span>
+                <button type="button" className="button button-sm" onClick={onClearFilter}>
+                  Clear filter
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="pane-empty-title">No Tasks in this Hub yet</span>
+                <span>
+                  Submit Tasks from the Myrlet CLI or an enrolled agent to see them arranged
+                  here.
+                </span>
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            <div
+              className="atlas-world"
+              style={{
+                position: "absolute", left: 0, top: 0, width: layout.width, height: layout.height,
+                transformOrigin: "0 0", transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.scale})`,
+              }}
+            >
+              <svg
+                className="atlas-edges" width={Math.max(1, layout.width)} height={Math.max(1, layout.height)}
+                aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none" }}
+              >
+                <defs>
+                  <marker id="atlas-arrow-solid" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+                    <path d="M0 0 L8 4 L0 8 Z" fill="var(--text-muted)" />
+                  </marker>
+                  <marker id="atlas-arrow-solid-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+                    <path d="M0 0 L8 4 L0 8 Z" fill="var(--accent)" />
+                  </marker>
+                  <marker id="atlas-arrow-open" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+                    <path d="M1 1 L7 4 L1 7" fill="none" stroke="var(--text-muted)" strokeWidth="1.2" />
+                  </marker>
+                  <marker id="atlas-arrow-open-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+                    <path d="M1 1 L7 4 L1 7" fill="none" stroke="var(--accent)" strokeWidth="1.2" />
+                  </marker>
+                </defs>
+                {edges.map((edge) => {
+                  const highlighted = subgraph !== null && subgraph.edgeKeys.has(edge.key);
+                  const dimmed = subgraph !== null && !highlighted;
+                  const solid = edge.kind === "parent";
+                  const marker = solid
+                    ? highlighted ? "atlas-arrow-solid-accent" : "atlas-arrow-solid"
+                    : highlighted ? "atlas-arrow-open-accent" : "atlas-arrow-open";
+                  const pillText = edge.kind === "dependency" ? "dep" : edge.kind === "source" ? "retry" : null;
+                  const pillWidth = pillText === null ? 0 : (pillText.length * 5.6 + 12);
+                  return (
+                    <g key={edge.key}>
+                      <path
+                        className="atlas-edge" data-kind={edge.kind} d={edge.path} fill="none"
+                        data-highlighted={highlighted ? "true" : undefined}
+                        data-dimmed={dimmed ? "true" : undefined}
+                        stroke={highlighted ? "var(--accent)" : "var(--text-muted)"}
+                        strokeWidth={solid ? 1.4 : edge.kind === "dependency" ? 1.25 : 1.1}
+                        strokeDasharray={edge.kind === "parent" ? undefined : edge.kind === "dependency" ? "6 4" : "2 4"}
+                        opacity={dimmed ? 0.3 : edge.kind === "source" ? 0.62 : 0.9}
+                        markerEnd={`url(#${marker})`}
+                      />
+                      {highlighted && pillText !== null ? (
+                        <g className="atlas-edge-label" data-highlighted="true">
+                          <rect
+                            className="atlas-edge-pill" x={edge.labelX - pillWidth / 2} y={edge.labelY - 7}
+                            width={pillWidth} height={14} rx={7} ry={7}
+                            fill="var(--bg-canvas)" stroke="var(--border-subtle)" strokeWidth={1}
+                          />
+                          <text x={edge.labelX} y={edge.labelY} textAnchor="middle" dominantBaseline="middle">
+                            {pillText}
+                          </text>
+                        </g>
+                      ) : null}
+                      {highlighted ? (
+                        <g className="atlas-port" aria-hidden="true">
+                          <circle className="atlas-port-dot" cx={edge.sourceX} cy={edge.sourceY} r={3.5} fill="var(--accent)" />
+                          <circle className="atlas-port-dot" cx={edge.targetX} cy={edge.targetY} r={3.5} fill="var(--accent)" />
+                        </g>
+                      ) : null}
+                    </g>
+                  );
+                })}
+              </svg>
+
+              {layout.groups.map((group) => (
+                <div
+                  key={group.rootId} className="atlas-group-header" aria-hidden="true"
+                  title={`${group.title} — ${formatCount(group.count)} ${group.count === 1 ? "Task" : "Tasks"}`}
+                  style={{ left: group.x, top: group.y, width: group.width }}
+                >
+                  <span className="atlas-group-kicker">TASK GROUP</span>
+                  <span className="atlas-group-name truncate">{group.title}</span>
+                  <span className="atlas-group-rule" />
+                </div>
+              ))}
+
+              {layout.nodes.map((node) => {
+                const position = positions.get(node.task.id) ?? node;
+                const delivery = node.task.currentDelivery;
+                return (
+                  <AtlasTaskNode
+                    key={node.task.id} task={node.task} x={position.x} y={position.y}
+                    selected={node.task.id === selectedTaskId} hovered={node.task.id === hoveredTaskId}
+                    dragging={node.task.id === nodeDragId} density={density}
+                    dimmed={subgraph !== null && !subgraph.nodeIds.has(node.task.id)}
+                    worker={delivery ? workerById.get(delivery.workerId) : undefined}
+                    onHover={setHoveredTaskId} onSelect={onSelectTask}
+                  />
+                );
+              })}
+            </div>
+
+            <div className="atlas-minimap" data-collapsed={!minimapOpen}>
+              <div className="atlas-minimap-head">
+                <span className="atlas-minimap-title">OVERVIEW</span>
+                <button
+                  type="button" className="atlas-minimap-collapse" aria-expanded={minimapOpen}
+                  aria-label={minimapOpen ? "Collapse minimap" : "Expand minimap"}
+                  title={minimapOpen ? "Collapse minimap" : "Expand minimap"}
+                  onClick={() => setMinimapOpen((open) => !open)}
+                >
+                  {minimapOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronUp size={12} aria-hidden="true" />}
+                </button>
+              </div>
+              {minimapOpen && bounds !== null ? (
+                <button
+                  type="button" className="atlas-minimap-body"
+                  aria-label="Minimap overview — click to pan the canvas"
+                  onClick={handleMinimapClick}
+                  style={{ position: "relative", width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT, padding: 0 }}
+                >
+                  {layout.nodes.map((node) => {
+                    const position = positions.get(node.task.id);
+                    if (!position) return null;
+                    return (
+                      <span
+                        key={node.task.id} className="atlas-minimap-node" data-tone={node.task.status} aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          left: (position.x - bounds.minX) * minimapScale,
+                          top: (position.y - bounds.minY) * minimapScale,
+                          width: Math.max(2, NODE_WIDTH * minimapScale),
+                          height: Math.max(2, NODE_HEIGHT * minimapScale),
+                        }}
+                      />
+                    );
+                  })}
+                  <span
+                    className="atlas-minimap-viewport" aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      left: (viewWorld.x - bounds.minX) * minimapScale,
+                      top: (viewWorld.y - bounds.minY) * minimapScale,
+                      width: Math.max(2, viewWorld.width * minimapScale),
+                      height: Math.max(2, viewWorld.height * minimapScale),
+                    }}
+                  />
+                </button>
+              ) : null}
+            </div>
+
+            <div className="atlas-zoom">
+              <button type="button" className="atlas-zoom-btn" onClick={() => zoomTo((scale) => scale / ZOOM_FACTOR)}
+                disabled={view.scale <= MIN_SCALE + 0.001} aria-label="Zoom out" title="Zoom out">
+                <Minus size={13} aria-hidden="true" />
+              </button>
+              <button type="button" className="atlas-zoom-value tabular" onClick={() => zoomTo(() => 1)}
+                aria-label={`Zoom ${zoomPercent}% — reset to 100%`} title="Reset zoom to 100%">
+                {zoomPercent}%
+              </button>
+              <button type="button" className="atlas-zoom-btn" onClick={() => zoomTo((scale) => scale * ZOOM_FACTOR)}
+                disabled={view.scale >= MAX_SCALE - 0.001} aria-label="Zoom in" title="Zoom in">
+                <Plus size={13} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="atlas-hint">Drag empty space or scroll to pan · Drag cards to move · ⌘/Ctrl + scroll to zoom · F fits all</div>
+          </>
+        )}
+      </section>
+    </div>
   );
 }

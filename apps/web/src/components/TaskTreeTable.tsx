@@ -1,15 +1,17 @@
 /**
- * Grouped, keyboard-reachable Task tree outline (List mode).
+ * Grouped, keyboard-reachable Task tree outline (List mode, the default view).
  *
- * Mirrors Work Atlas's Task Group mental model: multi-task root trees each get
- * their own elevated card with an honest subtree summary and rounded SVG tree
- * connectors (`├` / `└` / `│`), while standalone root Tasks group cleanly into
- * a single calm section. The outline is read-only: the only row action is
- * copying the Task ID.
+ * The List is the dense, scannable workspace: one sticky column header, a slim
+ * summary divider per Task Group, and aligned columns where the Task title is
+ * the primary fact and status, latest Progress, and assigned Worker line up.
+ * Group headlines never repeat the root Task title that the first row already
+ * carries. The outline is read-only: copying a Task ID is a desktop row action;
+ * on narrow screens it moves to Task Detail only.
  *
  * Fact honesty: five Hub states only (`Handling ended`, never a verdict),
  * worker online/offline indicators read strictly from live Worker records, and
  * Progress shows the latest Harness text + receipt age without fake metrics.
+ * Empty progress/worker cells render nothing rather than an em-dash placeholder.
  */
 
 import { useMemo } from "react";
@@ -50,10 +52,11 @@ export interface TaskTreeTableProps {
   readonly onCopyId: (taskId: string) => void;
   readonly hasActiveFilter: boolean;
   readonly onClearFilters: () => void;
+  /** Phone layout: no per-row copy action; Task Detail keeps copying. */
+  readonly compact: boolean;
 }
 
 const ID_PREVIEW_LENGTH = 12;
-const GUIDE_SLOT = 22;
 
 function shortId(id: string): string {
   return id.length <= ID_PREVIEW_LENGTH ? id : id.slice(0, ID_PREVIEW_LENGTH);
@@ -67,6 +70,7 @@ function isWorkerOnline(worker: WorkerRecord | undefined): boolean {
  * Pixel-accurate rounded SVG tree connectors aligned to parent chevron centers.
  * Each ancestor column draws a continuous vertical stem only when that ancestor
  * still has remaining siblings; the final column draws a rounded `├` or `└`.
+ * Slot widths come from CSS so a narrow screen can tighten the indent.
  */
 function TreeConnectors({
   depth,
@@ -88,19 +92,19 @@ function TreeConnectors({
         if (!isBranch) {
           const drawStem = continuations[level] ?? false;
           return (
-            <span className="list-guide-slot" key={level} style={{ width: GUIDE_SLOT }}>
+            <span className="list-guide-slot" key={level}>
               {drawStem ? <span className="list-guide-stem" /> : null}
             </span>
           );
         }
 
         return (
-          <span className="list-guide-slot" key={level} style={{ width: GUIDE_SLOT }}>
+          <span className="list-guide-slot" key={level}>
             <svg
               className="list-guide-svg"
-              width={GUIDE_SLOT}
+              width="22"
               height="52"
-              viewBox={`0 0 ${GUIDE_SLOT} 52`}
+              viewBox="0 0 22 52"
               preserveAspectRatio="none"
             >
               {isLastSibling ? (
@@ -140,14 +144,17 @@ function TreeConnectors({
 interface TreeGroupBucket {
   readonly key: string;
   readonly kind: "tree" | "standalone";
-  readonly title: string;
   readonly summary: string;
   readonly rows: TreeRow[];
 }
 
-/** Group flat visible tree rows into multi-node Task Group cards + one Standalone card. */
+/**
+ * Group flat visible tree rows into multi-node Task Group sections plus one
+ * Standalone section. The summary intentionally omits the root title: the first
+ * row already shows it, and repeating it on every divider is noise.
+ */
 function groupRowsForOutline(rows: readonly TreeRow[]): TreeGroupBucket[] {
-  const trees: TreeGroupBucket[] = [];
+  const groups: TreeGroupBucket[] = [];
   const standaloneRows: TreeRow[] = [];
 
   let index = 0;
@@ -167,24 +174,22 @@ function groupRowsForOutline(rows: readonly TreeRow[]): TreeGroupBucket[] {
         0,
         root.task.subtree.finished - (root.status === "finished" ? 1 : 0),
       );
+      const childTotal = descendantCount || root.childCount;
       const parts = [
-        `${formatCount(descendantCount || root.childCount)} ${
-          (descendantCount || root.childCount) === 1 ? "subtask" : "subtasks"
-        }`,
+        `${formatCount(childTotal)} ${childTotal === 1 ? "subtask" : "subtasks"}`,
       ];
-      if (finishedDescendants > 0) {
-        parts.push(`${formatCount(finishedDescendants)} ended`);
-      }
       if (root.task.subtree.queued > 0) {
         parts.push(`${formatCount(root.task.subtree.queued)} queued`);
       }
       if (root.task.subtree.dispatched > 0) {
         parts.push(`${formatCount(root.task.subtree.dispatched)} dispatched`);
       }
-      trees.push({
+      if (finishedDescendants > 0) {
+        parts.push(`${formatCount(finishedDescendants)} ended`);
+      }
+      groups.push({
         key: root.id,
         kind: "tree",
-        title: root.title || root.id,
         summary: parts.join(" · "),
         rows: slice,
       });
@@ -194,18 +199,15 @@ function groupRowsForOutline(rows: readonly TreeRow[]): TreeGroupBucket[] {
   }
 
   if (standaloneRows.length > 0) {
-    trees.push({
+    groups.push({
       key: "__standalone__",
       kind: "standalone",
-      title: "Standalone Tasks",
-      summary: `${formatCount(standaloneRows.length)} ${
-        standaloneRows.length === 1 ? "task" : "tasks"
-      }`,
+      summary: "",
       rows: standaloneRows,
     });
   }
 
-  return trees;
+  return groups;
 }
 
 interface OutlineRowProps {
@@ -215,6 +217,8 @@ interface OutlineRowProps {
   onSelectTask: (taskId: string) => void;
   onToggleExpand: (taskId: string) => void;
   onCopyId: (taskId: string) => void;
+  /** Phone layout: the row has no copy action at all. */
+  compact: boolean;
 }
 
 function OutlineRow(props: OutlineRowProps) {
@@ -225,6 +229,7 @@ function OutlineRow(props: OutlineRowProps) {
     onSelectTask,
     onToggleExpand,
     onCopyId,
+    compact,
   } = props;
 
   const delivery = row.task.currentDelivery;
@@ -264,6 +269,7 @@ function OutlineRow(props: OutlineRowProps) {
     <div
       role="row"
       className="list-row"
+      data-task-id={row.id}
       data-depth={row.depth}
       data-root={row.depth === 0}
       data-selected={selected}
@@ -273,7 +279,7 @@ function OutlineRow(props: OutlineRowProps) {
       onClick={() => onSelectTask(row.id)}
       onKeyDown={handleKeyDown}
     >
-      {/* 1. Task hierarchy + title + subtle badges */}
+      {/* 1. Hierarchy + primary title + relationship badges */}
       <div role="cell" className="list-cell list-cell-task">
         <TreeConnectors
           depth={row.depth}
@@ -298,93 +304,80 @@ function OutlineRow(props: OutlineRowProps) {
             <ChevronRight size={13} aria-hidden="true" />
           </button>
         ) : (
-          <span className="list-leaf-marker" aria-hidden="true">
-            <span className="state-dot" data-state={row.status} />
-          </span>
+          <span className="list-leaf-marker" aria-hidden="true" />
         )}
 
-        <div className="list-task-stack">
-          <div className="list-task-primary">
-            <span className="list-task-title" title={row.title}>
-              {row.title}
-            </span>
-            {row.hasChildren && !row.expanded ? (
-              <span
-                className="list-micro-pill"
-                title={`${formatCount(row.childCount)} collapsed child Tasks`}
-              >
-                +{formatCount(row.childCount)}
-              </span>
-            ) : null}
-            {row.dependencyCount > 0 ? (
-              <span
-                className="list-micro-pill"
-                title={`${formatCount(row.dependencyCount)} sibling ${
-                  row.dependencyCount === 1 ? "dependency" : "dependencies"
-                }`}
-              >
-                <GitBranch size={10} aria-hidden="true" />
-                <span>{row.dependencyCount === 1 ? "dep" : `${row.dependencyCount} deps`}</span>
-              </span>
-            ) : null}
-            {row.hasSourceTask ? (
-              <span className="list-micro-pill" title="Created from a source Task (copy / retry)">
-                <RotateCcw size={10} aria-hidden="true" />
-                <span>retry</span>
-              </span>
-            ) : null}
-          </div>
-          <span className="list-task-id mono" title={`Task ID ${row.id}`}>
-            {shortId(row.id)}
-          </span>
-        </div>
-      </div>
+        <span className="list-task-title" title={`${row.title} (${row.id})`}>
+          {row.title}
+        </span>
 
-      {/* 2. Category pill */}
-      <div role="cell" className="list-cell list-cell-category">
-        {row.category !== "" ? (
-          <span className="list-cat-pill truncate" title={row.category}>
-            {row.category}
+        {row.hasChildren && !row.expanded ? (
+          <span
+            className="list-micro-pill"
+            title={`${formatCount(row.childCount)} collapsed child Tasks`}
+          >
+            +{formatCount(row.childCount)}
+          </span>
+        ) : null}
+        {row.dependencyCount > 0 ? (
+          <span
+            className="list-micro-pill"
+            title={`${formatCount(row.dependencyCount)} sibling ${
+              row.dependencyCount === 1 ? "dependency" : "dependencies"
+            }`}
+          >
+            <GitBranch size={10} aria-hidden="true" />
+            <span>{row.dependencyCount === 1 ? "dep" : `${row.dependencyCount} deps`}</span>
+          </span>
+        ) : null}
+        {row.hasSourceTask ? (
+          <span className="list-micro-pill" title="Created from a source Task (copy / retry)">
+            <RotateCcw size={10} aria-hidden="true" />
+            <span>retry</span>
           </span>
         ) : null}
       </div>
 
-      {/* 3. Honest V1 status badge */}
+      {/* 2. Honest V1 status badge */}
       <div role="cell" className="list-cell list-cell-status">
         <TaskStatusBadge status={row.status} />
       </div>
 
-      {/* 4. Progress / Delivery summary */}
-      <div role="cell" className="list-cell list-cell-progress">
-        {progress && delivery ? (
-          <div className="list-progress-stack">
+      {/* 3. Latest Progress only; no dash placeholder when absent. On phones a
+          row drops this line unless the Harness actually reported Progress. */}
+      <div
+        role="cell"
+        className="list-cell list-cell-progress"
+        data-empty={progress === null}
+        data-progress={progress ? "reported" : delivery ? "none" : "unassigned"}
+      >
+        {progress ? (
+          <span className="list-progress-line">
             <span className="list-progress-text" title={progress.text}>
               {progress.text}
             </span>
             <span className="list-progress-age mono">
               {formatRelativeTime(progress.receivedAtMs)}
             </span>
-          </div>
-        ) : delivery ? (
-          <div className="list-progress-stack">
-            <span className="list-progress-muted">
-              {DELIVERY_STATUS_LABELS[delivery.state]} · No progress
-            </span>
-            <span className="list-progress-age mono">
-              {formatRelativeTime(delivery.updatedAtMs)}
-            </span>
-          </div>
-        ) : (
-          <span className="list-empty-dot" aria-label="No Delivery">
-            —
           </span>
-        )}
+        ) : delivery ? (
+          <span
+            className="list-progress-muted"
+            title={`${DELIVERY_STATUS_LABELS[delivery.state]} — no Progress reported`}
+          >
+            No progress
+          </span>
+        ) : null}
       </div>
 
-      {/* 5. Worker + online indicator + executor/slot */}
-      <div role="cell" className="list-cell list-cell-worker">
+      {/* 4. Worker + online indicator + executor/slot on one aligned line. */}
+      <div
+        role="cell"
+        className="list-cell list-cell-worker"
+        data-empty={delivery === null}
+      >
         {delivery ? (
-          <div
+          <span
             className="list-worker-chip"
             title={`${delivery.workerId} (${online ? "online" : "offline"}) · slot ${delivery.slotId}${
               delivery.executorId ? ` · executor ${delivery.executorId}` : ""
@@ -395,37 +388,33 @@ function OutlineRow(props: OutlineRowProps) {
               data-state={online ? "online" : "offline"}
               aria-hidden="true"
             />
-            <span className="list-worker-text">
-              <span className="list-worker-id mono truncate">{shortId(delivery.workerId)}</span>
-              {executorOrSlot ? (
-                <span className="list-worker-slot mono truncate">{executorOrSlot}</span>
-              ) : null}
-            </span>
-          </div>
-        ) : (
-          <span className="list-empty-dot" aria-label="Unassigned">
-            —
+            <span className="list-worker-id mono truncate">{shortId(delivery.workerId)}</span>
+            {executorOrSlot ? (
+              <span className="list-worker-slot mono truncate">{executorOrSlot}</span>
+            ) : null}
           </span>
-        )}
+        ) : null}
       </div>
 
-      {/* 6. Read-only actions column (copy ID only; never overlaps title) */}
-      <div role="cell" className="list-cell list-cell-actions">
-        <div className="list-row-actions">
-          <button
-            type="button"
-            className="list-action-btn"
-            title="Copy Task ID"
-            aria-label={`Copy Task ID ${row.id}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onCopyId(row.id);
-            }}
-          >
-            <Copy size={12} aria-hidden="true" />
-          </button>
+      {/* 5. Desktop-only copy ID; mobile keeps copying in Task Detail. */}
+      {compact ? null : (
+        <div role="cell" className="list-cell list-cell-actions">
+          <div className="list-row-actions">
+            <button
+              type="button"
+              className="list-action-btn"
+              title="Copy Task ID"
+              aria-label={`Copy Task ID ${row.id}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onCopyId(row.id);
+              }}
+            >
+              <Copy size={12} aria-hidden="true" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -448,6 +437,7 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
     onCopyId,
     hasActiveFilter,
     onClearFilters,
+    compact,
   } = props;
 
   const workerById = useMemo(() => {
@@ -492,6 +482,7 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
             <button
               type="button"
               className="button button-sm"
+              aria-label={allExpanded ? "Collapse every Task Group" : "Expand every Task Group"}
               title={allExpanded ? "Collapse every Task Group" : "Expand every Task Group"}
               onClick={onToggleExpandAll}
             >
@@ -503,6 +494,7 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
               className="button button-sm"
               data-active={inspectorOpen}
               aria-pressed={inspectorOpen}
+              aria-label="Inspector"
               title="Toggle Inspector (I)"
               onClick={onToggleInspector}
             >
@@ -517,7 +509,7 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
             {hasActiveFilter ? (
               <>
                 <span className="pane-empty-title">No matching tasks</span>
-                <span>No Task matches the current search or filters.</span>
+                <span>No Task matches the current filters.</span>
                 <button type="button" className="button button-sm" onClick={onClearFilters}>
                   Clear filters
                 </button>
@@ -536,36 +528,42 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
             <div
               role="table"
               className="list-outline"
-              aria-label="Tasks grouped by Task Tree with hierarchy, status, progress, and assigned Worker"
+              aria-label="Tasks grouped by Task Tree with hierarchy, status, latest progress, and assigned Worker"
             >
+              <div role="row" className="list-columns">
+                <div role="columnheader" className="list-col-label">
+                  Task
+                </div>
+                <div role="columnheader" className="list-col-label">
+                  Status
+                </div>
+                <div role="columnheader" className="list-col-label">
+                  Progress
+                </div>
+                <div role="columnheader" className="list-col-label">
+                  Worker
+                </div>
+                <div role="columnheader" className="list-col-label list-col-actions">
+                  <span className="visually-hidden">Actions</span>
+                </div>
+              </div>
+
               {groups.map((group) => (
-                <div key={group.key} className="list-group-card" role="rowgroup">
-                  <div className="list-group-head" role="row">
-                    <div className="list-group-head-main" role="columnheader">
-                      <span className="list-group-kicker">
-                        {group.kind === "tree" ? "TASK GROUP" : "STANDALONE"}
-                      </span>
-                      <span className="list-group-title truncate" title={group.title}>
-                        {group.kind === "tree" ? group.title : "Independent Tasks"}
-                      </span>
-                      <span className="list-group-summary mono">{group.summary}</span>
+                <div key={group.key} className="list-group" role="rowgroup">
+                  {/* Tree dividers carry a subtree summary; standalone rows need
+                      no divider at all, so they never add a repeated heading. */}
+                  {group.kind === "tree" ? (
+                    <div className="list-group-head" role="row">
+                      <div className="list-group-head-main" role="columnheader">
+                        <GitBranch
+                          size={11}
+                          aria-hidden="true"
+                          className="list-group-icon"
+                        />
+                        <span className="list-group-summary mono">{group.summary}</span>
+                      </div>
                     </div>
-                    <div className="list-col-label" role="columnheader">
-                      Category
-                    </div>
-                    <div className="list-col-label" role="columnheader">
-                      Status
-                    </div>
-                    <div className="list-col-label" role="columnheader">
-                      Progress
-                    </div>
-                    <div className="list-col-label" role="columnheader">
-                      Worker
-                    </div>
-                    <div className="list-col-label list-col-actions" role="columnheader">
-                      <span className="visually-hidden">Actions</span>
-                    </div>
-                  </div>
+                  ) : null}
 
                   <div className="list-group-rows">
                     {group.rows.map((row) => (
@@ -577,6 +575,7 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
                         onSelectTask={onSelectTask}
                         onToggleExpand={onToggleExpand}
                         onCopyId={onCopyId}
+                        compact={compact}
                       />
                     ))}
                   </div>
