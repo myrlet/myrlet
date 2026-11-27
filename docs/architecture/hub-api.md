@@ -1,22 +1,14 @@
 # Hub API
 
-Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTTPS (or loopback HTTP for local development). Workers connect over WSS for control frames and report Progress, Result, and Finish over HTTP.
+Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTTPS (or loopback HTTP for local development). Workers connect over WSS for wakeup hints and control frames, and call dedicated Hub HTTP endpoints for claims, Progress, Result, and Finish reporting.
 
 **Wire convention:** All HTTP request and response JSON bodies use **`camelCase`** consistently (no mixed `snake_case`/`camelCase` aliases). Error responses use `{ "error": "<StableCode>", "message": "<fixed safe message>" }` without leaking internal SQLite causes.
 
-## Proposed reporting semantics
+## Read Authorization
 
-One effective Delivery binds a Task to one Worker and one Slot. That Worker is the single writer for two independent values, Progress and Result. The Hub keeps the latest copy of each. Compare hashes over agreed content bytes and reconcile differing values to the current Worker observation. A Markdown digest covers its text and reference strings. Equal content requires no write. Result can change after Finish. Reconciliation never changes the Task outcome, and the Hub stores no revision counters or version history.
-
-After local recovery completes, an absent or empty Result file means **no Result** and clears a previous Hub value. A read error, an unsafe file, an invalid payload, or incomplete recovery cannot establish absence. Preserve the Hub copy until the Worker can establish its local state. The Result clearing rule applies only to Result.
-
-Serialize sync per Delivery and reread current content on each attempt. Before sending newer content after a timeout, settle the outstanding write or fence its connection epoch. Validate Delivery ownership and epoch at the Hub commit boundary. A delayed request carrying an old epoch cannot undo a newer committed value. Distinguish local receipt, Hub confirmation, and inability to compare when disconnected. Exact digest inputs and wire encodings remain open.
-
-Client operations in the proposal include submit, atomic import, version-fenced pending edits, cancellation, and global reads. The [Task model](task-model.md#proposed-task-lifecycle) specifies their effects. The proposed read credential and claim exchange await review; no new route is specified here.
+Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{id}/tree`, `/v1/tasks/{id}/eligibility`, `/v1/events`, `/v1/workers`, `/v1/workers/{id}`) accept **either** the Admin token **or** any enrolled Worker credential. A Harness therefore never needs the Hub Admin token merely to inspect Tasks, trees, Workers, or events. Reads grant **no** management authority: every write route still requires the Admin principal. See [security](security.md#read-visibility).
 
 ## V1 Endpoint Surface
-
-The route tables and reporting payloads below document the **currently implemented** API. In particular, the write-once Result response below applies to the current binary.
 
 ### Public & Health
 
@@ -35,22 +27,29 @@ The route tables and reporting payloads below document the **currently implement
 - Every UI response carries strict security headers: `Content-Security-Policy` (self-only scripts and connections, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`.
 - The Admin bearer token stays in browser memory only — never written to `localStorage`/`sessionStorage`, cookies, or URLs.
 
-### Admin / Client Control Plane (`Authorization: Bearer <admin-token>`)
+### Reads (Admin **or** Worker credential)
 
 | Method & Path | Purpose |
 | --- | --- |
 | `GET /v1/snapshot` | Primary read view: cluster/Worker inventory, bounded Task summaries, current Deliveries & latest Progress, and current `eventCursor`. |
-| `GET /v1/events` | Resumable SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). |
-| `POST /v1/tasks` | Create one `held` Task (`Idempotency-Key` required). |
-| `GET /v1/tasks/{id}` | Read one authoritative Task record, its current Delivery, latest Progress, and immutable result. |
+| `GET /v1/tasks` | Bounded newest-first Task summaries (`?limit=`); returns `totalTasks`, `truncated`, and `eventCursor`. |
+| `GET /v1/tasks/{id}` | Read one authoritative Task record, its current Delivery, latest Progress, `blockedBy`, and latest Result. |
 | `GET /v1/tasks/{id}/tree` | Read bounded ancestors or descendants (depth & node cap; simple limit, no view-fingerprint cursor). |
-| `POST /v1/tasks/{id}/dispatch` | Explicitly dispatch (`targeted` or `match`, optional `queue` & `fallbackAllowed`) (`Idempotency-Key` + `expectedTaskVersion`). |
-| `POST /v1/tasks/{id}/cancel` | Cancel any non-terminal Task (`Idempotency-Key` + `expectedTaskVersion`). |
-| `POST /v1/tasks/{id}/finish` | Explicitly finish a coordination-only `held` Parent with no Delivery (`Idempotency-Key` + `expectedTaskVersion`). |
-| `POST /v1/task-bundles/import` | Atomically create up to 100 `held` Tasks with local `clientRef` resolution (`Idempotency-Key`). |
-| `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code (`{ ttlSeconds, suggestedWorkerId? } -> { enrollmentCode, expiresAt }`). |
+| `GET /v1/tasks/{id}/eligibility` | Whether the Task can be claimed now, and which dependencies block it. |
+| `GET /v1/events` | Resumable SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). |
 | `GET /v1/workers` | List enrolled Workers, connectivity, and reported Slot/Executor inventory. |
-| `GET /v1/workers/{id}` | Read one Worker's detail and inventory. |
+| `GET /v1/workers/{id}` | One Worker's detail, inventory, and the `claimableTaskIds` its Slots could run next. |
+
+### Admin Control Plane (`Authorization: Bearer <admin-token>`)
+
+| Method & Path | Purpose |
+| --- | --- |
+| `POST /v1/tasks` | Submit one Task, authorizing execution (`Idempotency-Key` required). Returns `SubmitTaskResponse { task, eligible }`. |
+| `POST /v1/tasks/{id}` | Version-fenced pending edit of `dependencies` on an unclaimed Task (`Idempotency-Key` + `expectedTaskVersion`). |
+| `POST /v1/tasks/{id}/cancel` | Cancel any non-terminal Task (`Idempotency-Key` + `expectedTaskVersion`). |
+| `POST /v1/tasks/{id}/finish` | Explicitly finish a coordination-only Task with no Delivery (`Idempotency-Key` + `expectedTaskVersion`). |
+| `POST /v1/task-bundles/import` | Atomically submit up to 100 Tasks with local `clientRef` resolution (`Idempotency-Key`). |
+| `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code (`{ ttlSeconds, suggestedWorkerId? } -> { enrollmentCode, expiresAt }`). |
 | `POST /v1/workers/{id}/rotate` | Rotate a Worker's bearer credential (fences active WSS session). |
 | `POST /v1/workers/{id}/revoke` | Revoke a Worker's credential and disconnect its active WSS session. |
 
@@ -59,13 +58,29 @@ The route tables and reporting payloads below document the **currently implement
 | Method & Path | Purpose |
 | --- | --- |
 | `GET /v1/workers/connect` | Authenticated Worker WSS upgrade endpoint. |
+| `POST /v1/workers/claim` | Explicitly claim one `queued` Task for one Slot; commits the Task's one Delivery. |
 | `POST /v1/worker/deliveries/{delivery_id}/progress` | Report latest Harness-authored Progress. |
-| `POST /v1/worker/deliveries/{delivery_id}/result` | Report the optional final Harness-written Markdown result. |
+| `POST /v1/worker/deliveries/{delivery_id}/result` | Reconcile the Delivery's latest Markdown Result, or clear it. |
+| `GET /v1/worker/deliveries/{delivery_id}/result` | Read the current Hub Result copy for a `result status` comparison (no write). |
 | `POST /v1/worker/deliveries/{delivery_id}/finish` | Report Worker end of handling. |
+
+## Claiming a Task
+
+`POST /v1/workers/claim`
+
+```json
+{ "taskId": "task_…", "slotId": "slot-a", "connectionEpoch": 7, "executorId": null }
+```
+
+- The Worker credential identifies the claimant; `connectionEpoch` must equal the Worker's live WSS epoch, otherwise `409 StaleDelivery`.
+- In one transaction the Hub rechecks: Task `queued` with every dependency `finished`, no existing Delivery for the Task, the named Slot exists and is enabled, every `requiredCapabilities` entry is `available`, and any requested Executor is present on that Slot.
+- If `executorId` is omitted the Hub resolves the Task's own `preferredExecutorId` against the Slot (falling back to the Slot's first Executor); a preference never blocks a claim.
+- Exactly one Delivery is created (`state: accepted`) and the Task moves to `dispatched`. Racing claims either lose the version check or violate the unique Delivery index, so exactly one wins; a loser receives `409 InvalidTransition` / `409 AlreadyClaimed`.
+- Returns `ClaimTaskResponse { task, delivery }`.
 
 ## Worker Progress, Result, and Finish Reporting (HTTP)
 
-Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the Worker's bearer token matching the Delivery's assigned `workerId` and validate `epoch` (stale epoch returns `409 StaleDelivery`).
+Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the Worker's bearer token matching the Delivery's assigned `workerId` and validate `epoch` (a stale epoch or revoked credential returns `409 StaleDelivery` / `401`). The Hub keeps **one latest value per Delivery** for each of Progress and Result; there is no history and no revision counter.
 
 ### `POST /v1/worker/deliveries/{delivery_id}/progress`
 
@@ -74,10 +89,10 @@ Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the
 ```
 
 - `text` is a single bounded UTF-8 string (max 16 KiB).
-- Hub stores **one latest-state row per Delivery** (no Progress history).
+- Hub stores **one latest-value row per Delivery**.
 - Equal `observedAtMs` is an idempotent duplicate; older `observedAtMs` is rejected so retries cannot move Progress backwards.
 - Returns `ProgressReceipt { deliveryId, acceptedAtMs, firstAcceptedAtMs, duplicate }`.
-- The first accepted Progress sets immutable `firstAcceptedAtMs` (execution-start evidence) and promotes an `offered` Delivery to `accepted` in the same transaction.
+- The first accepted Progress sets immutable `firstAcceptedAtMs` (execution-start evidence).
 - Progress never changes Task status and remains accepted even after cancellation.
 
 ### `POST /v1/worker/deliveries/{delivery_id}/finish`
@@ -90,7 +105,7 @@ Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the
 - Returns `FinishReceipt { deliveryId, taskId, taskStatus, changed }`.
 - Idempotent on replay (`changed: false`).
 - If the Task is already `cancelled`, Hub returns `cancelled` unchanged and never reverts it.
-- Otherwise Hub moves Task and Delivery to `finished`. An `offered` Delivery may transition directly to `finished` when a Harness wrote no Progress.
+- Otherwise Hub moves Task and Delivery to `finished`, and releases any waiting siblings that become ready.
 
 ### `POST /v1/worker/deliveries/{delivery_id}/result`
 
@@ -98,11 +113,20 @@ Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the
 { "epoch": 7, "text": "# Findings\n\n- one" }
 ```
 
-- `text` is one bounded UTF-8 Markdown string (max 64 KiB, non-blank).
-- Accepted for an `accepted` Delivery and, independently of Finish, for a `finished` or `cancelled` Delivery: the Worker's live `epoch` still fences each report, so a late sync after reconnect lands.
-- **Current wire behavior**: the first stored text is immutable. An identical replay returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate: true }` without a new event; different text returns `409 InvalidTransition`.
-- Returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate }` and emits one `delivery.result` invalidation event.
-- A Result never changes Task status and is not a verdict. Hub stores it on the Delivery; `GET /v1/tasks/{id}` exposes it as `resultMarkdown` + `resultRecordedAtMs`, and it is **never** part of the Snapshot or a cross-Task read.
+- `text` is `Some(bounded Markdown)` (max 64 KiB, non-blank) to set the value, or `null` to state that a completed local recovery found **no Result** and clear any stored copy.
+- The Hub keeps the latest value plus the SHA-256 of its exact text. An identical digest is a no-op (`duplicate: true`). Different content **replaces** the value — there is no write-once rule and no history.
+- Accepted for a live, `finished`, or `cancelled` Delivery: a live epoch still fences every write, so a delayed request carrying an old epoch is refused at this boundary and can never undo a newer value.
+- A `null` clear is only legitimate after the Worker has completed local recovery and confirmed absence or emptiness; an unreadable, unsafe, or partially written file must never be treated as absence.
+- Returns `ResultReceipt { deliveryId, taskId, recordedAtMs, resultSha256, cleared, duplicate }` and emits one `delivery.result` invalidation event when it changes anything.
+- A Result never changes Task status and is not a verdict. Hub stores it on the Delivery; `GET /v1/tasks/{id}` exposes it as `resultMarkdown` + `resultRecordedAtMs`. It is **not** part of the Snapshot.
+
+### `GET /v1/worker/deliveries/{delivery_id}/result`
+
+Returns `DeliveryResultView { deliveryId, taskId, text, recordedAtMs, resultSha256 }` for the Delivery's own Worker so `myrlet result status` can compare the local copy with the Hub copy without writing either side.
+
+### Result and Progress convergence
+
+The Delivery's Worker is the single writer of both values. It serializes reconciliation per Delivery, rereads current local content on every attempt, and compares content hashes so equal values cause no write. Progress and Result are independent: updating either leaves the other untouched. The Hub write boundary validates Delivery ownership and epoch, which is the whole conflict story — there is no revision counter, history, multi-writer resolution, content CAS, or distinct missing/clear business state.
 
 ## Global Snapshot
 
@@ -110,7 +134,7 @@ Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the
 
 - `schemaVersion` (`"myrlet.snapshot/v1"`), `generatedAt`, `eventCursor`, and `tasksTruncated` (boolean + total count when Task summaries exceed the Snapshot page bound);
 - connected/disconnected Workers with their reported Slots, capabilities, Executors, observation timestamps, and advisory capacity hints (absent capacity MUST be `null`, never `0`);
-- Task summaries (status, version, hierarchy, current Delivery, and latest `DeliveryProgressView` including `firstReceivedAtMs` / `receivedAtMs` / `text`).
+- Task summaries (status, version, hierarchy, `dependencies`, `blockedBy`, current Delivery, and latest `DeliveryProgressView`).
 
 Snapshot is purely observational and never reserves capacity.
 

@@ -53,9 +53,7 @@ cargo run -p myrlet-worker-daemon -- check-config
 cargo run -p myrlet-worker-daemon
 ```
 
-## 4. Create and Dispatch a Task
-
-This walkthrough uses the CLI built from the current sources. Its `tasks submit` convenience command also performs explicit dispatch internally. The proposed single-step submission and Worker claim are described in the [Task model](../architecture/task-model.md#proposed-task-lifecycle).
+## 4. Submit a Task
 
 In a third terminal:
 
@@ -63,20 +61,17 @@ In a third terminal:
 export MYRLET_HUB_URL='http://127.0.0.1:4140'
 export MYRLET_ADMIN_TOKEN='replace-with-local-admin-token'
 
-cargo run -p myrlet-cli -- tasks create \
+cargo run -p myrlet-cli -- tasks submit \
   --idempotency-key local-task-1 \
   --title 'Verify local Worker' \
   --prompt 'Run the configured Executor'
 
-cargo run -p myrlet-cli -- tasks dispatch <task-id> \
-  --expected-version 1 \
-  --idempotency-key local-dispatch-1 \
-  --match
-
 cargo run -p myrlet-cli -- events watch
 ```
 
-A Harness may optionally write the final Markdown result to `$MYRLET_HOME/worker/results/<delivery-id>.md` (owner-only, up to 64 KiB). The Worker syncs it once; `tasks show <task-id>` and the Web Task Detail display it after handling ends, even if the Worker later goes offline.
+Submission authorizes the Task: with no earlier prerequisites it becomes `queued`, the Hub wakes an eligible Worker, and that Worker claims it for a free Slot. A Task whose prerequisites are not all `finished` instead stays `held` and lists its `blockedBy`.
+
+A Harness may optionally write the final Markdown result to `$MYRLET_HOME/worker/results/<delivery-id>.md` (owner-only, up to 64 KiB). The Worker reconciles the latest content to the Hub; `tasks show <task-id>` and the Web Task Detail display it even if the Worker later goes offline. The Harness asks the Worker to sync and finish by running `myrlet done <delivery-id>` before exit.
 
 ## Next Steps
 

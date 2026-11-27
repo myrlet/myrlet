@@ -2,27 +2,27 @@
 
 Myrlet secures its own control plane (HTTP, SSE, WSS, and Myrlet-owned files). It does **not** sandbox Harnesses or manage Harness Provider Credentials.
 
-## Proposed agent access
-
-Authorized Owner Agents and Harnesses can query all Tasks, dependency trees, Workers, and events. Read access alone cannot submit, cancel, rotate, or revoke. A Harness needs no Admin token for these proposed reads. The read credential or authenticated proxy and operator bootstrap require review before implementation. Until then, use the current credential matrix below.
-
-A Delivery ID identifies an execution and confers no authority. For local reporting the Worker resolves the recorded Delivery, verifies safe paths, and uses its own credential. The Hub checks Worker binding and current connection epoch at the write boundary. An unreadable or unsafe Result file provides no authority to clear the Hub copy. See [reporting semantics](hub-api.md#proposed-reporting-semantics).
-
 ## Control-Plane Authentication
 
-The current binary has two authenticated Principal kinds:
+V1 has two authenticated Principal kinds:
 
 | Principal | Credential | Authorized Surface |
 | --- | --- | --- |
 | **Admin** | `MYRLET_ADMIN_TOKEN` (operator-provisioned secret) | All Client/Admin HTTP endpoints, SSE `/v1/events`, Worker enrollment code issuance, Worker rotation/revocation. |
-| **Worker** | Hub-issued CSPRNG machine bearer token | `GET /v1/workers/connect` (WSS) and `POST /v1/worker/deliveries/{id}/{progress,result,finish}` for Deliveries bound to that `workerId` only. |
+| **Worker** | Hub-issued CSPRNG machine bearer token | `GET /v1/workers/connect` (WSS), `POST /v1/workers/claim`, `POST /v1/worker/deliveries/{id}/{progress,result,finish}` for Deliveries bound to that `workerId` only, and any ordinary read route. |
 
 Rules:
 - Hub stores only **SHA-256 verifiers** (never plaintext tokens or pairing codes) and compares verifiers in constant time.
 - Authentication runs **before** request bodies are buffered or parsed (`401` on missing/invalid/revoked tokens).
 - Credentials in URL query parameters are forbidden.
-- Worker credentials cannot call Admin routes; Admin credentials cannot spoof Worker Progress/Result/Finish or WSS connections.
+- Worker credentials cannot call Admin management routes; Admin credentials cannot spoof Worker claims, Progress, Result, or Finish, or WSS connections.
 - Browser Clients keep tokens in memory only (never in `localStorage`, URLs, or packaged Web assets) and default to same-origin Hub hosting with a restrictive CSP.
+
+## Read Visibility
+
+Owners and Harnesses can inspect every Task, dependency tree, blocker, Worker, and event without holding the Admin token: ordinary read routes accept either the Admin credential or any enrolled Worker credential. Read access alone grants **no** management permission — cancel, edit, finish, rotate, and revoke remain Admin-only, and the Hub enforces that on the write route, not in the client. This is the entire authorization model for reads; there is no per-Task isolation, role system, or multi-tenant RBAC in V1.
+
+A Delivery ID identifies an execution and confers **no** authority. For execution-local reporting the Worker resolves its recorded Delivery, verifies safe paths, and uses its own credential; the Hub rechecks Worker binding and the current connection epoch at the write boundary. An unreadable or unsafe Result file provides no authority to clear the Hub copy.
 
 ## Pairing and Worker Credentials
 
@@ -34,7 +34,7 @@ Rules:
 ## Transport and Filesystem Safety
 
 - **Mandatory TLS verification**: `wss://` connections always verify the Hub TLS certificate chain and hostname against Mozilla roots or an operator-supplied `MYRLET_HUB_CA_FILE` bundle. No option disables verification. Plaintext `ws://` / `http://` is for loopback or private container networks only.
-- **Epoch and version fencing**: Monotonic `connectionEpoch` fences stale Worker sockets; `expectedTaskVersion` fences stale Task mutations.
+- **Epoch and version fencing**: Monotonic `connectionEpoch` fences stale Worker sockets and every Worker write; `expectedTaskVersion` fences stale Task mutations. A delayed write from an old epoch, including a Result or Progress report, is refused at the Hub boundary and can never undo a newer committed value.
 - **Path safety**: Hub and Worker reject `MYRLET_HOME` inside a Git repository, `..` traversal, symlinked databases/credentials/state directories, and group/world-accessible (`>0700` dir / `>0600` file) managed paths. Myrlet fails closed instead of silently `chmod`-ing operator files.
 
 ## Non-Invasive Harness Boundary (Explicitly No Sandbox)

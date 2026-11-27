@@ -45,15 +45,13 @@ The commit references matter. Each harness owns its workspace and conversation. 
 
 A Mac with Xcode, a Linux test runner, and a read-only review environment offer different capabilities. We recommend a separate Docker worker for each permission boundary where the toolchain supports containers. Run the harness inside that boundary. Mount only the files it needs, scope its network access, and supply only its own credentials. You can provision those credentials with an external secrets manager such as Infisical.
 
-Slots advertise where work can run. The OS or container enforces access. Keep the Hub admin token with trusted owners because it authorizes dispatch across the fleet. An enrolled worker uses its own credential to connect and report on its deliveries. [Security model](docs/architecture/security.md)
+Slots advertise where work can run. The OS or container enforces access. Keep the Hub admin token with trusted owners because it authorizes submission, edits, and cancellation across the fleet. An enrolled worker uses its own credential to connect, claim, and report on its deliveries; it can also read Tasks and Workers without the admin token. [Security model](docs/architecture/security.md)
 
 ## How It Works
 
-The steps below describe the current binaries. The [workflow under architecture review](docs/architecture/README.md#contract-under-review) makes submission authorize work, lets Workers explicitly claim it, and exposes the reason a Task is waiting. The [CLI reference](skills/myrlet/references/cli.md) lists the commands available today.
-
-1. **Create a task.** A human or owner agent creates a task in `held`. One Hub keeps the task tree, dependencies, and worker inventory in SQLite.
-2. **Choose an environment.** Dispatch to a specific worker and slot, or ask the Hub to match the task to an eligible slot. Workers connect outbound to the Hub over WSS with TLS verification for remote deployments.
-3. **Observe the handoff.** Before starting a harness, the worker records the delivery ID so a replay cannot start it twice. It relays optional Progress, captures a Markdown Result when the Harness exits, and reports when handling ends. Read the stored Result with `myrlet tasks show <id>`. A disconnected worker may still be executing. A `finished` task tells its owner when to inspect the work and decide what comes next.
+1. **Submit a task.** A human or owner agent submits a task, which authorizes it. One Hub keeps the task tree, dependencies, and worker inventory in SQLite. A task whose prerequisites have not finished stays `held` and reports which ones block it.
+2. **A worker claims it.** A ready (`queued`) task waits for an eligible worker. The Hub wakes one eligible worker; the worker chooses a free slot and explicitly claims the task, and the Hub commits exactly one delivery. Workers connect outbound to the Hub over WSS with TLS verification for remote deployments.
+3. **Observe the handoff.** Before starting a harness, the worker records the delivery ID so a replay cannot start it twice. It relays optional Progress and the latest Markdown Result, and reports when handling ends. Read the stored Result with `myrlet tasks show <id>`. A disconnected worker may still be executing. A `finished` task tells its owner when to inspect the work and decide what comes next.
 
 ## Quick Start
 
@@ -111,23 +109,17 @@ unset MYRLET_ADMIN_TOKEN
 ./target/release/worker
 ```
 
-### 3. Create, Dispatch & Watch a Task
+### 3. Submit & Watch a Task
 
 In an owner terminal, set the same Hub URL and admin token used for enrollment.
 
 ```bash
-# Create a held Task
-task_id="$(./target/release/myrlet --json tasks create \
+# Submit a Task; submission authorizes it for execution
+task_id="$(./target/release/myrlet --json tasks submit \
   --idempotency-key demo-1 \
   --title 'Run workspace tests' \
   --prompt 'Run cargo test and write a short summary to the Progress file.' \
-  | jq -er '.id')"
-
-# Dispatch via deterministic Simple Match
-./target/release/myrlet --json tasks dispatch "$task_id" \
-  --expected-version 1 \
-  --idempotency-key demo-dispatch-1 \
-  --match
+  | jq -er '.task.id')"
 
 # Stream live invalidation events or inspect authoritative Task state
 ./target/release/myrlet --json events watch
