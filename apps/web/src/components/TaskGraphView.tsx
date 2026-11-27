@@ -243,15 +243,19 @@ function AtlasTaskNode(props: AtlasTaskNodeProps) {
     ? `Worker ${delivery.workerId} — ${online ? "online" : "offline"}` +
       (executor === null ? "" : ` · ${delivery.executorId ? "Executor" : "Slot"} ${executor}`)
     : "";
+  /* The parent's subtree summary sits under the title so a card states what it
+     is before how it stands. Worker/category stay on the bottom status line. */
+  const summary =
+    descendantCount > 0 ? (
+      <span className="atlas-node-summary">
+        {formatCount(descendantCount)} {descendantCount === 1 ? "subtask" : "subtasks"}
+        {finishedDescendants > 0 ? ` · ${formatCount(finishedDescendants)} ended` : ""}
+      </span>
+    ) : null;
   const context = delivery ? (
     <span className="atlas-node-worker" title={workerTitle}>
       <span className="connection-dot" data-state={online ? "online" : "offline"} aria-hidden="true" />
       <span className="mono truncate">{shortId(delivery.workerId)}</span>
-    </span>
-  ) : descendantCount > 0 ? (
-    <span className="atlas-node-chip">
-      {formatCount(descendantCount)} {descendantCount === 1 ? "subtask" : "subtasks"}
-      {finishedDescendants > 0 ? ` · ${formatCount(finishedDescendants)} ended` : ""}
     </span>
   ) : task.category ? (
     <span className="atlas-node-chip truncate">{task.category}</span>
@@ -276,6 +280,7 @@ function AtlasTaskNode(props: AtlasTaskNodeProps) {
       }}
     >
       <div className="atlas-node-title">{title}</div>
+      {density === "compact" ? null : summary}
       {density === "compact" || footer === null ? null : (
         <div className="atlas-node-footer" data-live={footer.live ? "true" : undefined}>
           <span className="atlas-node-progress truncate" title={footer.text}>{footer.text}</span>

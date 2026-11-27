@@ -121,6 +121,12 @@ export default function App() {
     return parents;
   }, [tasks]);
 
+  /** Snapshot facts for the selected Task, used while its detail read is pending. */
+  const selectedSummary = useMemo(
+    () => tasks.find((task) => task.id === hub.selectedTaskId) ?? null,
+    [hub.selectedTaskId, tasks],
+  );
+
   const allExpanded =
     parentIds.size > 0 && Array.from(parentIds).every((taskId) => expanded.has(taskId));
 
@@ -641,6 +647,8 @@ export default function App() {
             >
               {hub.selectedTaskId !== null ? (
                 <TaskDetailPanel
+                  selectedTaskId={hub.selectedTaskId}
+                  summary={selectedSummary}
                   task={hub.selectedTask}
                   tree={hub.selectedTree}
                   loading={hub.detailLoading}
@@ -648,6 +656,10 @@ export default function App() {
                   onClose={clearSelection}
                   onSelectTask={selectTaskAndReveal}
                   onCopyText={copyText}
+                  onRetry={() => {
+                    void hub.retrySelected();
+                  }}
+                  onDismissError={hub.clearDetailError}
                 />
               ) : (
                 <WorkspaceInspector
