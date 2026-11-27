@@ -15,13 +15,14 @@ pub mod harness;
 pub mod process;
 pub mod runner;
 
-/// One accepted Delivery handed to an Adapter, with its Progress file path.
+/// One accepted Delivery handed to an Adapter, with its Progress and result file paths.
 #[derive(Debug, Clone)]
 pub struct SubmitRequest {
     pub task_id: TaskId,
     pub delivery_id: DeliveryId,
     pub task: TaskDefinition,
     pub progress_path: PathBuf,
+    pub result_path: PathBuf,
 }
 
 /// Sent when the Adapter observes end of handling, so the Worker can post `/finish`.
@@ -75,15 +76,17 @@ pub trait ExecutorAdapter: Send + Sync {
     async fn cancel(&self, execution_ref: &ExecutionRef) -> CancelState;
 }
 
-/// Minimal startup prompt: Task identification, the Progress file path, and the prompt.
-/// Everything else the Harness fetches itself through the `myrlet` CLI.
+/// Minimal startup prompt: Task identification, the Progress and result file paths, and
+/// the prompt. Everything else the Harness fetches itself through the `myrlet` CLI.
 pub fn build_startup_prompt(req: &SubmitRequest) -> String {
     format!(
         "Myrlet Task ID: {task}\nDelivery ID: {delivery}\nWrite optional JSON progress \
-         {{\"text\":\"...\"}} to {progress}\n\n{prompt}",
+         {{\"text\":\"...\"}} to {progress}\nOptionally write the final Markdown result (private mode 0600, up to 64 KiB) to \
+         {result}\n\n{prompt}",
         task = req.task_id,
         delivery = req.delivery_id,
         progress = req.progress_path.display(),
+        result = req.result_path.display(),
         prompt = req.task.prompt,
     )
 }

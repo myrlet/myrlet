@@ -27,12 +27,18 @@ pub struct LocalDeliveryRecord {
     pub executor_id: Option<ExecutorId>,
     /// `worker/progress/<delivery_id>.json`; the Worker never writes this file.
     pub progress_path: PathBuf,
+    /// `worker/results/<delivery_id>.md`; the Worker never writes this file either.
+    pub result_path: PathBuf,
     pub execution_ref: Option<ExecutionRef>,
     /// Pre-registration local refusal, when the Worker declined the offer.
     pub rejected: Option<RejectionCode>,
     pub rejected_acked: bool,
     pub finish_pending: bool,
     pub finish_acked: bool,
+    /// Final result text observed locally but not yet acknowledged by Hub.
+    pub result_pending: Option<String>,
+    /// Hub accepted the result; it is never re-read or re-posted after this.
+    pub result_acked: bool,
     /// Backend cancel answer (and optional reason) kept until acknowledged.
     pub cancel_report: Option<(CancelState, Option<String>)>,
     pub cancel_acked: bool,
@@ -47,6 +53,7 @@ impl LocalDeliveryRecord {
         task_id: TaskId,
         slot_id: SlotId,
         progress_path: PathBuf,
+        result_path: PathBuf,
     ) -> Self {
         Self {
             delivery_id,
@@ -54,11 +61,14 @@ impl LocalDeliveryRecord {
             slot_id,
             executor_id: None,
             progress_path,
+            result_path,
             execution_ref: None,
             rejected: None,
             rejected_acked: false,
             finish_pending: false,
             finish_acked: false,
+            result_pending: None,
+            result_acked: false,
             cancel_report: None,
             cancel_acked: false,
             last_progress_observed_ms: None,

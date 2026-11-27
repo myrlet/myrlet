@@ -9,7 +9,7 @@ V1 has two authenticated Principal kinds:
 | Principal | Credential | Authorized Surface |
 | --- | --- | --- |
 | **Admin** | `MYRLET_ADMIN_TOKEN` (operator-provisioned secret) | All Client/Admin HTTP endpoints, SSE `/v1/events`, Worker enrollment code issuance, Worker rotation/revocation. |
-| **Worker** | Hub-issued CSPRNG machine bearer token | `GET /v1/workers/connect` (WSS) and `POST /v1/worker/deliveries/{id}/{progress,finish}` for Deliveries bound to that `workerId` only. |
+| **Worker** | Hub-issued CSPRNG machine bearer token | `GET /v1/workers/connect` (WSS) and `POST /v1/worker/deliveries/{id}/{progress,result,finish}` for Deliveries bound to that `workerId` only. |
 
 Rules:
 - Hub stores only **SHA-256 verifiers** (never plaintext tokens or pairing codes) and compares verifiers in constant time.
@@ -37,3 +37,4 @@ Rules:
 - Harness Provider Credentials (LLM API keys, CLI logins) are 100% Harness/operator-owned. Myrlet never stores, injects, rotates, or inspects them.
 - **Accepted risk**: When a Harness invokes the `myrlet` CLI on the same OS account, it operates under whatever credentials are exposed to that account. Operators who require isolation must apply OS users, containers, VMs, or network policies externally.
 - **Progress is untrusted text**: Myrlet bounds payload sizes and validates JSON shape, but does not guarantee secret redaction inside Harness-authored Progress text.
+- **Result is untrusted Markdown**: Hub stores and bounds it as opaque text. The Web UI renders it with raw HTML disabled and no remote image loading, and only `http(s)`/`mailto` links are clickable. The Worker reads `<delivery_id>.md` through a no-symlink, owner-only (`0600` file, `0700` directory) open and never modifies it.

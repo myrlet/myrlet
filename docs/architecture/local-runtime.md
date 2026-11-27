@@ -14,7 +14,8 @@ MYRLET_HOME/
     ├── worker.yaml          # Worker Slots, capabilities, and Executors
     ├── credentials.json     # Hub-issued Worker credential binding (0600)
     ├── state/               # Worker local Delivery registry & inventory revision
-    └── progress/            # Worker-chosen Progress JSON files (<delivery_id>.json)
+    ├── progress/            # Worker-chosen Progress JSON files (<delivery_id>.json)
+    └── results/             # Worker-chosen Markdown result files (<delivery_id>.md)
 ```
 
 - Harness binaries, configs, Provider Credentials, Sessions, and Workspaces live **outside** `MYRLET_HOME` and are owned by the Harness/operator.
@@ -57,9 +58,9 @@ V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the
 
 | Surface | Binary / Crate | V1 Scope |
 | --- | --- | --- |
-| **CLI** | `myrlet` (`apps/cli`) | Headless Task create/dispatch/submit/bundle-import/list/show/cancel/finish, Worker list, and `events watch` (human + `--json` output). Also the supported interface for Harnesses. |
+| **CLI** | `myrlet` (`apps/cli`) | Headless Task create/dispatch/submit/bundle-import/list/show/cancel/finish, Worker list, and `events watch` (human + `--json` output). `tasks show` prints or emits the immutable result Markdown. Also the supported interface for Harnesses. |
 | **Shared Client SDK** | `myrlet-client` (`crates/client`) | One `Client` over `native` (`reqwest`/Tokio) and `wasm` (`fetch`) transports using canonical `myrlet-protocol` DTOs. |
-| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List/Tree Task workspace**, **Task Detail** (hierarchy, dependencies, Delivery, latest Progress), Task create/dispatch/cancel dialogs, and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
+| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List/Tree Task workspace**, **Task Detail** (hierarchy, dependencies, Delivery, latest Progress, immutable result Markdown), Task create/dispatch/cancel dialogs, and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
 | **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Owner Agents. |
 
 ### Desktop Shell (next iteration)

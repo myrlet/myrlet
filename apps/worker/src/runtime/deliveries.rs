@@ -35,11 +35,13 @@ impl RuntimeCore {
         };
 
         let progress_path = self.home.worker_progress_file(&offer.delivery_id)?;
+        let result_path = self.home.worker_result_file(&offer.delivery_id)?;
         let mut record = LocalDeliveryRecord::new(
             offer.delivery_id.clone(),
             offer.task_id.clone(),
             offer.slot_id.clone(),
             progress_path.clone(),
+            result_path.clone(),
         );
         record.executor_id = offer
             .executor_id
@@ -64,6 +66,7 @@ impl RuntimeCore {
             delivery_id: offer.delivery_id.clone(),
             task: offer.task,
             progress_path,
+            result_path,
         };
         match adapter.submit(request, self.on_exit.clone()).await {
             Ok(execution_ref) => {
@@ -189,6 +192,7 @@ impl RuntimeCore {
         mutate(&mut record);
         if let Err(error) = self.registry.save(&record) {
             tracing::warn!(delivery = %delivery_id, %error, "local Delivery record was not saved");
+            return None;
         }
         Some(record)
     }

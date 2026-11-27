@@ -1,12 +1,13 @@
-//! Background reporting: end-of-handling → HTTP `/finish` and Progress file polls →
-//! HTTP `/progress`. Both wait for a live non-zero `connectionEpoch`, and neither ever
-//! writes the Progress file or invents a terminal verdict.
+//! Background reporting: end-of-handling → HTTP `/finish`, a final Markdown result →
+//! HTTP `/result`, and Progress file polls → HTTP `/progress`. All wait for a live
+//! non-zero `connectionEpoch`; the reports are independent, and none ever writes the
+//! Harness-owned files or invents a terminal verdict.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
-use myrlet_protocol::ProgressReportRequest;
-use myrlet_worker::read_progress_if_changed;
+use myrlet_protocol::{ProgressReportRequest, ResultReportRequest};
+use myrlet_worker::{read_progress_if_changed, read_result, LocalDeliveryRecord};
 use tokio::task::JoinHandle;
 
 use super::{RuntimeCore, RuntimeError, PROGRESS_POLL};
@@ -57,11 +58,13 @@ impl RuntimeCore {
                     ),
                 }
             }
+            self.relay_result(&record, epoch).await;
         }
         Ok(())
     }
 
-    /// Record end of handling, relay any final Progress, then post `/finish` once an epoch is live.
+    /// Record end of handling, relay final Progress, Finish, and result once an
+    /// epoch is live. The result text is captured durably even with no live epoch.
     async fn run_exit_handler(self: Arc<Self>) {
         let receiver = self
             .on_exit_rx
@@ -74,6 +77,9 @@ impl RuntimeCore {
         while let Some(ended) = receiver.recv().await {
             let Some(record) = self.update(&ended.delivery_id, |record| {
                 record.execution_ref = Some(ended.execution_ref.clone());
+                if !record.finish_pending {
+                    record.result_pending = read_result(&record.result_path);
+                }
                 record.finish_pending = true;
             }) else {
                 continue;
@@ -85,10 +91,11 @@ impl RuntimeCore {
             self.relay_progress_once(&record, epoch).await;
             self.post_finish_if_pending(&record.delivery_id, epoch)
                 .await;
+            self.relay_result(&record, epoch).await;
         }
     }
 
-    /// Relay newly observed Progress and retry deferred finishes for active Deliveries.
+    /// Relay newly observed Progress, a pending result, and deferred finishes.
     async fn run_progress_loop(self: Arc<Self>) {
         let mut ticker = tokio::time::interval(PROGRESS_POLL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -106,14 +113,18 @@ impl RuntimeCore {
                 }
             };
             for record in records {
-                if record.rejected.is_some() || record.finish_acked {
+                if record.rejected.is_some() {
                     continue;
                 }
-                self.relay_progress_once(&record, epoch).await;
-                if record.finish_pending {
-                    self.post_finish_if_pending(&record.delivery_id, epoch)
-                        .await;
+                if !record.finish_acked {
+                    self.relay_progress_once(&record, epoch).await;
+                    if record.finish_pending {
+                        self.post_finish_if_pending(&record.delivery_id, epoch)
+                            .await;
+                    }
                 }
+                // A result syncs independently of Finish, including after its ACK.
+                self.relay_result(&record, epoch).await;
             }
         }
     }
@@ -132,7 +143,7 @@ impl RuntimeCore {
         }
     }
 
-    async fn relay_progress_once(&self, record: &myrlet_worker::LocalDeliveryRecord, epoch: u64) {
+    async fn relay_progress_once(&self, record: &LocalDeliveryRecord, epoch: u64) {
         let mut hash = self
             .progress
             .lock()
@@ -172,6 +183,38 @@ impl RuntimeCore {
                 delivery = %record.delivery_id,
                 %error,
                 "progress report not yet accepted; will retry"
+            ),
+        }
+    }
+
+    /// Relay the final result once handling ended, independently of Finish ACK.
+    ///
+    /// The text is persisted before the POST so a lost response or a restart replays
+    /// the identical payload; Hub treats an identical replay as a no-op. A retry never
+    /// starts the Harness again.
+    async fn relay_result(&self, record: &LocalDeliveryRecord, epoch: u64) {
+        if record.result_acked {
+            return;
+        }
+        let Some(text) = record.result_pending.clone() else {
+            return;
+        };
+        let delivery_id = record.delivery_id.clone();
+        match self
+            .reporter
+            .post_result(&delivery_id, &ResultReportRequest { epoch, text })
+            .await
+        {
+            Ok(_) => {
+                self.update(&delivery_id, |record| {
+                    record.result_acked = true;
+                    record.result_pending = None;
+                });
+            }
+            Err(error) => tracing::debug!(
+                delivery = %delivery_id,
+                %error,
+                "result report not yet accepted; will retry"
             ),
         }
     }

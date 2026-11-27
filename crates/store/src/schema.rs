@@ -81,7 +81,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
     cancel_state     TEXT,
     cancel_reason    TEXT,
     created_at_ms    INTEGER NOT NULL,
-    updated_at_ms    INTEGER NOT NULL
+    updated_at_ms    INTEGER NOT NULL,
+    result_markdown  TEXT,
+    result_recorded_at_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS delivery_progress (

@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use myrlet_protocol::{
     CreateEnrollmentCodeResponse, DeliveryId, DeliveryView, FinishReceipt, FinishReportRequest,
     HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, ProgressReceipt,
-    ProgressReportRequest, RotateWorkerCredentialResponse, SnapshotWorker, TaskCancelledPayload,
-    TaskRejectedPayload, WorkerId, WorkerInventory,
+    ProgressReportRequest, ResultReceipt, ResultReportRequest, RotateWorkerCredentialResponse,
+    SnapshotWorker, TaskCancelledPayload, TaskRejectedPayload, WorkerId, WorkerInventory,
 };
 
-use crate::{deliveries, inventory, progress, reports, workers, HubStore, StoreError};
+use crate::{deliveries, inventory, progress, reports, result, workers, HubStore, StoreError};
 
 impl HubStore {
     pub async fn record_rejection(
@@ -82,6 +82,20 @@ impl HubStore {
         self.db
             .call(move |conn| {
                 progress::record_finish(conn, &worker_id, &delivery_id, &request, now_ms)
+            })
+            .await
+    }
+
+    pub async fn record_result(
+        &self,
+        worker_id: WorkerId,
+        delivery_id: DeliveryId,
+        request: ResultReportRequest,
+        now_ms: i64,
+    ) -> Result<(ResultReceipt, Option<HubEventEnvelope>), StoreError> {
+        self.db
+            .call(move |conn| {
+                result::record_result(conn, &worker_id, &delivery_id, &request, now_ms)
             })
             .await
     }

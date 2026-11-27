@@ -106,6 +106,10 @@ export interface TaskRecord {
   finishedAtMs: number | null;
   task: TaskDefinition;
   currentDelivery: DeliveryView | null;
+  /** Immutable final Harness-written Markdown, when the Worker synced one. */
+  resultMarkdown: string | null;
+  /** When Hub accepted the result; independent of `finishedAtMs`. */
+  resultRecordedAtMs: number | null;
   subtree: SubtreeCounts;
 }
 

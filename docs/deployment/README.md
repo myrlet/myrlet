@@ -18,7 +18,8 @@ MYRLET_HOME/
     ├── worker.yaml           # Worker Slots, capabilities, Executors
     ├── credentials.json      # Worker machine credential (0600)
     ├── state/                # Local Delivery registry & inventory state
-    └── progress/             # Harness Progress JSON files
+    ├── progress/             # Harness Progress JSON files
+    └── results/              # Harness Markdown result files (<delivery-id>.md)
 ```
 
 Pre-release development state has no in-place migration contract: back up and start from a fresh `MYRLET_HOME` across breaking schema changes.

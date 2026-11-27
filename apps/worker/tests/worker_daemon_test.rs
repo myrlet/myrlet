@@ -201,14 +201,16 @@ async fn reporter_posts_progress_and_dedupes_finish() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn runtime_session_reports_progress_and_finish() {
+async fn runtime_session_reports_progress_finish_and_result() {
     let mut hub = support::start(None).await;
     let (_directory, home) = temp_home();
     let written = home.worker_progress_dir().join("delivery_progress.json");
     let untouched = home.worker_progress_dir().join("delivery_silent.json");
+    let result_file = home.worker_results_dir().join("delivery_progress.md");
     let script = format!(
-        "printf '{{\"text\":\"step one\"}}' > {}; sleep 1.5",
-        written.display()
+        "umask 077; printf '{{\"text\":\"step one\"}}' > {}; printf '# Result\\n\\nFindings.' > {}; sleep 1.5",
+        written.display(),
+        result_file.display()
     );
     let executors: [(&str, &str); 2] = [
         ("exec-progress", script.as_str()),
@@ -235,7 +237,7 @@ async fn runtime_session_reports_progress_and_finish() {
     hub.send_frame(support::offer_frame("delivery_silent", "exec-silent"));
 
     let mut reports = Vec::new();
-    while reports.len() < 3 {
+    while reports.len() < 4 {
         reports.push(hub.next_report().await);
     }
     let relayed = reports.iter().any(|report| {
@@ -246,12 +248,24 @@ async fn runtime_session_reports_progress_and_finish() {
         )
     });
     assert!(relayed, "relayed progress: {reports:?}");
+    let result = reports.iter().any(|report| {
+        matches!(
+            report,
+            Report::Result { delivery_id, text, .. }
+                if delivery_id == "delivery_progress" && text == "# Result\n\nFindings."
+        )
+    });
+    assert!(result, "relayed result: {reports:?}");
     let finishes = reports
         .iter()
         .filter(|report| matches!(report, Report::Finish { .. }))
         .count();
     assert_eq!(finishes, 2, "both deliveries finished: {reports:?}");
     assert!(written.exists(), "the harness-written Progress file exists");
+    assert!(
+        result_file.exists(),
+        "the harness-written result file exists"
+    );
     assert!(
         !untouched.exists(),
         "the worker must never create the Progress file"

@@ -23,6 +23,7 @@ pub mod inventory;
 pub mod progress;
 pub mod reads;
 pub mod reports;
+pub mod result;
 pub mod schema;
 pub mod tasks;
 pub mod workers;

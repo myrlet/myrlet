@@ -97,6 +97,15 @@ pub fn task_record<W: Write>(out: &mut W, record: &TaskRecord, as_json: bool) ->
             }
         }
     }
+    if let Some(result) = &record.result_markdown {
+        writeln!(out, "Result:")?;
+        if let Some(recorded_at_ms) = record.result_recorded_at_ms {
+            writeln!(out, "  RecordedAtMs: {recorded_at_ms}")?;
+        }
+        for line in result.lines() {
+            writeln!(out, "  {line}")?;
+        }
+    }
     Ok(())
 }
 

@@ -1,12 +1,14 @@
-//! Hub HTTP reporting: Harness-authored Progress and outcome-free Finish. Both calls are
-//! authenticated with the Worker credential and fenced by the current `connectionEpoch`.
+//! Hub HTTP reporting: Harness-authored Progress, the optional final result, and the
+//! outcome-free Finish. Every call is authenticated with the Worker credential and fenced
+//! by the current `connectionEpoch`.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use myrlet_protocol::{
     DeliveryId, ErrorResponse, FinishReceipt, FinishReportRequest, ProgressReceipt,
-    ProgressReportRequest, ProgressValidationError,
+    ProgressReportRequest, ProgressValidationError, ResultReceipt, ResultReportRequest,
+    ResultValidationError,
 };
 use serde::Serialize;
 
@@ -88,6 +90,18 @@ impl HubReporter {
         Ok(Some(receipt))
     }
 
+    /// Relay the final Harness-written Markdown result once (`POST .../result`).
+    pub async fn post_result(
+        &self,
+        delivery_id: &DeliveryId,
+        request: &ResultReportRequest,
+    ) -> Result<ResultReceipt, ReportError> {
+        request.validate()?;
+        let body = self.post(delivery_id, "result", request).await?;
+        serde_json::from_slice(&body)
+            .map_err(|error| ReportError::Transport(format!("invalid Result receipt: {error}")))
+    }
+
     async fn post<B: Serialize>(
         &self,
         delivery_id: &DeliveryId,
@@ -152,7 +166,9 @@ pub enum ReportError {
     #[error("Hub responded with status {status}: {message}")]
     Response { status: u16, message: String },
     #[error(transparent)]
-    Invalid(#[from] ProgressValidationError),
+    InvalidProgress(#[from] ProgressValidationError),
+    #[error(transparent)]
+    InvalidResult(#[from] ResultValidationError),
 }
 
 impl ReportError {

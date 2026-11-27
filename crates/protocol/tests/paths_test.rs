@@ -195,6 +195,7 @@ fn layout_and_progress_paths_match_contract() {
         (home.worker_credentials(), "worker/credentials.json"),
         (home.worker_state_dir(), "worker/state"),
         (home.worker_progress_dir(), "worker/progress"),
+        (home.worker_results_dir(), "worker/results"),
     ];
     for (actual, relative) in paths {
         assert_eq!(actual, dir.path().join(relative));
@@ -204,8 +205,14 @@ fn layout_and_progress_paths_match_contract() {
         home.worker_progress_file(&delivery).expect("safe id"),
         dir.path().join("worker/progress/del_01-abc.json")
     );
+    assert_eq!(
+        home.worker_result_file(&delivery).expect("safe id"),
+        dir.path().join("worker/results/del_01-abc.md")
+    );
     for unsafe_id in ["..", ".", "a/b", ""] {
         let unsafe_path = home.worker_progress_file(&DeliveryId::new(unsafe_id));
         assert!(matches!(unsafe_path, Err(PathError::ParentTraversal)));
+        let unsafe_result = home.worker_result_file(&DeliveryId::new(unsafe_id));
+        assert!(matches!(unsafe_result, Err(PathError::ParentTraversal)));
     }
 }

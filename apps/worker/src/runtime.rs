@@ -121,6 +121,7 @@ fn ensure_home(home: &MyrletHome) -> Result<(), RuntimeError> {
     ensure_private_dir(&home.worker_dir())?;
     ensure_private_dir(&home.worker_state_dir())?;
     ensure_private_dir(&home.worker_progress_dir())?;
+    ensure_private_dir(&home.worker_results_dir())?;
     Ok(())
 }
 

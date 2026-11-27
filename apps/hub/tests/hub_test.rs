@@ -192,6 +192,95 @@ async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
 }
 
 #[tokio::test]
+async fn result_is_write_once_bounded_and_survives_late_sync_after_finish() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "result").await;
+    let path = format!("/v1/worker/deliveries/{delivery_id}/result");
+
+    // A Worker credential is required, and the task detail has no result yet.
+    assert_eq!(hub.post_admin(&path, None, Some("{}")).await.0, 401);
+    let task_path = format!("/v1/tasks/{task_id}");
+    let detail = hub.get_admin(&task_path).await;
+    assert!(detail.1["resultMarkdown"].is_null());
+
+    let progress = json!({ "epoch": epoch, "observedAtMs": 1_000, "text": "started" });
+    let progress_path = format!("/v1/worker/deliveries/{delivery_id}/progress");
+    assert_eq!(
+        hub.post_worker(&progress_path, &credential, &progress.to_string())
+            .await
+            .0,
+        200
+    );
+
+    let report = json!({ "epoch": epoch, "text": "# Findings\n\n- one" });
+    let recorded = hub
+        .post_worker(&path, &credential, &report.to_string())
+        .await;
+    assert_eq!(recorded.0, 200, "{}", recorded.1);
+    assert_eq!(recorded.1["duplicate"], false);
+
+    // Identical replay is idempotent; different content is refused (write-once).
+    let replay = hub
+        .post_worker(&path, &credential, &report.to_string())
+        .await;
+    assert_eq!(replay.0, 200, "{}", replay.1);
+    assert_eq!(replay.1["duplicate"], true);
+    let changed = json!({ "epoch": epoch, "text": "# Different" });
+    let refused = hub
+        .post_worker(&path, &credential, &changed.to_string())
+        .await;
+    assert_eq!(refused.0, 409, "{}", refused.1);
+
+    // Oversized and blank text are rejected without touching the stored result.
+    let oversized = json!({ "epoch": epoch, "text": "x".repeat(64 * 1024 + 1) });
+    let too_large = hub
+        .post_worker(&path, &credential, &oversized.to_string())
+        .await;
+    assert_eq!(too_large.0, 400, "{}", too_large.1);
+
+    // Finish is independent, and a late sync after finish still lands in Task detail.
+    let finish = json!({ "epoch": epoch }).to_string();
+    let finish_path = format!("/v1/worker/deliveries/{delivery_id}/finish");
+    assert_eq!(
+        hub.post_worker(&finish_path, &credential, &finish).await.0,
+        200
+    );
+    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "late").await;
+    let finish_path = format!("/v1/worker/deliveries/{delivery_id}/finish");
+    assert_eq!(
+        hub.post_worker(&finish_path, &credential, &finish).await.0,
+        200
+    );
+    let late_path = format!("/v1/worker/deliveries/{delivery_id}/result");
+    drop(socket);
+    let (_reconnected, new_epoch) = hub.connect(&worker_id, &credential).await;
+    assert!(new_epoch > epoch);
+    let late = json!({ "epoch": new_epoch, "text": "late result" });
+    let accepted = hub
+        .post_worker(&late_path, &credential, &late.to_string())
+        .await;
+    assert_eq!(accepted.0, 200, "{}", accepted.1);
+    let late_task = format!("/v1/tasks/{task_id}");
+    let shown = hub.get_admin(&late_task).await;
+    assert_eq!(shown.1["status"], "finished");
+    assert_eq!(shown.1["resultMarkdown"], "late result");
+
+    // A stale epoch never records a result.
+    let stale = json!({ "epoch": epoch, "text": "stale" });
+    let stale_path = format!("/v1/worker/deliveries/{delivery_id}/result");
+    let refused = hub
+        .post_worker(&stale_path, &credential, &stale.to_string())
+        .await;
+    assert_eq!(refused.0, 409, "{}", refused.1);
+    assert_eq!(
+        hub.get_admin(&late_task).await.1["resultMarkdown"],
+        "late result"
+    );
+}
+
+#[tokio::test]
 async fn event_stream_backfills_streams_and_fails_closed_when_expired() {
     let hub = start(10_000).await;
     let definition = json!({ "title": "t", "prompt": "p" }).to_string();
