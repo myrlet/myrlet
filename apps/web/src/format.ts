@@ -124,34 +124,6 @@ export const CAPABILITY_STATE_LABELS: Readonly<Record<CapabilityState, string>> 
 };
 
 /* --------------------------------------------------------------------- */
-/* Task predicates                                                        */
-/* --------------------------------------------------------------------- */
-
-/** `finished` and `cancelled` never change again. */
-export function isTaskTerminal(status: TaskStatus): boolean {
-  return TASK_STATUS_META[status].terminal;
-}
-
-/**
- * A coordination-only `held` Parent (no current Delivery) may be finished
- * explicitly. Hub additionally checks that the Task never had a Delivery, so
- * the UI only offers Finish where it can never fabricate a Worker report.
- */
-export function isCoordinationFinishable(task: TaskRecord): boolean {
-  return task.status === "held" && task.currentDelivery == null;
-}
-
-/** Hub accepts explicit dispatch only from `held` or `queued`. */
-export function canDispatchTask(task: Pick<TaskRecord, "status">): boolean {
-  return task.status === "held" || task.status === "queued";
-}
-
-/** Any non-terminal Task may be cancelled. */
-export function canCancelTask(task: Pick<TaskRecord, "status">): boolean {
-  return !isTaskTerminal(task.status);
-}
-
-/* --------------------------------------------------------------------- */
 /* Value formatting                                                       */
 /* --------------------------------------------------------------------- */
 

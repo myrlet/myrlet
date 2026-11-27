@@ -134,18 +134,20 @@ export function AuthGate(props: AuthGateProps) {
           <span className="connection-dot" aria-hidden="true" />
           <span>Not connected</span>
         </span>
-        <select
-          className="select filter-select"
-          aria-label="Theme"
-          value={theme}
-          onChange={(event) => onChangeTheme(event.target.value as Theme)}
-        >
+        <div className="theme-segment" role="group" aria-label="Appearance">
           {THEMES.map((option) => (
-            <option key={option.id} value={option.id}>
+            <button
+              key={option.id}
+              type="button"
+              className="theme-segment-btn"
+              data-active={theme === option.id}
+              aria-pressed={theme === option.id}
+              onClick={() => onChangeTheme(option.id)}
+            >
               {option.label}
-            </option>
+            </button>
           ))}
-        </select>
+        </div>
       </header>
 
       <main className="auth-canvas">

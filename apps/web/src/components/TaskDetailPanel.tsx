@@ -1,7 +1,7 @@
 /**
  * Read-only Task Detail pane with four segmented tabs: Overview, Tree & Deps,
- * Delivery, and JSON. The sticky footer only ever opens explicit Dispatch /
- * Finish / Cancel dialogs.
+ * Delivery, and JSON. Every write entry point (Dispatch / Finish / Cancel /
+ * Subtask / Copy-Retry) belongs to the CLI, not this UI.
  *
  * Facts come from the Hub and the Harness only. `finished` reads "Handling
  * ended", cancellation states such as `uncertain` stay visible, and a missing
@@ -10,34 +10,26 @@
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, Copy, Inbox, Plus, X } from "lucide-react";
+import { AlertCircle, Copy, Inbox, X } from "lucide-react";
 
 import type { TaskRecord, TaskTreeResponse } from "../api/types";
 import {
   CANCEL_STATE_LABELS,
   DELIVERY_STATUS_LABELS,
   REJECTION_CODE_LABELS,
-  canCancelTask,
-  canDispatchTask,
   formatRelativeTime,
   formatTimestamp,
-  isCoordinationFinishable,
 } from "../format";
 import { TaskStatusBadge } from "./StatusBadge";
 
 export interface TaskDetailPanelProps {
-  task: TaskRecord | null;
-  tree: TaskTreeResponse | null;
-  loading: boolean;
-  error: string | null;
-  onClose: () => void;
-  onSelectTask: (taskId: string) => void;
-  onDispatch: (task: TaskRecord) => void;
-  onAddSubtask: (parentTaskId: string) => void;
-  onCancel: (task: TaskRecord) => void;
-  onFinish: (task: TaskRecord) => void;
-  onCopyRetry: (task: TaskRecord) => void;
-  onCopyText: (label: string, text: string) => void;
+  readonly task: TaskRecord | null;
+  readonly tree: TaskTreeResponse | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly onClose: () => void;
+  readonly onSelectTask: (taskId: string) => void;
+  readonly onCopyText: (label: string, text: string) => void;
 }
 
 type DetailTab = "overview" | "tree" | "delivery" | "json";
@@ -261,11 +253,6 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
     error,
     onClose,
     onSelectTask,
-    onDispatch,
-    onAddSubtask,
-    onCancel,
-    onFinish,
-    onCopyRetry,
     onCopyText,
   } = props;
 
@@ -731,57 +718,6 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
         {tab === "delivery" ? renderDelivery() : null}
         {tab === "json" ? renderJson() : null}
       </div>
-
-      <footer className="detail-footer">
-        {canDispatchTask(task) ? (
-          <button
-            type="button"
-            className="button button-sm button-primary"
-            onClick={() => onDispatch(task)}
-          >
-            Dispatch
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="button button-sm"
-          onClick={() => onAddSubtask(task.id)}
-          title="Create a subtask under this Task"
-        >
-          <Plus size={12} aria-hidden="true" />
-          <span>Subtask</span>
-        </button>
-        {isCoordinationFinishable(task) ? (
-          <button
-            type="button"
-            className="button button-sm"
-            onClick={() => onFinish(task)}
-            title="Finish this coordination-only Task (no Worker report is fabricated)"
-          >
-            Finish
-          </button>
-        ) : null}
-        <span className="detail-footer-spacer" />
-        <button
-          type="button"
-          className="button button-sm"
-          onClick={() => onCopyRetry(task)}
-          title="Create a new held Task linked to this one via sourceTaskId"
-        >
-          Copy / Retry
-        </button>
-        {canCancelTask(task) ? (
-          <button
-            type="button"
-            className="button button-sm button-ghost"
-            onClick={() => onCancel(task)}
-            title="Cancel this Task"
-            style={{ color: "var(--status-cancelled-fg)" }}
-          >
-            Cancel
-          </button>
-        ) : null}
-      </footer>
     </aside>
   );
 }

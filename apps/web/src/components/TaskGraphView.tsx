@@ -10,7 +10,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, ChevronUp, Minus, Plus, Waypoints } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Crosshair,
+  LayoutGrid,
+  Maximize2,
+  Minus,
+  PanelRight,
+  Plus,
+  RotateCcw,
+  Waypoints,
+  X,
+} from "lucide-react";
 
 import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
 import { DELIVERY_STATUS_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../format";
@@ -26,30 +38,32 @@ import {
 } from "./workAtlasLayout";
 import type { AtlasFramingOptions, AtlasPosition } from "./workAtlasLayout";
 
-export interface WorkAtlasHandle {
+export interface TaskGraphControls {
   fit: () => void;
   focusSelected: () => void;
   arrange: () => void;
   restore: () => void;
 }
 
-export interface WorkAtlasMeta {
+export interface AtlasBoardMeta {
   zoomPercent: number;
   relationCount: number;
   canRestore: boolean;
 }
 
 export interface TaskGraphViewProps {
-  tasks: readonly SnapshotTaskSummary[];
-  workers: readonly WorkerRecord[];
-  selectedTaskId: string | null;
-  onSelectTask: (taskId: string) => void;
-  onClearSelection: () => void;
-  onOpenNewTask: () => void;
-  onBoardMetaChange?: (meta: WorkAtlasMeta) => void;
-  controlsRef?: MutableRefObject<WorkAtlasHandle | null>;
-  /** localStorage key for manual card offsets; only written after a real drag. */
-  storageKey?: string;
+  readonly tasks: readonly SnapshotTaskSummary[];
+  readonly workers: readonly WorkerRecord[];
+  readonly selectedTaskId: string | null;
+  readonly inspectorOpen: boolean;
+  readonly activeStatusLabel: string | null;
+  readonly onToggleInspector: () => void;
+  readonly onClearFilter: () => void;
+  readonly onSelectTask: (taskId: string) => void;
+  readonly onClearSelection: () => void;
+  readonly onBoardMetaChange: (meta: AtlasBoardMeta) => void;
+  readonly controlsRef: MutableRefObject<TaskGraphControls | null>;
+  readonly storageKey?: string;
 }
 
 const MIN_SCALE = 0.25;
@@ -234,7 +248,19 @@ function AtlasTaskNode(props: AtlasTaskNodeProps) {
 }
 
 export function TaskGraphView(props: TaskGraphViewProps) {
-  const { tasks, workers, selectedTaskId, onSelectTask, onClearSelection, onOpenNewTask, onBoardMetaChange, controlsRef } = props;
+  const {
+    tasks,
+    workers,
+    selectedTaskId,
+    inspectorOpen,
+    activeStatusLabel,
+    onToggleInspector,
+    onClearFilter,
+    onSelectTask,
+    onClearSelection,
+    onBoardMetaChange,
+    controlsRef,
+  } = props;
   const storageKey = props.storageKey ?? DEFAULT_STORAGE_KEY;
   const [view, setView] = useState({ panX: 48, panY: 48, scale: 1 });
   const [offsets, setOffsetsState] = useState<Views>(() => readStoredOffsets(storageKey));
@@ -407,7 +433,6 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   }, []);
 
   useEffect(() => {
-    if (!controlsRef) return;
     controlsRef.current = { fit, focusSelected, arrange, restore };
     return () => {
       controlsRef.current = null;
@@ -430,7 +455,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   }, [bounds, viewport.height, viewport.width]);
 
   useEffect(() => {
-    onBoardMetaChange?.({ zoomPercent, relationCount: edges.length, canRestore: restoreSnapshot !== null });
+    onBoardMetaChange({ zoomPercent, relationCount: edges.length, canRestore: restoreSnapshot !== null });
   }, [edges.length, onBoardMetaChange, restoreSnapshot, zoomPercent]);
 
   useEffect(() => {
@@ -542,7 +567,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
 
   return (
     <section
-      ref={stageRef} className="atlas-stage" aria-label="Task graph" data-panning={panning}
+      ref={stageRef} className="atlas-stage atlas-viewport" aria-label="Task graph" data-panning={panning}
       onPointerDown={handlePointerDown} onPointerMove={handlePointerMove}
       onPointerUp={(event) => finishDrag(event, true)} onPointerCancel={(event) => finishDrag(event, false)}
       style={{ touchAction: "none", userSelect: "none", cursor: panning ? "grabbing" : "grab" }}
@@ -550,12 +575,22 @@ export function TaskGraphView(props: TaskGraphViewProps) {
       {tasks.length === 0 ? (
         <div className="pane-empty">
           <Waypoints size={20} aria-hidden="true" />
-          <span className="pane-empty-title">No Tasks to map yet</span>
-          <span>Task Groups and their real Parent, Dependency, and Source links appear here once Tasks exist.</span>
-          <button type="button" className="button button-sm button-primary" onClick={onOpenNewTask}>
-            <Plus size={13} aria-hidden="true" />
-            New Task
-          </button>
+          {activeStatusLabel !== null ? (
+            <>
+              <span className="pane-empty-title">No Tasks match this status</span>
+              <button type="button" className="button button-sm" onClick={onClearFilter}>
+                Clear filter
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="pane-empty-title">No Tasks in this Hub yet</span>
+              <span>
+                Submit Tasks from the Myrlet CLI or an enrolled agent to see them arranged
+                here.
+              </span>
+            </>
+          )}
         </div>
       ) : (
         <>
@@ -723,6 +758,83 @@ export function TaskGraphView(props: TaskGraphViewProps) {
           <div className="atlas-hint">Drag empty space or scroll to pan · Drag cards to move · ⌘/Ctrl + scroll to zoom · F fits all</div>
         </>
       )}
+
+      {activeStatusLabel === null ? null : (
+        <div
+          className="active-filter-pill"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <span>Filtered: {activeStatusLabel}</span>
+          <button
+            type="button"
+            className="active-filter-clear"
+            aria-label="Clear status filter"
+            onClick={onClearFilter}
+          >
+            <X size={12} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      <div
+        className="atlas-floating-bar"
+        role="toolbar"
+        aria-label="Board controls"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="atlas-floating-btn"
+          title="Fit all groups (F)"
+          onClick={fit}
+        >
+          <Maximize2 size={12} aria-hidden="true" />
+          <span>Fit</span>
+        </button>
+        {selectedTaskId === null ? null : (
+          <button
+            type="button"
+            className="atlas-floating-btn"
+            title="Center selected Task (Shift+F)"
+            onClick={focusSelected}
+          >
+            <Crosshair size={12} aria-hidden="true" />
+            <span>Focus</span>
+          </button>
+        )}
+        {restoreSnapshot === null ? null : (
+          <button
+            type="button"
+            className="atlas-floating-btn"
+            title="Restore previous layout"
+            onClick={restore}
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            <span>Restore</span>
+          </button>
+        )}
+        <button
+          type="button"
+          className="atlas-floating-btn atlas-floating-btn-accent"
+          title="Arrange board layout"
+          onClick={arrange}
+        >
+          <LayoutGrid size={12} aria-hidden="true" />
+          <span>Arrange</span>
+        </button>
+        <span className="atlas-floating-divider" aria-hidden="true" />
+        <button
+          type="button"
+          className="atlas-floating-btn"
+          data-active={inspectorOpen}
+          aria-pressed={inspectorOpen}
+          title="Toggle Inspector (I)"
+          onClick={onToggleInspector}
+        >
+          <PanelRight size={12} aria-hidden="true" />
+          <span>Inspector</span>
+        </button>
+      </div>
     </section>
   );
 }

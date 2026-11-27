@@ -1,26 +1,27 @@
 /**
  * Work Atlas top app bar: brand, live connection, the centered Board | List
- * workspace switch, and the global session actions.
+ * workspace switch, and the global session actions — one 52px row, nothing else.
  *
- * There is no page navigation here. Myrlet exposes one workspace; Workers &
- * Pairing slides over it as a drawer, and theme, shortcuts, and disconnect live
- * in a compact settings popover. Every number is a plain Hub fact (online
- * Workers, SSE cursor) — nothing infers a verdict, health score, or progress.
+ * Myrlet exposes one read-only workspace. Workers & Pairing slides over it as a
+ * drawer, and appearance, shortcuts, and disconnect live in a compact settings
+ * popover. Every number is a plain Hub fact (online Workers, SSE cursor) —
+ * nothing infers a verdict, health score, or progress.
  */
 
 import { useEffect, useRef, useState } from "react";
 import {
   Keyboard,
   ListTree,
+  Monitor,
+  Moon,
   Network,
-  Plus,
   Power,
   Settings,
-  Upload,
+  Sun,
 } from "lucide-react";
 
 import { THEMES } from "../state/useHub";
-import type { ConnectionStatus, Theme, ThemeDescriptor } from "../state/useHub";
+import type { ConnectionStatus, Theme } from "../state/useHub";
 import { BrandMark } from "./BrandMark";
 
 /** The two presentations of the single workspace. `board` is the home. */
@@ -39,8 +40,6 @@ export interface TopBarProps {
   readonly onRefresh: () => void;
   readonly theme: Theme;
   readonly onChangeTheme: (theme: Theme) => void;
-  readonly onImport: () => void;
-  readonly onNewTask: () => void;
   readonly onDisconnect: () => void;
   readonly onOpenShortcuts: () => void;
 }
@@ -52,12 +51,11 @@ const CONNECTION_LABELS: Readonly<Record<ConnectionStatus, string>> = {
   disconnected: "Disconnected",
 };
 
-/** Menu order favours the two light themes first, then the two dark ones. */
-const THEME_MENU_ORDER: readonly Theme[] = ["porcelain", "paper", "obsidian", "graphite"];
-
-const THEME_OPTIONS: readonly ThemeDescriptor[] = THEME_MENU_ORDER.map((id) =>
-  THEMES.find((option) => option.id === id),
-).filter((option): option is ThemeDescriptor => option !== undefined);
+const THEME_ICONS: Readonly<Record<Theme, typeof Monitor>> = {
+  system: Monitor,
+  light: Sun,
+  dark: Moon,
+};
 
 /** `Same origin` for the bundled UI, otherwise the Hub host. */
 function originLabel(baseUrl: string): string {
@@ -86,8 +84,6 @@ export function TopBar(props: TopBarProps) {
     onRefresh,
     theme,
     onChangeTheme,
-    onImport,
-    onNewTask,
     onDisconnect,
     onOpenShortcuts,
   } = props;
@@ -188,25 +184,6 @@ export function TopBar(props: TopBarProps) {
           </span>
         </button>
 
-        <button
-          type="button"
-          className="button button-sm"
-          onClick={onImport}
-          title="Import a Task bundle"
-        >
-          <Upload size={12} aria-hidden="true" />
-          <span>Import</span>
-        </button>
-        <button
-          type="button"
-          className="button button-sm button-primary"
-          onClick={onNewTask}
-          title="New Task (n)"
-        >
-          <Plus size={12} aria-hidden="true" />
-          <span>New Task</span>
-        </button>
-
         <div className="settings-menu-wrap" ref={settingsRef}>
           <button
             type="button"
@@ -222,26 +199,26 @@ export function TopBar(props: TopBarProps) {
 
           {menuOpen ? (
             <div className="settings-popover" role="menu" aria-label="Settings">
-              <div className="settings-section-label">THEME</div>
-              <div className="settings-theme-grid" role="group" aria-label="Theme">
-                {THEME_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className="settings-theme-option"
-                    role="menuitemradio"
-                    aria-checked={theme === option.id}
-                    data-active={theme === option.id}
-                    onClick={() => onChangeTheme(option.id)}
-                  >
-                    <span
-                      className="settings-theme-swatch"
-                      data-swatch={option.id}
-                      aria-hidden="true"
-                    />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
+              <div className="settings-section-label">APPEARANCE</div>
+              <div className="theme-segment" role="group" aria-label="Appearance">
+                {THEMES.map((option) => {
+                  const Icon = THEME_ICONS[option.id];
+                  const active = theme === option.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="theme-segment-btn"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      data-active={active}
+                      onClick={() => onChangeTheme(option.id)}
+                    >
+                      <Icon size={13} aria-hidden="true" />
+                      <span>{option.label}</span>
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="settings-divider" role="separator" />

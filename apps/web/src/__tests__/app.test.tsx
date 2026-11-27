@@ -3,15 +3,15 @@
  *
  * These tests assert the truthful wording and provenance rules the design
  * system depends on (never "Completed"/"Succeeded", unknown capacity is `—`,
- * tokens never reach storage) plus the single-workspace chrome: 52px App Bar
- * with a centered `Board | List` switch, a 42px workspace toolbar, a
- * full-bleed Board by default (Choice A — Inspector collapsed), the Workers
- * drawer, and no Events tab or left sidebar rail.
+ * tokens never reach storage) plus the final single-row chrome: one 52px App
+ * Bar with a centered `Board | List` switch, System / Light / Dark appearance,
+ * a full-bleed Board by default (Choice A), a strictly read-only Task surface,
+ * the Workers drawer, and no Events tab or left sidebar rail.
  */
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
@@ -46,6 +46,64 @@ function stubFetch(handler: FetchHandler): void {
     handler(readUrl(input), init ?? {}),
   );
   vi.stubGlobal("fetch", mock);
+}
+
+interface ColorSchemeController {
+  setDark: (dark: boolean) => void;
+}
+
+/** A controllable `matchMedia`; color-scheme changes dispatch to real listeners. */
+function stubColorScheme(dark: boolean, narrow = false): ColorSchemeController {
+  let colorDark = dark;
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  const colorMedia = {
+    get matches() {
+      return colorDark;
+    },
+    media: "(prefers-color-scheme: dark)",
+    onchange: null,
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (type === "change" && typeof listener === "function") {
+        listeners.add(listener as (event: MediaQueryListEvent) => void);
+      }
+    },
+    removeEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (type === "change" && typeof listener === "function") {
+        listeners.delete(listener as (event: MediaQueryListEvent) => void);
+      }
+    },
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => true,
+  } as MediaQueryList;
+  const narrowMedia = {
+    matches: narrow,
+    media: "(max-width: 1024px)",
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => true,
+  } as MediaQueryList;
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) =>
+      query.includes("max-width") ? narrowMedia : colorMedia,
+    ),
+  );
+  return {
+    setDark(next) {
+      colorDark = next;
+      const event = {
+        matches: next,
+        media: colorMedia.media,
+      } as MediaQueryListEvent;
+      for (const listener of listeners) {
+        listener(event);
+      }
+    },
+  };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -169,6 +227,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   window.localStorage.clear();
+  delete document.documentElement.dataset.theme;
 });
 
 /* --------------------------------------------------------------------- */
@@ -417,9 +476,18 @@ function localStorageKeys(): string[] {
   ).filter((key): key is string => key !== null);
 }
 
+function appBar(): HTMLElement {
+  return document.querySelector(".app-bar") as HTMLElement;
+}
+
+function boardFloatingBar(): HTMLElement {
+  return screen.getByRole("toolbar", { name: /board controls/i });
+}
+
 describe("App workspace flow", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    stubColorScheme(false);
 
     stubFetch((url) => {
       const path = url.replace(/^https?:\/\/[^/]+/, "");
@@ -464,25 +532,34 @@ describe("App workspace flow", () => {
     expect(screen.queryByText("Handling ended")).toBeNull();
     expect(document.querySelector(".app-frame")).toBeNull();
 
+    // 2. The gate offers System / Light / Dark as buttons — never a <select>.
+    expect(document.querySelectorAll("select")).toHaveLength(0);
+    const appearance = screen.getByRole("group", { name: /appearance/i });
+    for (const label of ["System", "Light", "Dark"]) {
+      expect(within(appearance).getByRole("button", { name: new RegExp(label, "i") })).toBeInTheDocument();
+    }
+
     const tokenField = findTokenInput();
     fireEvent.change(tokenField, { target: { value: "admin-token-value" } });
     submitAuthGate();
 
-    // 2. Connected workspace renders the Work Atlas chrome.
+    // 3. Connected workspace renders the Work Atlas chrome.
     await waitFor(() => {
       expect(document.querySelector(".app-bar")).not.toBeNull();
     });
     expect(document.querySelector(".app-frame")).not.toBeNull();
 
-    // 3. The bearer token is memory-only; only the theme may be persisted.
+    // 4. The bearer token is memory-only; only the theme may be persisted, and
+    //    an untouched System preference writes nothing at all.
     const tokenKeys = localStorageKeys().filter((key) => /token|bearer|auth/i.test(key));
     expect(tokenKeys).toEqual([]);
     for (const value of localStorageKeys().map((key) => window.localStorage.getItem(key) ?? "")) {
       expect(value).not.toContain("admin-token-value");
     }
+    expect(window.localStorage.getItem("myrlet.theme")).toBeNull();
   });
 
-  it("opens full-bleed on the Board with centered Board | List, no sidebar, no Events, Inspector collapsed", async () => {
+  it("opens full-bleed on the Board with one 52px row, no toolbar, no sidebar, no Events", async () => {
     await connectWorkspace();
 
     // No left rail, no page tabs, no Events anywhere in the chrome.
@@ -492,9 +569,19 @@ describe("App workspace flow", () => {
     expect(screen.queryByRole("button", { name: /^events/i })).toBeNull();
     expect(screen.queryByText(/event stream/i)).toBeNull();
 
+    // Exactly one top row: the App Bar. The old 42px toolbar row is gone.
+    expect(document.querySelector(".board-toolbar")).toBeNull();
+    expect(screen.queryByRole("toolbar", { name: /board toolbar/i })).toBeNull();
+    const frame = document.querySelector(".app-frame") as HTMLElement;
+    expect(frame.firstElementChild).toHaveClass("app-bar");
+
+    // No global search field survives in the chrome or the workspace views.
+    expect(document.querySelector(".view-body [data-view-search]")).toBeNull();
+    expect(within(appBar()).queryByRole("searchbox")).toBeNull();
+    expect(document.querySelector(".toolbar-search")).toBeNull();
+
     // The Board | List switch is centered in the App Bar and defaults to Board.
-    const appBar = document.querySelector(".app-bar") as HTMLElement;
-    const center = appBar.querySelector(".app-bar-center");
+    const center = appBar().querySelector(".app-bar-center");
     expect(center).not.toBeNull();
     expect(center?.contains(modeSwitch())).toBe(true);
     expect(within(modeSwitch()).getByRole("button", { name: /^board$/i })).toHaveAttribute(
@@ -502,16 +589,12 @@ describe("App workspace flow", () => {
       "true",
     );
 
-    // Board is the home view, rendered full-bleed with a 42px toolbar.
+    // Board is the home view, rendered full-bleed (Choice A: Inspector closed).
     expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
-    expect(document.querySelector(".board-toolbar")).not.toBeNull();
-
-    // Choice A: the Inspector starts collapsed so the canvas gets 100% width.
     expect(document.querySelector(".inspector-slot")).toBeNull();
-    const inspectorToggle = within(
-      screen.getByRole("toolbar", { name: /board toolbar/i }),
-    ).getByRole("button", { name: /inspector/i });
-    expect(inspectorToggle).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(boardFloatingBar()).getByRole("button", { name: /inspector/i }),
+    ).toHaveAttribute("aria-pressed", "false");
 
     // The status bar carries counters, totals, and hints — but no duplicate
     // live-stream or Workers readouts (those live in the App Bar now).
@@ -523,8 +606,166 @@ describe("App workspace flow", () => {
 
     // Workers live in the App Bar as a drawer trigger, not a page.
     expect(
-      within(appBar).getByRole("button", { name: /workers/i }),
+      within(appBar()).getByRole("button", { name: /workers/i }),
     ).toHaveTextContent("1/1");
+  });
+
+  it("resolves System and follows a same-mount prefers-color-scheme change", async () => {
+    const colorScheme = stubColorScheme(true);
+    render(<App />);
+
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(window.localStorage.getItem("myrlet.theme")).toBeNull();
+
+    act(() => colorScheme.setDark(false));
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("light");
+    });
+    expect(window.localStorage.getItem("myrlet.theme")).toBeNull();
+  });
+
+  it("switches System | Light | Dark from Settings and persists only myrlet.theme", async () => {
+    await connectWorkspace();
+
+    // System is the default: no explicit choice has been persisted yet.
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(window.localStorage.getItem("myrlet.theme")).toBeNull();
+
+    const settingsButton = screen.getByRole("button", { name: /settings and theme/i });
+    expect(settingsButton).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(settingsButton);
+
+    const menu = await screen.findByRole("menu", { name: /settings/i });
+    expect(within(menu).getByText("APPEARANCE")).toBeInTheDocument();
+    const segment = within(menu).getByRole("group", { name: /appearance/i });
+    const system = within(segment).getByRole("menuitemradio", { name: /system/i });
+    const light = within(segment).getByRole("menuitemradio", { name: /light/i });
+    const dark = within(segment).getByRole("menuitemradio", { name: /dark/i });
+    expect(system).toHaveAttribute("aria-checked", "true");
+    expect(light).toHaveAttribute("aria-checked", "false");
+    expect(dark).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(dark);
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    });
+    expect(window.localStorage.getItem("myrlet.theme")).toBe("dark");
+    expect(dark).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(light);
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("light");
+    });
+    expect(window.localStorage.getItem("myrlet.theme")).toBe("light");
+
+    fireEvent.click(system);
+    await waitFor(() => {
+      expect(system).toHaveAttribute("aria-checked", "true");
+    });
+    expect(window.localStorage.getItem("myrlet.theme")).toBe("system");
+
+    expect(localStorageKeys()).toEqual(["myrlet.theme"]);
+    expect(window.localStorage.getItem("myrlet.token")).toBeNull();
+  });
+
+  it("offers no Task write entry points anywhere in the chrome, Board, List, or Detail", async () => {
+    await connectWorkspace();
+
+    // Anchored so a Task whose status label reads "Dispatched" is not mistaken
+    // for a Dispatch action.
+    const writeLabels = [
+      /^new task/i,
+      /^import/i,
+      /^dispatch\b/i,
+      /^add subtask/i,
+      /^subtask/i,
+      /^cancel\b/i,
+      /copy \/ retry/i,
+    ];
+
+    const assertNoWriteButton = (root: ParentNode, where: string): void => {
+      for (const pattern of writeLabels) {
+        expect(
+          within(root as HTMLElement).queryByRole("button", { name: pattern }),
+          `${where} must not offer ${pattern}`,
+        ).toBeNull();
+      }
+    };
+
+    const appBarElement = appBar();
+    assertNoWriteButton(appBarElement, "the App Bar");
+    expect(within(appBarElement).queryByText(/new task/i)).toBeNull();
+    expect(within(appBarElement).queryByText(/import/i)).toBeNull();
+
+    assertNoWriteButton(document.querySelector(".view-body") as HTMLElement, "the Board");
+
+    // Read-only Detail: selecting a Task never offers Dispatch / Cancel / Finish.
+    fireEvent.click(document.querySelector('.atlas-node[data-task-id="t3"]') as HTMLElement);
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane")).not.toBeNull();
+    });
+    assertNoWriteButton(document.querySelector(".detail-pane") as HTMLElement, "Task Detail");
+    expect(document.querySelector(".detail-pane")?.textContent ?? "").not.toMatch(
+      /dispatch|cancel task|finish task/i,
+    );
+
+    fireEvent.click(within(modeSwitch()).getByRole("button", { name: /list/i }));
+    await waitFor(() => {
+      expect(document.querySelector('.view-body[data-view="list"]')).not.toBeNull();
+    });
+    assertNoWriteButton(document.querySelector(".view-body") as HTMLElement, "the List");
+    expect(
+      document.querySelector('.view-body [aria-label="Dispatch Run tests"]'),
+    ).toBeNull();
+  });
+
+  it("never renders a native select in the gate, workspace, or Workers drawer", async () => {
+    stubColorScheme(false);
+    render(<App />);
+    expect(document.querySelectorAll("select")).toHaveLength(0);
+
+    const tokenField = findTokenInput();
+    fireEvent.change(tokenField, { target: { value: "admin-token-value" } });
+    submitAuthGate();
+    await waitFor(() => {
+      expect(document.querySelector(".app-bar")).not.toBeNull();
+    });
+    expect(document.querySelectorAll("select")).toHaveLength(0);
+
+    fireEvent.click(
+      within(appBar()).getByRole("button", { name: /workers/i }),
+    );
+    const drawer = await screen.findByRole("dialog", { name: /workers and pairing/i });
+    expect(drawer.querySelectorAll("select")).toHaveLength(0);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(within(modeSwitch()).getByRole("button", { name: /list/i }));
+    await waitFor(() => {
+      expect(document.querySelector('.view-body[data-view="list"]')).not.toBeNull();
+    });
+    expect(document.querySelectorAll("select")).toHaveLength(0);
+  });
+
+  it("floats Fit / Arrange / Inspector on the canvas and reveals Focus only with a selection", async () => {
+    await connectWorkspace();
+
+    const floating = boardFloatingBar();
+    expect(floating.closest(".atlas-stage")).not.toBeNull();
+    expect(within(floating).getByRole("button", { name: /fit/i })).toBeInTheDocument();
+    expect(within(floating).getByRole("button", { name: /arrange/i })).toBeInTheDocument();
+    expect(within(floating).getByRole("button", { name: /inspector/i })).toBeInTheDocument();
+    expect(within(floating).queryByRole("button", { name: /focus/i })).toBeNull();
+
+    fireEvent.click(document.querySelector('.atlas-node[data-task-id="t3"]') as HTMLElement);
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane")).not.toBeNull();
+    });
+    const focused = boardFloatingBar();
+    expect(within(focused).getByRole("button", { name: /focus/i })).toBeInTheDocument();
+    expect(within(focused).getByRole("button", { name: /inspector/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("opens Task Detail on click and toggles the Workspace Inspector when nothing is selected", async () => {
@@ -546,24 +787,72 @@ describe("App workspace flow", () => {
     });
 
     // Toggling Inspector with no selection shows the Workspace overview.
-    const toolbar = screen.getByRole("toolbar", { name: /board toolbar/i });
-    fireEvent.click(within(toolbar).getByRole("button", { name: /inspector/i }));
+    fireEvent.click(within(boardFloatingBar()).getByRole("button", { name: /inspector/i }));
     await waitFor(() => {
       expect(document.querySelector(".inspector-pane")).not.toBeNull();
     });
     expect(document.querySelector(".detail-pane")).toBeNull();
   });
 
-  it("switches Board and List without losing filters or selection, and never claims a verdict", async () => {
+  it("uses one responsive scrim, inert background, and focus return for both Inspector modes", async () => {
+    stubColorScheme(false, true);
     await connectWorkspace();
 
-    // A filter applied in Board mode must survive the mode switch.
-    fireEvent.change(screen.getByLabelText("Filter by status"), {
-      target: { value: "finished" },
+    const inspectorTrigger = within(boardFloatingBar()).getByRole("button", {
+      name: /inspector/i,
     });
-    const node = document.querySelector<HTMLElement>('.atlas-node[data-task-id="t1"]');
-    expect(node).not.toBeNull();
-    fireEvent.click(node as HTMLElement);
+    inspectorTrigger.focus();
+    fireEvent.click(inspectorTrigger);
+    await waitFor(() => {
+      expect(document.querySelector(".inspector-pane")).not.toBeNull();
+    });
+    const viewBody = document.querySelector(".view-body") as HTMLElement;
+    const slot = document.querySelector(".inspector-slot") as HTMLElement;
+    expect(document.querySelector(".inspector-scrim")).not.toBeNull();
+    expect(viewBody).toHaveAttribute("inert");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(slot);
+    });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.querySelector(".inspector-slot")).toBeNull();
+      expect(document.activeElement).toBe(inspectorTrigger);
+    });
+    expect(viewBody).not.toHaveAttribute("inert");
+
+    const taskNode = document.querySelector<HTMLElement>('.atlas-node[data-task-id="t3"]');
+    expect(taskNode).not.toBeNull();
+    taskNode?.focus();
+    fireEvent.click(taskNode as HTMLElement);
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane")).not.toBeNull();
+    });
+    expect(document.querySelector(".inspector-scrim")).not.toBeNull();
+    expect(viewBody).toHaveAttribute("inert");
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane")).toBeNull();
+      expect(document.activeElement).toBe(taskNode);
+    });
+  });
+
+  it("switches Board and List without losing the status filter or selection, and never claims a verdict", async () => {
+    await connectWorkspace();
+
+    // Filter from the status bar; the Board hides every other status.
+    const statusBar = document.querySelector(".status-bar") as HTMLElement;
+    fireEvent.click(within(statusBar).getByRole("button", { name: /^handling ended\b/i }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.atlas-node[data-task-id="t1"]')).not.toBeNull();
+    });
+    expect(document.querySelector('.atlas-node[data-task-id="t2"]')).toBeNull();
+    const pill = document.querySelector(".active-filter-pill") as HTMLElement;
+    expect(pill).not.toBeNull();
+    expect(pill.textContent ?? "").toContain("Handling ended");
+
+    fireEvent.click(document.querySelector('.atlas-node[data-task-id="t1"]') as HTMLElement);
     await waitFor(() => {
       expect(document.querySelector(".detail-pane")).not.toBeNull();
     });
@@ -577,24 +866,34 @@ describe("App workspace flow", () => {
       "true",
     );
 
-    // Filters and selection are preserved; the Inspector is still open.
-    expect((screen.getByLabelText("Filter by status") as HTMLSelectElement).value).toBe("finished");
+    // Filter and selection survive the switch; the Inspector stays open.
+    expect(document.querySelector(".active-filter-pill")?.textContent ?? "").toContain(
+      "Handling ended",
+    );
     expect(document.querySelector(".inspector-slot")).not.toBeNull();
-    expect(
-      document.querySelector('.list-row[data-selected="true"]'),
-    ).not.toBeNull();
+    expect(document.querySelector('.list-row[data-selected="true"]')).not.toBeNull();
 
-    // Only the filtered (finished) Task is listed, labelled honestly.
+    // Only the finished Task is listed, labelled honestly.
     const listPane = document.querySelector(".task-pane") as HTMLElement;
     expect(listPane).toHaveTextContent("Handling ended");
     expect(listPane).not.toHaveTextContent("Completed");
     expect(listPane).not.toHaveTextContent("Succeeded");
 
+    // The chip clears the filter without leaving the view.
+    fireEvent.click(
+      within(document.querySelector(".active-filter-pill") as HTMLElement).getByRole("button", {
+        name: /clear status filter/i,
+      }),
+    );
+    await waitFor(() => {
+      expect(document.querySelector(".active-filter-pill")).toBeNull();
+    });
+    expect(document.querySelectorAll(".list-row").length).toBeGreaterThan(1);
+
     fireEvent.click(within(modeSwitch()).getByRole("button", { name: /^board$/i }));
     await waitFor(() => {
       expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
     });
-    expect((screen.getByLabelText("Filter by status") as HTMLSelectElement).value).toBe("finished");
     expect(document.querySelector(".detail-pane")).not.toBeNull();
   });
 
@@ -602,7 +901,7 @@ describe("App workspace flow", () => {
     await connectWorkspace();
 
     fireEvent.click(
-      within(document.querySelector(".app-bar") as HTMLElement).getByRole("button", {
+      within(appBar()).getByRole("button", {
         name: /workers/i,
       }),
     );
@@ -629,36 +928,14 @@ describe("App workspace flow", () => {
     });
   });
 
-  it("persists only myrlet.theme when the Settings popover changes theme", async () => {
-    await connectWorkspace();
-
-    const settingsButton = screen.getByRole("button", { name: /settings and theme/i });
-    expect(settingsButton).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(settingsButton);
-
-    const menu = await screen.findByRole("menu", { name: /settings/i });
-    expect(within(menu).getByText("THEME")).toBeInTheDocument();
-    const graphite = within(menu).getByRole("menuitemradio", { name: /graphite/i });
-    expect(graphite).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(graphite);
-
-    await waitFor(() => {
-      expect(window.localStorage.getItem("myrlet.theme")).toBe("graphite");
-    });
-    expect(document.documentElement.dataset.theme).toBe("graphite");
-
-    expect(localStorageKeys()).toEqual(["myrlet.theme"]);
-    expect(window.localStorage.getItem("myrlet.token")).toBeNull();
-  });
-
-  it("opens the Command Palette with Ctrl+K, lists Board/List, Workers & Pairing, and board actions, closing on Escape", async () => {
+  it("opens the Command Palette with Ctrl+K without Task write actions, and closes on Escape", async () => {
     await connectWorkspace();
 
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     const palette = await screen.findByRole("dialog", { name: /command palette/i });
     expect(palette).toBeInTheDocument();
     expect(
-      within(palette).getByPlaceholderText(/search tasks, views, actions, themes/i),
+      within(palette).getByPlaceholderText(/search tasks, views, actions, appearance/i),
     ).toBeInTheDocument();
 
     expect(within(palette).getByRole("option", { name: /^board/i })).toBeInTheDocument();
@@ -666,9 +943,19 @@ describe("App workspace flow", () => {
     expect(
       within(palette).getByRole("option", { name: /^workers & pairing/i }),
     ).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("option", { name: /toggle inspector/i }),
+    ).toBeInTheDocument();
     expect(within(palette).getByRole("option", { name: /fit board to view/i })).toBeInTheDocument();
     expect(within(palette).getByRole("option", { name: /arrange board layout/i })).toBeInTheDocument();
-    expect(within(palette).queryByRole("option", { name: /^events/i })).toBeNull();
+    expect(within(palette).getByRole("option", { name: /^system/i })).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /^light/i })).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /^dark/i })).toBeInTheDocument();
+
+    // The palette is strictly read-only: no create / import / dispatch.
+    expect(within(palette).queryByRole("option", { name: /^new task/i })).toBeNull();
+    expect(within(palette).queryByRole("option", { name: /^import/i })).toBeNull();
+    expect(within(palette).queryByRole("option", { name: /^dispatch/i })).toBeNull();
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => {
@@ -689,15 +976,68 @@ describe("App workspace flow", () => {
     expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull();
   });
 
-  it("filters the Board from the status bar counters", async () => {
+  it("filters the Board from the status bar counters with a dismissible pill", async () => {
     await connectWorkspace();
 
     const statusBar = document.querySelector(".status-bar") as HTMLElement;
-    fireEvent.click(within(statusBar).getByRole("button", { name: /^queued\b/i }));
+    const queued = within(statusBar).getByRole("button", { name: /^queued\b/i });
+    fireEvent.click(queued);
 
     await waitFor(() => {
-      const statusSelect = screen.getByLabelText("Filter by status") as HTMLSelectElement;
-      expect(statusSelect.value).toBe("queued");
+      expect(queued).toHaveAttribute("aria-pressed", "true");
     });
+    const pill = document.querySelector(".active-filter-pill") as HTMLElement;
+    expect(pill.textContent ?? "").toContain("Filtered: Queued");
+    expect(document.querySelector('.atlas-node[data-task-id="t3"]')).not.toBeNull();
+    expect(document.querySelector('.atlas-node[data-task-id="t2"]')).toBeNull();
+
+    fireEvent.click(within(pill).getByRole("button", { name: /clear status filter/i }));
+    await waitFor(() => {
+      expect(document.querySelector(".active-filter-pill")).toBeNull();
+    });
+    expect(queued).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector('.atlas-node[data-task-id="t2"]')).not.toBeNull();
+  });
+
+  it("clears the active status filter before closing an open Inspector", async () => {
+    await connectWorkspace();
+
+    const statusBar = document.querySelector(".status-bar") as HTMLElement;
+    const queued = within(statusBar).getByRole("button", { name: /^queued\b/i });
+    fireEvent.click(queued);
+    await waitFor(() => {
+      expect(queued).toHaveAttribute("aria-pressed", "true");
+      expect(document.querySelector(".active-filter-pill")).not.toBeNull();
+    });
+
+    fireEvent.click(within(boardFloatingBar()).getByRole("button", { name: /inspector/i }));
+    await waitFor(() => {
+      expect(document.querySelector(".inspector-pane")).not.toBeNull();
+    });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.querySelector(".active-filter-pill")).toBeNull();
+      expect(queued).toHaveAttribute("aria-pressed", "false");
+    });
+    expect(document.querySelector(".inspector-pane")).not.toBeNull();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.querySelector(".inspector-slot")).toBeNull();
+    });
+  });
+
+  it("lists the read-only shortcuts only", async () => {
+    await connectWorkspace();
+
+    fireEvent.keyDown(document, { key: "?" });
+    const sheet = await screen.findByRole("dialog", { name: /keyboard shortcuts/i });
+    const text = sheet.textContent ?? "";
+    expect(text).toContain("Command Palette");
+    expect(text).toContain("Fit the Board");
+    expect(text).toContain("Show or hide the Inspector");
+    expect(text).not.toMatch(/New Task/);
+    expect(text).not.toMatch(/^Dispatch the selected Task/);
   });
 });

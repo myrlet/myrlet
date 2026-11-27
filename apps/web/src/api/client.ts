@@ -10,21 +10,14 @@
  */
 
 import type {
-  CancelTaskRequest,
   CreateEnrollmentCodeRequest,
   CreateEnrollmentCodeResponse,
-  DispatchTaskRequest,
-  DispatchTaskResponse,
   ErrorResponse,
-  FinishTaskRequest,
   GlobalSnapshot,
   HealthResponse,
   HubEventEnvelope,
   ListWorkersResponse,
   RotateWorkerResponse,
-  TaskBundleImportRequest,
-  TaskBundleImportResponse,
-  TaskDefinitionInput,
   TaskRecord,
   TaskTreeDirection,
   TaskTreeResponse,
@@ -99,7 +92,6 @@ type QueryParams = Record<string, QueryValue>;
 
 interface RequestOptions {
   readonly body?: unknown;
-  readonly idempotencyKey?: string;
   readonly signal?: AbortSignal;
   readonly query?: QueryParams;
 }
@@ -232,28 +224,6 @@ export class HubClient {
     this.token = options.token.trim();
   }
 
-  /**
-   * Generate an `Idempotency-Key`. Uses `crypto.randomUUID()` when available
-   * and degrades to a local random token in older or simulated environments.
-   */
-  newIdempotencyKey(): string {
-    const webCrypto: Crypto | undefined =
-      typeof globalThis === "undefined" ? undefined : globalThis.crypto;
-    if (webCrypto && typeof webCrypto.randomUUID === "function") {
-      return webCrypto.randomUUID();
-    }
-    if (webCrypto && typeof webCrypto.getRandomValues === "function") {
-      const bytes = new Uint8Array(16);
-      webCrypto.getRandomValues(bytes);
-      let hex = "";
-      for (const byte of bytes) {
-        hex += byte.toString(16).padStart(2, "0");
-      }
-      return `myrlet-${hex}`;
-    }
-    return `myrlet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-  }
-
   /* -------------------------------- Reads ------------------------------ */
 
   /** Unauthenticated liveness probe. */
@@ -282,69 +252,6 @@ export class HubClient {
       "GET",
       `/v1/tasks/${encodeURIComponent(taskId)}/tree`,
       { query: { direction, maxDepth, limit } },
-    );
-  }
-
-  /* ------------------------------- Commands ---------------------------- */
-
-  /** Create one `held` Task (`Idempotency-Key` required). */
-  async createTask(
-    definition: TaskDefinitionInput,
-    idempotencyKey: string = this.newIdempotencyKey(),
-  ): Promise<TaskRecord> {
-    return this.request<TaskRecord>("POST", "/v1/tasks", {
-      body: definition,
-      idempotencyKey,
-    });
-  }
-
-  /** Atomically create up to 100 `held` Tasks; never dispatches. */
-  async importBundle(
-    request: TaskBundleImportRequest,
-    idempotencyKey: string = this.newIdempotencyKey(),
-  ): Promise<TaskBundleImportResponse> {
-    return this.request<TaskBundleImportResponse>("POST", "/v1/task-bundles/import", {
-      body: request,
-      idempotencyKey,
-    });
-  }
-
-  /** Explicitly dispatch a Task (`targeted` or `match`, optional queueing). */
-  async dispatchTask(
-    taskId: string,
-    request: DispatchTaskRequest,
-    idempotencyKey: string = this.newIdempotencyKey(),
-  ): Promise<DispatchTaskResponse> {
-    return this.request<DispatchTaskResponse>(
-      "POST",
-      `/v1/tasks/${encodeURIComponent(taskId)}/dispatch`,
-      { body: request, idempotencyKey },
-    );
-  }
-
-  /** Cancel any non-terminal Task. */
-  async cancelTask(
-    taskId: string,
-    request: CancelTaskRequest,
-    idempotencyKey: string = this.newIdempotencyKey(),
-  ): Promise<TaskRecord> {
-    return this.request<TaskRecord>(
-      "POST",
-      `/v1/tasks/${encodeURIComponent(taskId)}/cancel`,
-      { body: request, idempotencyKey },
-    );
-  }
-
-  /** Finish a coordination-only `held` Parent that has no Delivery. */
-  async finishTask(
-    taskId: string,
-    request: FinishTaskRequest,
-    idempotencyKey: string = this.newIdempotencyKey(),
-  ): Promise<TaskRecord> {
-    return this.request<TaskRecord>(
-      "POST",
-      `/v1/tasks/${encodeURIComponent(taskId)}/finish`,
-      { body: request, idempotencyKey },
     );
   }
 
@@ -536,9 +443,6 @@ export class HubClient {
     }
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
-    }
-    if (options.idempotencyKey) {
-      headers["Idempotency-Key"] = options.idempotencyKey;
     }
 
     let response: Response;

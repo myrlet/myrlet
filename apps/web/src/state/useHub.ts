@@ -2,7 +2,9 @@
  * Hub session state for the Myrlet Web UI.
  *
  * Ownership rules:
- * - Theme preference is the *only* value persisted (`localStorage["myrlet.theme"]`).
+ * - This hook persists only the appearance preference
+ *   (`localStorage["myrlet.theme"]`). Board layout offsets are owned by
+ *   `TaskGraphView` (`localStorage["myrlet.atlas.positions"]`).
  * - The Admin bearer token lives exclusively in memory (React ref/state) and is
  *   never written to storage, URLs, or logs.
  * - SSE frames are invalidation hints. On each hint we debounce a lightweight
@@ -14,40 +16,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { HubApiError, HubClient } from "../api/client";
 import type {
-  CancelTaskRequest,
   CreateEnrollmentCodeRequest,
   CreateEnrollmentCodeResponse,
-  DispatchTaskRequest,
-  DispatchTaskResponse,
-  FinishTaskRequest,
   GlobalSnapshot,
   HealthResponse,
   HubEventEnvelope,
   RotateWorkerResponse,
   SnapshotTaskSummary,
-  TaskBundleImportRequest,
-  TaskBundleImportResponse,
-  TaskDefinitionInput,
   TaskRecord,
   TaskTreeResponse,
   WorkerRecord,
 } from "../api/types";
 
-export type Theme = "porcelain" | "obsidian" | "paper" | "graphite";
+export type Theme = "system" | "light" | "dark";
+export type ResolvedTheme = "light" | "dark";
 
-/** One selectable theme, with the `color-scheme` it should advertise. */
+/** One selectable appearance option. */
 export interface ThemeDescriptor {
   readonly id: Theme;
   readonly label: string;
-  readonly mode: "light" | "dark";
 }
 
-/** Ordered theme list used by theme pickers and the cycle shortcut. */
+/** Ordered appearance options: System follows the browser, or lock Light / Dark. */
 export const THEMES: readonly ThemeDescriptor[] = [
-  { id: "porcelain", label: "Porcelain", mode: "light" },
-  { id: "obsidian", label: "Obsidian", mode: "dark" },
-  { id: "paper", label: "Paper", mode: "light" },
-  { id: "graphite", label: "Graphite", mode: "dark" },
+  { id: "system", label: "System" },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
 ];
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting";
@@ -90,13 +84,6 @@ export interface UseHubResult {
   readonly detailError: string | null;
   selectTask: (taskId: string | null) => Promise<void>;
 
-  /* Task commands */
-  createTask: (definition: TaskDefinitionInput) => Promise<TaskRecord>;
-  importBundle: (request: TaskBundleImportRequest) => Promise<TaskBundleImportResponse>;
-  dispatchTask: (taskId: string, request: DispatchTaskRequest) => Promise<DispatchTaskResponse>;
-  cancelTask: (taskId: string, request: CancelTaskRequest) => Promise<TaskRecord>;
-  finishTask: (taskId: string, request: FinishTaskRequest) => Promise<TaskRecord>;
-
   /* Worker commands */
   createEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
@@ -117,11 +104,6 @@ const EMPTY_WORKERS: readonly WorkerRecord[] = [];
 
 function isTheme(value: unknown): value is Theme {
   return typeof value === "string" && (THEME_IDS as readonly string[]).includes(value);
-}
-
-function themeModeOf(theme: Theme): "light" | "dark" {
-  const match = THEMES.find((candidate) => candidate.id === theme);
-  return match ? match.mode : "light";
 }
 
 /** Normalize a Hub origin for a health probe (`""` means same-origin). */
@@ -182,10 +164,10 @@ function defaultBaseUrl(): string {
   return origin === "null" ? "" : origin;
 }
 
-/** Read a persisted theme id, accepting all four themes (default Porcelain). */
+/** Read the persisted appearance, defaulting to `system` when nothing is stored. */
 export function readStoredTheme(): Theme {
   if (typeof window === "undefined") {
-    return "porcelain";
+    return "system";
   }
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -193,9 +175,21 @@ export function readStoredTheme(): Theme {
       return stored;
     }
   } catch {
-    // Storage can be unavailable (privacy mode); fall back to Porcelain.
+    // Storage can be unavailable (privacy mode); follow the browser instead.
   }
-  return "porcelain";
+  return "system";
+}
+
+/** The browser's current `prefers-color-scheme`, safe under jsdom/SSR. */
+export function readSystemTheme(): ResolvedTheme {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  ) {
+    return "dark";
+  }
+  return "light";
 }
 
 /** Abortable delay used by the bounded reconnect backoff. */
@@ -238,6 +232,7 @@ function describeConnectionError(error: unknown): string {
  */
 export function useHub(): UseHubResult {
   const [theme, setThemeState] = useState<Theme>(readStoredTheme);
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(readSystemTheme);
   const [connection, setConnection] = useState<ConnectionStatus>("disconnected");
   const [baseUrl, setBaseUrl] = useState<string>(defaultBaseUrl);
   const [session, setSession] = useState<HubSession | null>(null);
@@ -260,27 +255,44 @@ export function useHub(): UseHubResult {
   const selectedIdRef = useRef<string | null>(null);
   const selectTokenRef = useRef(0);
 
-  /* Theme: persisted in localStorage only and applied to <html data-theme>. */
+  const themeMode: ResolvedTheme = theme === "system" ? systemTheme : theme;
+
+  /* Theme: the resolved appearance drives <html data-theme>, so CSS and tests
+     always see an explicit light/dark. Only a real choice is persisted. */
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // Persisting the theme is best-effort.
+    document.documentElement.dataset.theme = themeMode;
+  }, [themeMode]);
+
+  /* Follow OS/browser appearance live while the preference is System. */
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
     }
-  }, [theme]);
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    if (typeof media.addEventListener !== "function") {
+      return;
+    }
+    const onChange = (event: MediaQueryListEvent): void => {
+      setSystemTheme(event.matches ? "dark" : "light");
+    };
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
 
   const setTheme = useCallback((next: Theme) => {
     setThemeState(next);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // Persisting the theme is best-effort.
+    }
   }, []);
 
-  /** Cycle Porcelain -> Obsidian -> Paper -> Graphite -> Porcelain. */
+  /** Cycle System -> Light -> Dark -> System. */
   const toggleTheme = useCallback(() => {
-    setThemeState((current) => {
-      const index = THEME_IDS.indexOf(current);
-      return THEME_IDS[(index + 1) % THEME_IDS.length] ?? "porcelain";
-    });
-  }, []);
+    const index = THEME_IDS.indexOf(theme);
+    setTheme(THEME_IDS[(index + 1) % THEME_IDS.length] ?? "system");
+  }, [setTheme, theme]);
 
   const getClient = useCallback((): HubClient => {
     const client = clientRef.current;
@@ -656,34 +668,6 @@ export function useHub(): UseHubResult {
     [getClient, handleAuthFailure, refreshAll],
   );
 
-  const createTask = useCallback(
-    (definition: TaskDefinitionInput) => mutate((client) => client.createTask(definition)),
-    [mutate],
-  );
-
-  const importBundle = useCallback(
-    (request: TaskBundleImportRequest) => mutate((client) => client.importBundle(request)),
-    [mutate],
-  );
-
-  const dispatchTask = useCallback(
-    (taskId: string, request: DispatchTaskRequest) =>
-      mutate((client) => client.dispatchTask(taskId, request)),
-    [mutate],
-  );
-
-  const cancelTask = useCallback(
-    (taskId: string, request: CancelTaskRequest) =>
-      mutate((client) => client.cancelTask(taskId, request)),
-    [mutate],
-  );
-
-  const finishTask = useCallback(
-    (taskId: string, request: FinishTaskRequest) =>
-      mutate((client) => client.finishTask(taskId, request)),
-    [mutate],
-  );
-
   const createEnrollmentCode = useCallback(
     async (
       request: CreateEnrollmentCodeRequest,
@@ -719,8 +703,6 @@ export function useHub(): UseHubResult {
     () => snapshot?.workers ?? EMPTY_WORKERS,
     [snapshot],
   );
-
-  const themeMode = useMemo(() => themeModeOf(theme), [theme]);
 
   useEffect(
     () => () => {
@@ -762,12 +744,6 @@ export function useHub(): UseHubResult {
     detailLoading,
     detailError,
     selectTask,
-
-    createTask,
-    importBundle,
-    dispatchTask,
-    cancelTask,
-    finishTask,
 
     createEnrollmentCode,
     rotateWorker,
