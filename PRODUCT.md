@@ -15,3 +15,17 @@ Myrlet is a self-hosted, single-Hub Task Broker connecting developers, operators
 2. **Make uncertainty visible**: Offline Workers, missing Progress, and stale reports are shown explicitly—never fabricated as zeros, running states, or outcomes.
 3. **Calm, dense, native UI**: Use the Porcelain (light) and Graphite (dark) palettes, lavender accent, system typography, restrained motion, and text+shape status labels accessible without color.
 4. **Keep V1 focused**: List/Tree + Task Detail + Worker management is the V1 graphical surface. Custom spatial graph canvases, saved view managers, and workflow builders are out of V1 scope.
+
+## Proposed capability: portable Task results
+
+An Owner Agent that delegates a review should be able to read the reviewer's findings.
+A human who asks a remote Worker to generate a chart should be able to open it from another machine.
+Both recipients should be able to retrieve the work after the producing Worker goes offline.
+
+- A Task may publish a result. Each result contains Markdown text and may include files. A review can link to a PR, and a Task with no repository can return its findings as text alone.
+- Clients render headings, lists, tables, code blocks, and links consistently. Recipients can preview common images inline and download attached files such as a PDF report.
+- The standard API exposes the Markdown source and artifact references to authorized consumers, including a subsequent Worker. A Worker without read access must be denied access to both the text and the files.
+
+Publishing a result is independent of Delivery acknowledgment, latest Progress, and `finished`. Handling can end without a result, including when an upload fails. The Owner decides what the submitted work means. See the [Task and Delivery contract](docs/architecture/README.md#v1-core-invariants).
+
+Follow-up design should settle who may publish and read a result, when publication is allowed, and how files are identified, verified, stored, and retained. It should also define preview and size limits and what the recipient sees after an interrupted upload.
