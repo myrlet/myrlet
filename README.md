@@ -49,9 +49,11 @@ Slots advertise where work can run. The OS or container enforces access. Keep th
 
 ## How It Works
 
+The steps below describe the current binaries. The [workflow under architecture review](docs/architecture/README.md#contract-under-review) makes submission authorize work, lets Workers explicitly claim it, and exposes the reason a Task is waiting. The [CLI reference](skills/myrlet/references/cli.md) lists the commands available today.
+
 1. **Create a task.** A human or owner agent creates a task in `held`. One Hub keeps the task tree, dependencies, and worker inventory in SQLite.
 2. **Choose an environment.** Dispatch to a specific worker and slot, or ask the Hub to match the task to an eligible slot. Workers connect outbound to the Hub over WSS with TLS verification for remote deployments.
-3. **Observe the handoff.** Before starting a harness, the worker records the delivery ID so a replay cannot start it twice. It sends optional progress and reports when handling ends. A disconnected worker may still be executing. A `finished` task tells its owner when to inspect the work and decide what comes next.
+3. **Observe the handoff.** Before starting a harness, the worker records the delivery ID so a replay cannot start it twice. It relays optional Progress, captures a Markdown Result when the Harness exits, and reports when handling ends. Read the stored Result with `myrlet tasks show <id>`. A disconnected worker may still be executing. A `finished` task tells its owner when to inspect the work and decide what comes next.
 
 ## Quick Start
 

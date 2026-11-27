@@ -1,10 +1,22 @@
 # Hub API
 
-Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTTPS (or loopback HTTP for local development). Workers connect over WSS for control frames and call two dedicated Hub HTTP endpoints for Progress and Finish reporting.
+Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTTPS (or loopback HTTP for local development). Workers connect over WSS for control frames and report Progress, Result, and Finish over HTTP.
 
 **Wire convention:** All HTTP request and response JSON bodies use **`camelCase`** consistently (no mixed `snake_case`/`camelCase` aliases). Error responses use `{ "error": "<StableCode>", "message": "<fixed safe message>" }` without leaking internal SQLite causes.
 
+## Proposed reporting semantics
+
+One effective Delivery binds a Task to one Worker and one Slot. That Worker is the single writer for two independent values, Progress and Result. The Hub keeps the latest copy of each. Compare hashes over agreed content bytes and reconcile differing values to the current Worker observation. A Markdown digest covers its text and reference strings. Equal content requires no write. Result can change after Finish. Reconciliation never changes the Task outcome, and the Hub stores no revision counters or version history.
+
+After local recovery completes, an absent or empty Result file means **no Result** and clears a previous Hub value. A read error, an unsafe file, an invalid payload, or incomplete recovery cannot establish absence. Preserve the Hub copy until the Worker can establish its local state. The Result clearing rule applies only to Result.
+
+Serialize sync per Delivery and reread current content on each attempt. Before sending newer content after a timeout, settle the outstanding write or fence its connection epoch. Validate Delivery ownership and epoch at the Hub commit boundary. A delayed request carrying an old epoch cannot undo a newer committed value. Distinguish local receipt, Hub confirmation, and inability to compare when disconnected. Exact digest inputs and wire encodings remain open.
+
+Client operations in the proposal include submit, atomic import, version-fenced pending edits, cancellation, and global reads. The [Task model](task-model.md#proposed-task-lifecycle) specifies their effects. The proposed read credential and claim exchange await review; no new route is specified here.
+
 ## V1 Endpoint Surface
+
+The route tables and reporting payloads below document the **currently implemented** API. In particular, the write-once Result response below applies to the current binary.
 
 ### Public & Health
 
@@ -88,7 +100,7 @@ Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the
 
 - `text` is one bounded UTF-8 Markdown string (max 64 KiB, non-blank).
 - Accepted for an `accepted` Delivery and, independently of Finish, for a `finished` or `cancelled` Delivery: the Worker's live `epoch` still fences each report, so a late sync after reconnect lands.
-- **Write-once**: the first stored text is immutable. An identical replay returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate: true }` without a new event; different text returns `409 InvalidTransition`.
+- **Current wire behavior**: the first stored text is immutable. An identical replay returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate: true }` without a new event; different text returns `409 InvalidTransition`.
 - Returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate }` and emits one `delivery.result` invalidation event.
 - A Result never changes Task status and is not a verdict. Hub stores it on the Delivery; `GET /v1/tasks/{id}` exposes it as `resultMarkdown` + `resultRecordedAtMs`, and it is **never** part of the Snapshot or a cross-Task read.
 

@@ -12,6 +12,10 @@ Myrlet is operational infrastructure, not a chatbot or decorative SaaS dashboard
 - **Accessible without color**: pair every semantic status color with clear text and shape, full keyboard reachability, visible focus rings, and reduced-motion support.
 - **Avoid**: nested decorative cards, gradients/glows, ambient animation, hover-only critical actions, native `<select>` elements, or ad-hoc colors/spacing outside shared tokens.
 
+### Reading proposed workflow facts
+
+When the [proposed Task contract](../architecture/task-model.md#proposed-task-lifecycle) ships, explain `held` with the blocking dependency IDs and statuses, and `queued` with the Slot and capability requirements. Display a Worker assignment only for a committed Delivery. Use the latest Hub Result in Task Detail, refresh it on invalidation, and remove it after a confirmed clear. A disconnected Hub leaves the last observation stale. The Web workspace remains a reader of Task data; dependency edits and submission belong to the Owner CLI.
+
 ## 2. Tokens and Shared Controls
 
 - **Appearance**: exactly two visual themes — **light** and **dark** — selected by **System** (default, follows `prefers-color-scheme`), **Light**, or **Dark**. `hub.themeMode` resolves to `light` / `dark` and is written to `<html data-theme>`; only an explicit choice persists (`myrlet.theme`).
