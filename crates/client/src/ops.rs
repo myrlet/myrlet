@@ -3,9 +3,9 @@
 use std::fmt;
 
 use myrlet_protocol::{
-    CancelTaskRequest, DispatchTaskRequest, DispatchTaskResponse, FinishTaskRequest,
-    GlobalSnapshot, HealthResponse, TaskBundleImportRequest, TaskBundleImportResponse,
-    TaskDefinition, TaskId, TaskRecord, TaskTreeDirection, TaskTreeResponse,
+    CancelTaskRequest, ClaimTaskRequest, ClaimTaskResponse, FinishTaskRequest, GlobalSnapshot,
+    HealthResponse, TaskBundleImportRequest, TaskBundleImportResponse, TaskDefinition, TaskId,
+    TaskListResponse, TaskRecord, TaskTreeDirection, TaskTreeResponse, UpdateTaskRequest,
     SNAPSHOT_SCHEMA_VERSION,
 };
 use serde::de::DeserializeOwned;
@@ -78,7 +78,16 @@ impl<T: Transport> Client<T> {
         Ok(snapshot)
     }
 
-    /// Create one `held` Task (`POST /v1/tasks`).
+    /// Bounded Task summary page (`GET /v1/tasks`); readable with either credential.
+    pub async fn list_tasks(&self, limit: Option<usize>) -> Result<TaskListResponse, ClientError> {
+        let path = match limit {
+            Some(limit) => format!("/v1/tasks?limit={limit}"),
+            None => "/v1/tasks".to_string(),
+        };
+        decode_direct(&self.get(&path).await?)
+    }
+
+    /// Submit one Task, authorizing it for execution (`POST /v1/tasks`).
     pub async fn create_task(
         &self,
         idempotency_key: &str,
@@ -87,10 +96,11 @@ impl<T: Transport> Client<T> {
         let body = self
             .post("/v1/tasks", Some(idempotency_key), encode_json(def)?)
             .await?;
-        decode_direct(&body)
+        let response: myrlet_protocol::SubmitTaskResponse = decode_direct(&body)?;
+        Ok(response.task)
     }
 
-    /// Atomically create up to 100 `held` Tasks (`POST /v1/task-bundles/import`).
+    /// Submit an atomic Task bundle (`POST /v1/task-bundles/import`).
     pub async fn import_bundle(
         &self,
         idempotency_key: &str,
@@ -132,15 +142,15 @@ impl<T: Transport> Client<T> {
         decode_direct(&self.get(&path).await?)
     }
 
-    /// Explicitly dispatch a Task (`POST /v1/tasks/{id}/dispatch`).
-    pub async fn dispatch_task(
+    /// Apply version-fenced edits to an unclaimed Task (`POST /v1/tasks/{id}`).
+    pub async fn update_task(
         &self,
         idempotency_key: &str,
         id: &TaskId,
-        req: &DispatchTaskRequest,
-    ) -> Result<DispatchTaskResponse, ClientError> {
+        req: &UpdateTaskRequest,
+    ) -> Result<TaskRecord, ClientError> {
         ensure_path_segment(id.as_str())?;
-        let path = format!("/v1/tasks/{id}/dispatch");
+        let path = format!("/v1/tasks/{id}");
         let body = self
             .post(&path, Some(idempotency_key), encode_json(req)?)
             .await?;
@@ -162,7 +172,7 @@ impl<T: Transport> Client<T> {
         decode_direct(&body)
     }
 
-    /// Finish a coordination-only `held` Parent (`POST /v1/tasks/{id}/finish`).
+    /// Finish a coordination-only Task (`POST /v1/tasks/{id}/finish`).
     pub async fn finish_task(
         &self,
         idempotency_key: &str,
@@ -173,6 +183,17 @@ impl<T: Transport> Client<T> {
         let path = format!("/v1/tasks/{id}/finish");
         let body = self
             .post(&path, Some(idempotency_key), encode_json(req)?)
+            .await?;
+        decode_direct(&body)
+    }
+
+    /// Claim one queued Task for this Worker (`POST /v1/workers/claim`).
+    pub async fn claim_task(
+        &self,
+        req: &ClaimTaskRequest,
+    ) -> Result<ClaimTaskResponse, ClientError> {
+        let body = self
+            .post("/v1/workers/claim", None, encode_json(req)?)
             .await?;
         decode_direct(&body)
     }

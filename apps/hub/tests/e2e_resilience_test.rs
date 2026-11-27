@@ -181,12 +181,12 @@ fn enroll_and_pair(cli: &Cli<'_>, worker: &Path, home: &Path, hub_url: &str) {
     );
 }
 
-/// Create one held Task pinned to `executor` and return its id.
+/// Submit one authorized Task pinned to `executor` and return its id.
 fn create_task(cli: &Cli<'_>, key: &str, title: &str, capability: &str, executor: &str) -> String {
     let created = cli.run(&[
         "--json",
         "tasks",
-        "create",
+        "submit",
         "--idempotency-key",
         key,
         "--title",
@@ -198,30 +198,11 @@ fn create_task(cli: &Cli<'_>, key: &str, title: &str, capability: &str, executor
         "--preferred-executor-id",
         executor,
     ]);
-    assert_eq!(status(&created), "held", "create {key}: {created}");
+    assert_eq!(status(&created), "queued", "submit {key}: {created}");
     field(&created, "id")
         .and_then(|id| id.as_str())
         .expect("id")
         .to_owned()
-}
-
-/// Dispatch with `--match`, optionally queueing, and return the raw response.
-fn dispatch(cli: &Cli<'_>, id: &str, key: &str, queue: bool) -> serde_json::Value {
-    let mut args = vec![
-        "--json",
-        "tasks",
-        "dispatch",
-        id,
-        "--expected-version",
-        "1",
-        "--idempotency-key",
-        key,
-        "--match",
-    ];
-    if queue {
-        args.push("--queue");
-    }
-    cli.run(&args)
 }
 
 fn show(cli: &Cli<'_>, id: &str) -> serde_json::Value {
@@ -288,7 +269,7 @@ slots:
 }
 
 #[tokio::test]
-async fn fifo_queue_dispatches_automatically_when_compatible_worker_connects() {
+async fn a_queued_task_waits_for_a_compatible_worker_to_claim_it() {
     let (hub_bin, worker_bin, cli_bin) = binaries();
     let directory = tempfile::tempdir().expect("temp dir");
     let home = directory.path().join("home");
@@ -297,9 +278,19 @@ async fn fifo_queue_dispatches_automatically_when_compatible_worker_connects() {
     let cli = cli(&cli_bin, &home, &hub_url);
     let env_home = home.to_str().expect("utf-8 home");
 
+    // Submission authorizes the Task; with no Worker online it simply stays queued.
     let task = create_task(&cli, "queue-create", "Queued GPU work", "gpu", "exec-gpu");
-    let queued = dispatch(&cli, &task, "q-1", true);
-    assert_eq!(status(&queued), "queued", "queued dispatch: {queued}");
+    assert_eq!(status(&show(&cli, &task)), "queued");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        status(&show(&cli, &task)),
+        "queued",
+        "a queued Task waits; no Worker means no claim"
+    );
+    assert!(
+        show(&cli, &task)["currentDelivery"].is_null(),
+        "no wakeup or queue admission creates a Delivery"
+    );
 
     enroll_and_pair(&cli, &worker_bin, &home, &hub_url);
     std::fs::write(home.join("worker/worker.yaml"), gpu_yaml(&hub_url)).expect("write worker.yaml");
@@ -346,24 +337,15 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     });
 
     let counted = create_task(&cli, "resync-a", "Count one run", "shell", "exec-count");
-    let dispatched = dispatch(&cli, &counted, "resync-a-1", false);
-    assert_eq!(
-        status(&dispatched),
-        "dispatched",
-        "Task A dispatch: {dispatched}"
-    );
     poll("Task A to finish", Duration::from_secs(15), || {
         finished(&cli, &counted)
     });
     assert_eq!(line_count(&counter), 1, "Task A must run exactly once");
 
     let sleeping = create_task(&cli, "resync-b", "Sleep", "shell", "exec-sleep");
-    let dispatched = dispatch(&cli, &sleeping, "resync-b-1", false);
-    assert_eq!(
-        status(&dispatched),
-        "dispatched",
-        "Task B dispatch: {dispatched}"
-    );
+    poll("Task B to be claimed", Duration::from_secs(15), || {
+        (status(&show(&cli, &sleeping)) == "dispatched").then_some(())
+    });
     let deliveries = home.join("worker/state/deliveries");
     poll("Task B registered", Duration::from_secs(10), || {
         (json_file_count(&deliveries) >= 2).then_some(())

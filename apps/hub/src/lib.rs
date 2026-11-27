@@ -4,9 +4,8 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod http;
-pub mod matcher;
-pub mod queue;
 pub mod state;
+pub mod wakeup;
 pub mod ws;
 
 use std::sync::atomic::Ordering;

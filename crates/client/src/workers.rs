@@ -2,7 +2,7 @@
 
 use myrlet_protocol::{
     CreateEnrollmentCodeRequest, CreateEnrollmentCodeResponse, RotateWorkerCredentialResponse,
-    SnapshotWorker, WorkerId, WorkerListResponse,
+    WorkerDetail, WorkerId, WorkerListResponse,
 };
 
 use crate::error::ClientError;
@@ -27,8 +27,8 @@ impl<T: Transport> Client<T> {
         decode_direct(&self.get("/v1/workers").await?)
     }
 
-    /// Read one Worker's detail and inventory (`GET /v1/workers/{id}`).
-    pub async fn get_worker(&self, id: &WorkerId) -> Result<SnapshotWorker, ClientError> {
+    /// Read one Worker's detail, inventory, and claimable Task IDs (`GET /v1/workers/{id}`).
+    pub async fn get_worker(&self, id: &WorkerId) -> Result<WorkerDetail, ClientError> {
         ensure_path_segment(id.as_str())?;
         decode_direct(&self.get(&format!("/v1/workers/{id}")).await?)
     }

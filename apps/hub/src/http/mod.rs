@@ -10,6 +10,7 @@ use axum::Router;
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 
+use crate::auth::Principal;
 use crate::error::ApiError;
 use crate::state::HubState;
 
@@ -30,12 +31,15 @@ pub fn build_router(state: HubState) -> Router {
         .route("/v1/pair", post(workers::pair_worker))
         .route("/v1/snapshot", get(events::snapshot))
         .route("/v1/events", get(events::events))
-        .route("/v1/tasks", post(tasks::create_task))
-        .route("/v1/tasks/:id", get(tasks::get_task))
+        .route("/v1/tasks", get(tasks::list_tasks).post(tasks::create_task))
+        .route(
+            "/v1/tasks/:id",
+            get(tasks::get_task).post(tasks::update_task),
+        )
         .route("/v1/tasks/:id/tree", get(tasks::get_task_tree))
-        .route("/v1/tasks/:id/dispatch", post(tasks::dispatch_task))
         .route("/v1/tasks/:id/cancel", post(tasks::cancel_task))
         .route("/v1/tasks/:id/finish", post(tasks::finish_task))
+        .route("/v1/tasks/:id/eligibility", get(tasks::task_eligibility))
         .route("/v1/task-bundles/import", post(tasks::import_bundle))
         .route(
             "/v1/enrollment-codes",
@@ -43,6 +47,7 @@ pub fn build_router(state: HubState) -> Router {
         )
         .route("/v1/workers", get(workers::list_workers))
         .route("/v1/workers/connect", get(crate::ws::connect_worker))
+        .route("/v1/workers/claim", post(workers::claim_task))
         .route("/v1/workers/:id", get(workers::get_worker))
         .route("/v1/workers/:id/rotate", post(workers::rotate_worker))
         .route("/v1/workers/:id/revoke", post(workers::revoke_worker))
@@ -56,7 +61,7 @@ pub fn build_router(state: HubState) -> Router {
         )
         .route(
             "/v1/worker/deliveries/:delivery_id/result",
-            post(reports::report_result),
+            get(reports::read_result).post(reports::report_result),
         )
         .fallback(ui::serve_ui)
         .with_state(state)
@@ -119,4 +124,19 @@ pub(crate) async fn run_bounded<T>(
     let outcome = tokio::time::timeout(timeout, command).await;
     drop(permit);
     outcome.map_err(|_| ApiError::request_timeout())?
+}
+
+/// Resolve the caller of a read route: the Admin token or an enrolled Worker credential.
+///
+/// Reads never grant management authority; routes that write still require the Admin
+/// principal, so a Harness can inspect the fleet without holding the Admin token.
+pub(crate) async fn require_reader(
+    state: &HubState,
+    headers: &HeaderMap,
+) -> Result<Principal, ApiError> {
+    if crate::auth::require_admin(state, headers).is_ok() {
+        return Ok(Principal::Admin);
+    }
+    let worker_id = crate::auth::require_worker(state, headers).await?;
+    Ok(Principal::Worker(worker_id))
 }

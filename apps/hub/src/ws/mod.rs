@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::auth::require_worker;
 use crate::error::ApiError;
-use crate::queue::spawn_drain;
 use crate::state::{now_ms, HubState, LiveWorker, CONNECTION_QUEUE};
+use crate::wakeup::spawn_wakeup;
 
 mod frames;
 
@@ -127,7 +127,7 @@ async fn run(state: HubState, worker_id: WorkerId, mut socket: WebSocket) {
     )
     .await;
     if sent {
-        spawn_drain(&state);
+        spawn_wakeup(&state);
         lease_loop(
             &state,
             &worker_id,
