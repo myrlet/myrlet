@@ -16,7 +16,6 @@ import type { SnapshotTaskSummary, TaskRecord, TaskTreeResponse } from "../api/t
 import {
   CANCEL_STATE_LABELS,
   DELIVERY_STATUS_LABELS,
-  REJECTION_CODE_LABELS,
   formatRelativeTime,
   formatTimestamp,
 } from "../format";
@@ -726,13 +725,6 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
 
             <span className="detail-label">Connection epoch</span>
             <span className="detail-value tabular">{delivery.connectionEpoch}</span>
-
-            {delivery.rejectionCode == null ? null : (
-              <>
-                <span className="detail-label">Rejection</span>
-                <span className="detail-value">{REJECTION_CODE_LABELS[delivery.rejectionCode]}</span>
-              </>
-            )}
 
             {delivery.cancelState == null ? null : (
               <>

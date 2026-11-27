@@ -21,7 +21,7 @@ import type {
   TaskRecord,
   TaskTreeDirection,
   TaskTreeResponse,
-  WorkerRecord,
+  WorkerDetail,
 } from "./types";
 
 export interface HubClientOptions {
@@ -262,9 +262,9 @@ export class HubClient {
     return this.request<ListWorkersResponse>("GET", "/v1/workers");
   }
 
-  /** One Worker's detail and inventory. */
-  async getWorker(workerId: string): Promise<WorkerRecord> {
-    return this.request<WorkerRecord>(
+  /** One Worker's detail, inventory, and the Task IDs it could claim next. */
+  async getWorker(workerId: string): Promise<WorkerDetail> {
+    return this.request<WorkerDetail>(
       "GET",
       `/v1/workers/${encodeURIComponent(workerId)}`,
     );

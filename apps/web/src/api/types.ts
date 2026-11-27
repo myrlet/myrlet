@@ -106,9 +106,11 @@ export interface TaskRecord {
   finishedAtMs: number | null;
   task: TaskDefinition;
   currentDelivery: DeliveryView | null;
-  /** Immutable final Harness-written Markdown, when the Worker synced one. */
+  /** Dependencies that are not `finished`, with their status. */
+  blockedBy: BlockingDependency[];
+  /** Latest Harness-written Markdown, when the Delivery has one. */
   resultMarkdown: string | null;
-  /** When Hub accepted the result; independent of `finishedAtMs`. */
+  /** When Hub last stored the result; independent of `finishedAtMs`. */
   resultRecordedAtMs: number | null;
   subtree: SubtreeCounts;
 }
@@ -121,6 +123,8 @@ export interface SnapshotTaskSummary {
   depth: number;
   sourceTaskId: TaskId | null;
   dependencies: TaskId[];
+  /** Dependencies that are not `finished`, so `held` has a visible reason. */
+  blockedBy: BlockingDependency[];
   category: string;
   title: string;
   status: TaskStatus;
@@ -146,20 +150,11 @@ export interface TaskTreeResponse {
 /* Delivery and Progress                                                  */
 /* --------------------------------------------------------------------- */
 
-/** Delivery lifecycle states. */
-export type DeliveryStatus =
-  | "offered"
-  | "accepted"
-  | "rejected"
-  | "released"
-  | "finished"
-  | "cancelled";
-
-/** Pre-registration refusal reason reported by a Worker. */
-export type RejectionCode =
-  | "executor_unavailable"
-  | "worker_shutting_down"
-  | "recovery_incomplete";
+/**
+ * Delivery lifecycle states. A claim commits the Delivery directly, so there is no
+ * offer to accept, refuse, or release: `accepted` is the one live state.
+ */
+export type DeliveryStatus = "accepted" | "finished" | "cancelled";
 
 /**
  * Harness cancellation response relayed by a Worker. Never a claim of physical
@@ -188,7 +183,6 @@ export interface DeliveryView {
   /** Epoch of the WSS connection this Delivery is fenced to. */
   connectionEpoch: number;
   state: DeliveryStatus;
-  rejectionCode: RejectionCode | null;
   cancelState: CancelState | null;
   cancelReason: string | null;
   createdAtMs: number;
@@ -262,6 +256,12 @@ export interface WorkerRecord {
 /** Alias matching the Rust `SnapshotWorker` name. */
 export type SnapshotWorker = WorkerRecord;
 
+/** One Worker's detail, inventory, and the Task IDs it could claim next. */
+export interface WorkerDetail {
+  worker: WorkerRecord;
+  claimableTaskIds: TaskId[];
+}
+
 /* --------------------------------------------------------------------- */
 /* Snapshot and events                                                    */
 /* --------------------------------------------------------------------- */
@@ -290,38 +290,34 @@ export interface HubEventEnvelope {
 }
 
 /* --------------------------------------------------------------------- */
-/* Dispatch and Task commands                                             */
+/* Task commands                                                          */
 /* --------------------------------------------------------------------- */
 
-/**
- * How a dispatch command picks a Worker/Slot.
- * `targeted` never falls back; `match` is deterministic and closed-set.
- */
-export type DispatchSelection =
-  | {
-      mode: "targeted";
-      workerId: WorkerId;
-      slotId: SlotId;
-      executorId?: ExecutorId | null;
-    }
-  | {
-      mode: "match";
-      fallbackAllowed?: boolean;
-    };
-
-/** `POST /v1/tasks/{id}/dispatch` request. */
-export interface DispatchTaskRequest {
-  expectedTaskVersion: number;
-  selection: DispatchSelection;
-  queue?: boolean;
-}
-
-/** `POST /v1/tasks/{id}/dispatch` response. */
-export interface DispatchTaskResponse {
+/** One declared prerequisite that keeps a Task `held`, with its current status. */
+export interface BlockingDependency {
   taskId: TaskId;
   status: TaskStatus;
-  version: number;
-  delivery: DeliveryView | null;
+}
+
+/** Bounded newest-first Task summary page returned by `GET /v1/tasks`. */
+export interface TaskListResponse {
+  tasks: SnapshotTaskSummary[];
+  totalTasks: number;
+  truncated: boolean;
+  eventCursor: number;
+}
+
+/** `POST /v1/tasks` response: the authorized Task and whether it became `queued`. */
+export interface SubmitTaskResponse {
+  task: TaskRecord;
+  eligible: boolean;
+}
+
+/** Where a Task stands for a would-be claimer. */
+export interface TaskEligibility {
+  taskId: TaskId;
+  claimable: boolean;
+  blockedBy: BlockingDependency[];
 }
 
 /** `POST /v1/tasks/{id}/cancel` request. */

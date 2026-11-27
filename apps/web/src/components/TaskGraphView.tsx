@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 
 import type { DeliveryView, SnapshotTaskSummary, WorkerRecord } from "../api/types";
-import { CANCEL_STATE_LABELS, DELIVERY_STATUS_LABELS, REJECTION_CODE_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../format";
+import { CANCEL_STATE_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../format";
 import { TaskStatusBadge } from "./StatusBadge";
 import {
   NODE_HEIGHT,
@@ -203,26 +203,15 @@ interface AtlasTaskNodeProps {
 }
 
 /**
- * Footer line under the card. Real Harness Progress always wins. Without it,
- * only a Delivery fact the Task badge does not already imply earns a line: a
- * rejection, a cancel response, a release, or an acceptance (Dispatched only
- * says an offer went out). `offered` and `finished` repeat the Task state and
- * stay silent.
+ * Footer line under the card. Real Harness Progress always wins; otherwise only a
+ * Delivery fact the Task badge does not already imply earns a line, such as a
+ * cancellation answer. `accepted` and `finished` repeat the Task state.
  */
 function deliveryFooter(delivery: DeliveryView): { text: string; live: boolean; ageMs: number | null } | null {
   if (delivery.progress) {
     return { text: delivery.progress.text, live: true, ageMs: delivery.progress.receivedAtMs };
   }
-  let text: string | null = null;
-  if (delivery.rejectionCode) {
-    text = `${DELIVERY_STATUS_LABELS.rejected} · ${REJECTION_CODE_LABELS[delivery.rejectionCode]}`;
-  } else if (delivery.cancelState) {
-    text = CANCEL_STATE_LABELS[delivery.cancelState];
-  } else if (delivery.state === "accepted") {
-    text = "Delivery accepted";
-  } else if (delivery.state === "released") {
-    text = "Delivery released";
-  }
+  const text = delivery.cancelState ? CANCEL_STATE_LABELS[delivery.cancelState] : null;
   return text === null ? null : { text, live: false, ageMs: delivery.updatedAtMs };
 }
 

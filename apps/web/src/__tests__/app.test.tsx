@@ -150,6 +150,7 @@ function taskSummary(overrides: Partial<SnapshotTaskSummary> & { id: string }): 
     depth: 1,
     sourceTaskId: null,
     dependencies: [],
+    blockedBy: [],
     category: "general",
     title: overrides.id,
     status: "held",
@@ -203,6 +204,7 @@ function taskRecord(summary: SnapshotTaskSummary): TaskRecord {
     updatedAtMs: summary.updatedAtMs,
     finishedAtMs: summary.finishedAtMs,
     currentDelivery: summary.currentDelivery,
+    blockedBy: summary.blockedBy,
     resultMarkdown: null,
     resultRecordedAtMs: null,
     subtree: summary.subtree,
@@ -744,7 +746,7 @@ describe("App workspace flow", () => {
     ).toBeNull();
   });
 
-  it("renders the immutable Markdown result safely in Task Detail", async () => {
+  it("renders the Markdown result safely in Task Detail", async () => {
     const result =
       "# Findings\n\n- one\n- two\n\n| Item | State |\n| --- | --- |\n| Build | ok |\n\n" +
       "```sh\ncargo test\n```\n\nSee [the PR](https://example.test/pr/1).\n\n" +

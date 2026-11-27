@@ -11,7 +11,6 @@ import type {
   CancelState,
   CapabilityState,
   DeliveryStatus,
-  RejectionCode,
   SnapshotTaskSummary,
   TaskRecord,
   TaskStatus,
@@ -45,7 +44,7 @@ export const TASK_STATUS_META: Readonly<Record<TaskStatus, TaskStatusMeta>> = {
     tone: "held",
     shape: "circle",
     glyph: "○",
-    description: "Durable intent created; not authorized to execute.",
+    description: "Submitted, but a prerequisite has not finished yet.",
     terminal: false,
   },
   queued: {
@@ -53,7 +52,7 @@ export const TASK_STATUS_META: Readonly<Record<TaskStatus, TaskStatusMeta>> = {
     tone: "queued",
     shape: "queue",
     glyph: "≡",
-    description: "Dispatch authorized; waiting in FIFO order for an eligible Worker/Slot.",
+    description: "Authorized and waiting for an eligible Worker to claim it.",
     terminal: false,
   },
   dispatched: {
@@ -61,7 +60,7 @@ export const TASK_STATUS_META: Readonly<Record<TaskStatus, TaskStatusMeta>> = {
     tone: "dispatched",
     shape: "arrow",
     glyph: "▸",
-    description: "A Delivery was offered to a Worker; handling may or may not have started.",
+    description: "A Worker claimed this Task; handling may or may not have started.",
     terminal: false,
   },
   finished: {
@@ -96,10 +95,7 @@ export const TASK_STATUSES: readonly TaskStatus[] = [
 /* --------------------------------------------------------------------- */
 
 export const DELIVERY_STATUS_LABELS: Readonly<Record<DeliveryStatus, string>> = {
-  offered: "Offered",
-  accepted: "Accepted",
-  rejected: "Rejected",
-  released: "Released",
+  accepted: "Claimed",
   finished: "Handling ended",
   cancelled: "Cancelled",
 };
@@ -109,12 +105,6 @@ export const CANCEL_STATE_LABELS: Readonly<Record<CancelState, string>> = {
   failed: "Cancel failed",
   uncertain: "Cancel uncertain",
   unsupported: "Cancel unsupported",
-};
-
-export const REJECTION_CODE_LABELS: Readonly<Record<RejectionCode, string>> = {
-  executor_unavailable: "Executor unavailable",
-  worker_shutting_down: "Worker shutting down",
-  recovery_incomplete: "Recovery incomplete",
 };
 
 export const CAPABILITY_STATE_LABELS: Readonly<Record<CapabilityState, string>> = {
