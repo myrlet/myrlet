@@ -111,6 +111,8 @@ impl MyrletHome {
         worker_state_dir => "worker"."state";
         /// `worker/progress/`.
         worker_progress_dir => "worker"."progress";
+        /// `worker/results/`.
+        worker_results_dir => "worker"."results";
     }
 
     /// `worker/progress/<delivery_id>.json`; the Delivery ID must be one safe path segment.
@@ -121,6 +123,14 @@ impl MyrletHome {
         Ok(self
             .worker_progress_dir()
             .join(format!("{delivery_id}.json")))
+    }
+
+    /// `worker/results/<delivery_id>.md`; the Harness writes it, the Worker only reads.
+    pub fn worker_result_file(&self, delivery_id: &DeliveryId) -> Result<PathBuf, PathError> {
+        if !delivery_id.is_valid_segment() {
+            return Err(PathError::ParentTraversal);
+        }
+        Ok(self.worker_results_dir().join(format!("{delivery_id}.md")))
     }
 }
 

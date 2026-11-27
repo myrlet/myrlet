@@ -172,7 +172,16 @@ slots:
       - id: exec-progress
         kind: process
         program: /bin/sh
-        args: ['-c', 'p=$(sed -n ''s/.*to \(\/.*\.json\).*/\1/p'' | head -n1); printf ''{"text":"e2e progress ok"}'' > "$p"']
+        args:
+          - -c
+          - |
+            umask 077
+            while IFS= read -r line; do
+              case "$line" in
+                'Write optional JSON progress '*) printf '{"text":"e2e progress ok"}' > "${line##* to }" ;;
+                'Optionally write the final Markdown result '*) printf '# Findings\n' > "${line##* to }" ;;
+              esac
+            done
       - id: exec-slow
         kind: process
         program: /bin/sh
@@ -305,7 +314,15 @@ async fn cross_process_hub_worker_cli_end_to_end() {
     let shown = cli.run(&["--json", "tasks", "show", &second]);
     assert_eq!(status(&shown), "cancelled", "show 2: {shown}");
 
-    // 8. Graceful shutdown of the real daemons.
+    // Once the Hub has the result, reading it requires no connection to the producer.
+    poll("Markdown result to sync", || {
+        (cli.run(&["--json", "tasks", "show", &first])["resultMarkdown"] == "# Findings\n")
+            .then_some(())
+    });
     shutdown(&mut worker_guard.0, "worker");
+    assert_eq!(
+        cli.run(&["--json", "tasks", "show", &first])["resultMarkdown"],
+        "# Findings\n"
+    );
     shutdown(&mut hub_guard.0, "hub");
 }

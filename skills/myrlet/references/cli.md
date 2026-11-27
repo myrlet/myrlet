@@ -7,7 +7,7 @@ Executable: `myrlet`.
 | Command | Purpose |
 | --- | --- |
 | `myrlet [--json] tasks list` | List Tasks from the Hub Snapshot |
-| `myrlet [--json] tasks show <id>` | Read one authoritative Task record |
+| `myrlet [--json] tasks show <id>` | Read one authoritative Task record, including the immutable result Markdown |
 | `myrlet [--json] tasks create --idempotency-key <key> --title <t> --prompt <p>` | Create a `held` Task |
 | `myrlet [--json] tasks dispatch <id> --expected-version <n> --idempotency-key <key> --match` | Dispatch via Simple Match |
 | `myrlet [--json] tasks dispatch <id> --expected-version <n> --idempotency-key <key> --worker-id <id> --slot-id <id> --connection-epoch <n> [--executor-id <id>]` | Targeted Dispatch |

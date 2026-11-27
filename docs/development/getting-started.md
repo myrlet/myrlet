@@ -74,6 +74,8 @@ cargo run -p myrlet-cli -- tasks dispatch <task-id> \
 cargo run -p myrlet-cli -- events watch
 ```
 
+A Harness may optionally write the final Markdown result to `$MYRLET_HOME/worker/results/<delivery-id>.md` (owner-only, up to 64 KiB). The Worker syncs it once; `tasks show <task-id>` and the Web Task Detail display it after handling ends, even if the Worker later goes offline.
+
 ## Next Steps
 
 - [Architecture](../architecture/README.md) · [Owner Agent integration](agent-integration.md)

@@ -11,7 +11,7 @@ Recommended interaction loop for an external Owner Agent operating Myrlet throug
    - **Simple Match**: let Hub deterministically pick an online compatible Worker/Slot.
    Pass `queue: true` if you want Hub to hold the Task in the FIFO queue until a compatible Worker is online.
 4. **Watch**: Subscribe to SSE (`GET /v1/events` from Snapshot's `eventCursor`, or `myrlet --json events watch`). Treat SSE frames as invalidation hints and re-read Task detail / Snapshot when making decisions.
-5. **Evaluate outside Hub**: Read the latest Harness-authored Progress and `finished` status from Task/Snapshot detail. Hub never judges success or failure.
+5. **Evaluate outside Hub**: Read the latest Harness-authored Progress, the optional immutable Markdown result (`resultMarkdown` on Task detail), and `finished` status from Task/Snapshot detail. Hub never judges success or failure.
 6. **Follow up / retry**:
    - After delegating children, a dispatched Parent ends via its Worker's `finished` report; a coordination-only `held` Parent can be explicitly marked `finished`.
    - To retry work, create a **new `held` Task** linked by `sourceTaskId` and dispatch it explicitly. Never assume a disconnected Worker stopped executing.

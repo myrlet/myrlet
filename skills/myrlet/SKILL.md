@@ -57,8 +57,9 @@ myrlet --json events watch
 myrlet --json tasks cancel '<task-id>'
 ```
 
-- `tasks list` shows the Snapshot Task summary page (`metadata.tasksTruncated` indicates if truncated). Use `tasks show` for one authoritative Task record.
+- `tasks list` shows the Snapshot Task summary page (`metadata.tasksTruncated` indicates if truncated). Use `tasks show` for one authoritative Task record, including any immutable Harness result Markdown.
 - `events watch` outputs NDJSON snapshots and SSE invalidation hints; re-read `tasks show` when making decisions.
+- A Harness may write its final Markdown result to the `result.md` path given in its startup prompt (owner-only, up to 64 KiB). It appears as `resultMarkdown` after the Worker syncs it and is never a success verdict.
 
 ## Interpret Task Status Honestly
 

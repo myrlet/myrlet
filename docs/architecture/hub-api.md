@@ -30,7 +30,7 @@ Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTT
 | `GET /v1/snapshot` | Primary read view: cluster/Worker inventory, bounded Task summaries, current Deliveries & latest Progress, and current `eventCursor`. |
 | `GET /v1/events` | Resumable SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). |
 | `POST /v1/tasks` | Create one `held` Task (`Idempotency-Key` required). |
-| `GET /v1/tasks/{id}` | Read one authoritative Task record, its current Delivery, and latest Progress. |
+| `GET /v1/tasks/{id}` | Read one authoritative Task record, its current Delivery, latest Progress, and immutable result. |
 | `GET /v1/tasks/{id}/tree` | Read bounded ancestors or descendants (depth & node cap; simple limit, no view-fingerprint cursor). |
 | `POST /v1/tasks/{id}/dispatch` | Explicitly dispatch (`targeted` or `match`, optional `queue` & `fallbackAllowed`) (`Idempotency-Key` + `expectedTaskVersion`). |
 | `POST /v1/tasks/{id}/cancel` | Cancel any non-terminal Task (`Idempotency-Key` + `expectedTaskVersion`). |
@@ -48,11 +48,12 @@ Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTT
 | --- | --- |
 | `GET /v1/workers/connect` | Authenticated Worker WSS upgrade endpoint. |
 | `POST /v1/worker/deliveries/{delivery_id}/progress` | Report latest Harness-authored Progress. |
+| `POST /v1/worker/deliveries/{delivery_id}/result` | Report the optional final Harness-written Markdown result. |
 | `POST /v1/worker/deliveries/{delivery_id}/finish` | Report Worker end of handling. |
 
-## Worker Progress and Finish Reporting (HTTP)
+## Worker Progress, Result, and Finish Reporting (HTTP)
 
-Progress and Finish are **HTTP-only** (not WSS frames). Both require the Worker's bearer token matching the Delivery's assigned `workerId` and validate `epoch` against the Delivery's current `connectionEpoch` (stale epoch returns `409 StaleDelivery`).
+Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the Worker's bearer token matching the Delivery's assigned `workerId` and validate `epoch` (stale epoch returns `409 StaleDelivery`).
 
 ### `POST /v1/worker/deliveries/{delivery_id}/progress`
 
@@ -78,6 +79,18 @@ Progress and Finish are **HTTP-only** (not WSS frames). Both require the Worker'
 - Idempotent on replay (`changed: false`).
 - If the Task is already `cancelled`, Hub returns `cancelled` unchanged and never reverts it.
 - Otherwise Hub moves Task and Delivery to `finished`. An `offered` Delivery may transition directly to `finished` when a Harness wrote no Progress.
+
+### `POST /v1/worker/deliveries/{delivery_id}/result`
+
+```json
+{ "epoch": 7, "text": "# Findings\n\n- one" }
+```
+
+- `text` is one bounded UTF-8 Markdown string (max 64 KiB, non-blank).
+- Accepted for an `accepted` Delivery and, independently of Finish, for a `finished` or `cancelled` Delivery: the Worker's live `epoch` still fences each report, so a late sync after reconnect lands.
+- **Write-once**: the first stored text is immutable. An identical replay returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate: true }` without a new event; different text returns `409 InvalidTransition`.
+- Returns `ResultReceipt { deliveryId, taskId, recordedAtMs, duplicate }` and emits one `delivery.result` invalidation event.
+- A Result never changes Task status and is not a verdict. Hub stores it on the Delivery; `GET /v1/tasks/{id}` exposes it as `resultMarkdown` + `resultRecordedAtMs`, and it is **never** part of the Snapshot or a cross-Task read.
 
 ## Global Snapshot
 

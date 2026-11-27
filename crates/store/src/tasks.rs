@@ -232,6 +232,8 @@ pub fn force_task_state(
 }
 
 /// Build the authoritative Task record: definition, current Delivery, and subtree counts.
+///
+/// The immutable result is attached only by the single-Task read in [`crate::reads`].
 pub fn build_record(conn: &Connection, row: &TaskRow) -> Result<TaskRecord, StoreError> {
     Ok(TaskRecord {
         id: row.id.clone(),
@@ -244,6 +246,8 @@ pub fn build_record(conn: &Connection, row: &TaskRow) -> Result<TaskRecord, Stor
         finished_at_ms: row.finished_at_ms,
         task: row.definition()?,
         current_delivery: deliveries::current_delivery(conn, &row.id)?,
+        result_markdown: None,
+        result_recorded_at_ms: None,
         subtree: reads::subtree_counts(conn, &row.id)?,
     })
 }

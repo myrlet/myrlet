@@ -65,10 +65,18 @@ fn dependency_ids(conn: &Connection, task_id: &TaskId) -> Result<Vec<TaskId>, St
     Ok(ids)
 }
 
-/// One authoritative Task record with its current Delivery, latest Progress, and subtree counts.
+/// One authoritative Task record with its current Delivery, latest Progress, immutable
+/// result, and subtree counts. Tree and Snapshot reads never attach the result.
 pub fn get_task(conn: &Connection, task_id: &TaskId) -> Result<TaskRecord, StoreError> {
     let row = load_task(conn, task_id)?;
-    build_record(conn, &row)
+    let mut record = build_record(conn, &row)?;
+    if let Some(delivery) = &record.current_delivery {
+        if let Some((text, recorded)) = crate::result::delivery_result(conn, &delivery.id)? {
+            record.result_markdown = Some(text);
+            record.result_recorded_at_ms = Some(recorded);
+        }
+    }
+    Ok(record)
 }
 
 /// Bounded ancestor or descendant traversal; there is no view-fingerprint cursor.

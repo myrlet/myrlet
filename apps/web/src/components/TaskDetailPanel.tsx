@@ -8,7 +8,7 @@
  * Progress or Delivery is stated explicitly instead of being guessed.
  */
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, Copy, Inbox, X } from "lucide-react";
 
@@ -21,6 +21,7 @@ import {
   formatTimestamp,
 } from "../format";
 import { TaskStatusBadge } from "./StatusBadge";
+const ResultMarkdown = lazy(() => import("./ResultMarkdown"));
 
 export interface TaskDetailPanelProps {
   readonly task: TaskRecord | null;
@@ -392,6 +393,35 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
             </span>
           </div>
           <p className="overview-progress-text">{progress.text}</p>
+        </section>
+      )}
+
+      {task.resultMarkdown === null ? null : (
+        <section className="detail-section" aria-label="Task result">
+          <div className="result-head">
+            <h3 className="detail-section-title">Result</h3>
+            <span className="header-spacer" />
+            {task.resultRecordedAtMs === null ? null : (
+              <span
+                className="result-recorded tabular"
+                title={`Recorded ${formatTimestamp(task.resultRecordedAtMs)}`}
+              >
+                Synced {formatRelativeTime(task.resultRecordedAtMs)}
+              </span>
+            )}
+            <button
+              type="button"
+              className="button button-sm button-ghost"
+              onClick={() => onCopyText("Result", task.resultMarkdown ?? "")}
+              title="Copy the result Markdown"
+            >
+              <Copy size={12} aria-hidden="true" />
+              <span>Copy</span>
+            </button>
+          </div>
+          <Suspense fallback={<pre>{task.resultMarkdown}</pre>}>
+            <ResultMarkdown markdown={task.resultMarkdown} />
+          </Suspense>
         </section>
       )}
 

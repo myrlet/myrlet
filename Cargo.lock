@@ -1010,6 +1010,7 @@ dependencies = [
  "async-trait",
  "libc",
  "myrlet-protocol",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

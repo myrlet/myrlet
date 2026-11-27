@@ -130,6 +130,7 @@ fn task(status: &str, version: u64, current: Value) -> Value {
         "createdAtMs":10,"updatedAtMs":20,"finishedAtMs":null,
         "task":{ "title":"Verify the build","prompt":"Run the test suite." },
         "currentDelivery":current,
+        "resultMarkdown":"# Findings\n\n- one","resultRecordedAtMs":45,
         "subtree":{"total":1,"held":1,"queued":0,"dispatched":0,"finished":0,"cancelled":0}
     })
 }
@@ -211,12 +212,16 @@ async fn create_show_dispatch_and_submit() {
     assert!(human.contains("Root: task_01"), "{human}");
     assert!(human.contains("FirstReceivedAtMs: 42"), "{human}");
     assert!(human.contains("hello progress"), "{human}");
+    assert!(human.contains("Result:"), "{human}");
+    assert!(human.contains("  # Findings"), "{human}");
     let (json_out, _) = ok(&["--json", "tasks", "show", "task_01"], &url).await;
     let show: Value = serde_json::from_str(&json_out).unwrap();
     assert_eq!(
         show["currentDelivery"]["progress"]["text"],
         "hello progress"
     );
+    assert_eq!(show["resultMarkdown"], "# Findings\n\n- one");
+    assert_eq!(show["resultRecordedAtMs"], 45);
     let _ = ok(
         &[
             "tasks",

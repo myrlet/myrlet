@@ -7,11 +7,12 @@ use std::time::Duration;
 use myrlet_protocol::delivery::CancelState;
 use myrlet_protocol::id::{DeliveryId, ExecutorId, SlotId, TaskId};
 use myrlet_protocol::progress::MAX_PROGRESS_FILE_BYTES;
+use myrlet_protocol::result::MAX_RESULT_BYTES;
 use myrlet_protocol::task::TaskDefinition;
 use myrlet_worker::adapter::ExecutorAdapter as _;
 use myrlet_worker::{
-    build_startup_prompt, read_progress_if_changed, HandlingEnded, HarnessCliAdapter, HarnessKind,
-    LocalDeliveryRecord, LocalRegistry, ProcessAdapter, SubmitRequest,
+    build_startup_prompt, read_progress_if_changed, read_result, HandlingEnded, HarnessCliAdapter,
+    HarnessKind, LocalDeliveryRecord, LocalRegistry, ProcessAdapter, SubmitRequest,
 };
 use tokio::sync::mpsc;
 
@@ -29,6 +30,7 @@ fn record(delivery: &str) -> LocalDeliveryRecord {
         TaskId::new("task_01"),
         SlotId::new("slot-1"),
         PathBuf::from("/tmp/progress.json"),
+        PathBuf::from("/tmp/result.md"),
     )
 }
 
@@ -40,6 +42,7 @@ fn submit_request(progress_path: &Path) -> SubmitRequest {
         delivery_id: DeliveryId::new("delivery_01"),
         task,
         progress_path: progress_path.to_path_buf(),
+        result_path: progress_path.with_extension("md"),
     }
 }
 
@@ -160,13 +163,58 @@ fn progress_watch_reports_only_valid_changes() {
 }
 
 #[test]
-fn startup_prompt_carries_only_identification_and_progress_path() {
+fn result_read_is_bounded_utf8_and_never_creates_the_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("results");
+    myrlet_protocol::ensure_private_dir(&dir).unwrap();
+    let path = dir.join("delivery_01.md");
+
+    assert!(
+        read_result(&path).is_none(),
+        "missing output is not a result"
+    );
+    assert!(
+        !path.exists(),
+        "the Worker must never create the result file"
+    );
+
+    myrlet_protocol::paths::write_private_file_atomic(&path, b"   \n").unwrap();
+    assert!(read_result(&path).is_none(), "blank output is no result");
+
+    myrlet_protocol::paths::write_private_file_atomic(&path, b"# Findings\n\n- one\n").unwrap();
+    assert_eq!(read_result(&path).as_deref(), Some("# Findings\n\n- one\n"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let link = dir.join("linked.md");
+        symlink(&path, &link).unwrap();
+        assert!(read_result(&link).is_none());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_result(&path).is_none());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    myrlet_protocol::paths::write_private_file_atomic(&path, &[0xff, 0xfe]).unwrap();
+    assert!(read_result(&path).is_none(), "invalid UTF-8 is ignored");
+
+    let oversized = vec![b'x'; MAX_RESULT_BYTES + 1];
+    myrlet_protocol::paths::write_private_file_atomic(&path, &oversized).unwrap();
+    assert!(read_result(&path).is_none(), "oversized is ignored");
+    assert!(
+        path.exists(),
+        "observing a result never removes the Harness file"
+    );
+}
+
+#[test]
+fn startup_prompt_carries_only_identification_progress_and_result_path() {
     let prompt = build_startup_prompt(&submit_request(Path::new(
         "/var/lib/myrlet/worker/progress/delivery_01.json",
     )));
     assert!(prompt.contains("Task ID: task_01"));
     assert!(prompt.contains("Delivery ID: delivery_01"));
     assert!(prompt.contains("/var/lib/myrlet/worker/progress/delivery_01.json"));
+    assert!(prompt.contains("/var/lib/myrlet/worker/progress/delivery_01.md"));
     assert!(prompt.contains("Run the test suite."));
     assert!(prompt.contains("{\"text\":\"...\"}"));
     let forbidden = [

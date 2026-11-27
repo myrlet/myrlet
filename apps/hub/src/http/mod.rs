@@ -54,6 +54,10 @@ pub fn build_router(state: HubState) -> Router {
             "/v1/worker/deliveries/:delivery_id/finish",
             post(reports::report_finish),
         )
+        .route(
+            "/v1/worker/deliveries/:delivery_id/result",
+            post(reports::report_result),
+        )
         .fallback(ui::serve_ui)
         .with_state(state)
 }

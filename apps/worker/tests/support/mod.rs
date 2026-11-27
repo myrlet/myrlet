@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
 use myrlet_protocol::{
-    DeliveryId, FinishReceipt, FinishReportRequest, ProgressReceipt, ProgressReportRequest, TaskId,
-    TaskStatus, WorkerId, WORKER_PROTOCOL_VERSION,
+    DeliveryId, FinishReceipt, FinishReportRequest, ProgressReceipt, ProgressReportRequest,
+    ResultReceipt, ResultReportRequest, TaskId, TaskStatus, WorkerId, WORKER_PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -38,6 +38,11 @@ pub enum Report {
     Finish {
         delivery_id: String,
         epoch: u64,
+    },
+    Result {
+        delivery_id: String,
+        epoch: u64,
+        text: String,
     },
 }
 
@@ -114,6 +119,7 @@ pub async fn start(stale_epoch: Option<u64>) -> StubHub {
             post(progress),
         )
         .route("/v1/worker/deliveries/:delivery_id/finish", post(finish))
+        .route("/v1/worker/deliveries/:delivery_id/result", post(result))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -233,6 +239,32 @@ async fn finish(
     (
         StatusCode::OK,
         Json(serde_json::to_value(receipt).expect("finish receipt json")),
+    )
+}
+
+async fn result(
+    State(state): State<HubState>,
+    Path(delivery_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ResultReportRequest>,
+) -> (StatusCode, Json<Value>) {
+    if !bearer_ok(&headers) {
+        return unauthorized();
+    }
+    let receipt = ResultReceipt {
+        delivery_id: DeliveryId::new(delivery_id.clone()),
+        task_id: TaskId::new("task_stub"),
+        recorded_at_ms: 3,
+        duplicate: false,
+    };
+    let _ = state.reports.send(Report::Result {
+        delivery_id,
+        epoch: body.epoch,
+        text: body.text,
+    });
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(receipt).expect("result receipt json")),
     )
 }
 

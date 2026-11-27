@@ -50,13 +50,14 @@ Harness Session, Thread, and Workspace identifiers are **Harness-private** and a
 3. **Five Task states, no verdict**: `held`, `queued`, `dispatched`, `finished`, `cancelled`. There is no `running`, `completed`, `failed`, or `uncertain` Task state. Hub never judges execution success or failure.
 4. **Progress is start evidence and latest-state only**: A Harness optionally writes one bounded local JSON Progress file; Worker relays it to Hub over HTTP. First accepted Progress is execution-start evidence. Progress is optional, latest-state only, never changes Task status, and carries no Result, Artifact, Tool Call, Plan, or Step model.
 5. **Finish means handling ended**: Worker reports `finished` over Hub HTTP when its local handling ends (even if no Progress was written). `cancelled` is never overwritten by a later finish report.
-6. **Non-invasive Harness integration**: Myrlet never modifies, forks, injects hooks/plugins/MCP servers into, or sandboxes a Harness, and never makes an extra LLM call to produce Progress.
-7. **Capacity is advisory**: Reported Slot capacity informs Owner selection only. Neither Hub nor Worker reserves Slots or rejects work based on capacity. Missing capacity is `null` (unknown), never `0`.
-8. **Idempotent Delivery, no silent retries**: Worker durably registers `deliveryId` before invoking an adapter; replay never double-submits. Business retries create a new `held` Task linked by `sourceTaskId`.
-9. **Uncertainty stays visible**: Disconnects, timeouts, and missing reports never prove process termination and never synthesize terminal outcomes.
-10. **Model-free control plane**: Hub, Worker, CLI, and core App require no LLM.
-11. **Minimal auth and fencing**: Control-plane mutations use constant-time SHA-256 bearer verification (`Admin` or `Worker`), `Idempotency-Key`, optimistic `expectedTaskVersion`, and monotonic WSS `connectionEpoch` fencing.
-12. **Code is a liability**: Keep the smallest responsibility, schema, and state space that satisfies these invariants.
+6. **Result is one optional final Markdown text**: A Harness may write one bounded Markdown file; the Worker syncs that final text once to the Delivery. Hub stores it **write-once** and serves it only in the authenticated Task detail. Result sync is independent of Finish, survives restarts, and carries no artifact, file, or verdict model.
+7. **Non-invasive Harness integration**: Myrlet never modifies, forks, injects hooks/plugins/MCP servers into, or sandboxes a Harness, and never makes an extra LLM call to produce Progress or a Result.
+8. **Capacity is advisory**: Reported Slot capacity informs Owner selection only. Neither Hub nor Worker reserves Slots or rejects work based on capacity. Missing capacity is `null` (unknown), never `0`.
+9. **Idempotent Delivery, no silent retries**: Worker durably registers `deliveryId` before invoking an adapter; replay never double-submits. Business retries create a new `held` Task linked by `sourceTaskId`.
+10. **Uncertainty stays visible**: Disconnects, timeouts, and missing reports never prove process termination and never synthesize terminal outcomes.
+11. **Model-free control plane**: Hub, Worker, CLI, and core App require no LLM.
+12. **Minimal auth and fencing**: Control-plane mutations use constant-time SHA-256 bearer verification (`Admin` or `Worker`), `Idempotency-Key`, optimistic `expectedTaskVersion`, and monotonic WSS `connectionEpoch` fencing.
+13. **Code is a liability**: Keep the smallest responsibility, schema, and state space that satisfies these invariants.
 
 ## Explicit V1 Non-Goals (Cut from Baseline)
 

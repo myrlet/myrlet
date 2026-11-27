@@ -208,6 +208,12 @@ pub struct TaskRecord {
     pub finished_at_ms: Option<i64>,
     pub task: TaskDefinition,
     pub current_delivery: Option<crate::delivery::DeliveryView>,
+    /// Immutable final Harness-written Markdown result, when the Worker synced one.
+    #[serde(default)]
+    pub result_markdown: Option<String>,
+    /// When Hub accepted the result; independent of `finished_at_ms`.
+    #[serde(default)]
+    pub result_recorded_at_ms: Option<i64>,
     pub subtree: SubtreeCounts,
 }
 

@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod process_group;
 pub mod progress_watch;
 pub mod registry;
+pub mod result_watch;
 
 pub use adapter::harness::{HarnessCliAdapter, HarnessKind};
 pub use adapter::process::ProcessAdapter;
@@ -15,6 +16,7 @@ pub use myrlet_protocol::inventory::HostFacts;
 pub use myrlet_protocol::WORKER_PROTOCOL_VERSION;
 pub use progress_watch::{read_progress_if_changed, ObservedProgress};
 pub use registry::{LocalDeliveryRecord, LocalRegistry, RegistryError};
+pub use result_watch::read_result;
 
 /// Basic Host facts only: OS, architecture, and whether the Worker runs in a container.
 /// Worker Core never probes, installs, or manages toolchains or Harness binaries.

@@ -4,8 +4,9 @@ use std::collections::HashMap;
 
 use myrlet_protocol::{
     CancelTaskRequest, DeliveryStatus, DeliveryView, DispatchTaskRequest, FinishReportRequest,
-    FinishTaskRequest, PairWorkerRequest, ProgressReportRequest, TaskBundleImportRequest,
-    TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection, WorkerId, WorkerInventory,
+    FinishTaskRequest, PairWorkerRequest, ProgressReportRequest, ResultReportRequest,
+    TaskBundleImportRequest, TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection,
+    WorkerId, WorkerInventory,
 };
 use myrlet_store::{DeliveryTarget, DispatchIdempotency, HubStore, StoreError};
 
@@ -51,6 +52,10 @@ fn progress(epoch: u64, observed_at_ms: i64, text: &str) -> ProgressReportReques
 
 fn finish(epoch: u64) -> FinishReportRequest {
     serde_json::from_value(serde_json::json!({ "epoch": epoch })).unwrap()
+}
+
+fn result(epoch: u64, text: &str) -> ResultReportRequest {
+    serde_json::from_value(serde_json::json!({ "epoch": epoch, "text": text })).unwrap()
 }
 
 fn inventory() -> WorkerInventory {
@@ -537,6 +542,121 @@ async fn finish_without_progress_and_cancel_is_never_overwritten() {
     assert_eq!(
         store.get_task(cancelled.id).await.unwrap().status,
         TaskStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn result_is_write_once_epoch_fenced_and_independent_of_finish() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let (record, delivery) = dispatched(&store, epoch, definition("r"), "r").await;
+    assert!(store
+        .get_task(record.id.clone())
+        .await
+        .unwrap()
+        .result_markdown
+        .is_none());
+
+    // A result requires an accepted Delivery; an untouched offer is fenced out.
+    let early = store
+        .record_result(worker(), delivery.id.clone(), result(epoch, "too soon"), T0)
+        .await;
+    assert!(matches!(early, Err(StoreError::StaleDelivery)));
+    store
+        .record_progress(worker(), delivery.id.clone(), progress(epoch, 10, "go"), T0)
+        .await
+        .unwrap();
+    let (receipt, event) = store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch, "# Findings"),
+            T0 + 1,
+        )
+        .await
+        .unwrap();
+    assert!(!receipt.duplicate);
+    assert_eq!(event.unwrap().kind, "delivery.result");
+
+    let replay = store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch, "# Findings"),
+            T0 + 2,
+        )
+        .await
+        .unwrap()
+        .0;
+    assert!(replay.duplicate);
+    let changed = store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch, "# Other"),
+            T0 + 3,
+        )
+        .await;
+    assert!(matches!(changed, Err(StoreError::InvalidTransition)));
+
+    let detail = store.get_task(record.id.clone()).await.unwrap();
+    assert_eq!(detail.result_markdown.as_deref(), Some("# Findings"));
+    assert_eq!(detail.result_recorded_at_ms, Some(T0 + 1));
+    assert_eq!(
+        detail.status,
+        TaskStatus::Dispatched,
+        "result is not a verdict"
+    );
+
+    // Finish does not erase the result; a lost-result replay after finish still lands.
+    store
+        .record_finish(worker(), delivery.id.clone(), finish(epoch), T0 + 4)
+        .await
+        .unwrap();
+    let (record2, delivery2) = dispatched(&store, epoch, definition("late"), "late").await;
+    store
+        .record_finish(worker(), delivery2.id.clone(), finish(epoch), T0 + 5)
+        .await
+        .unwrap();
+    let after_finish = store
+        .record_result(
+            worker(),
+            delivery2.id.clone(),
+            result(epoch, "late"),
+            T0 + 6,
+        )
+        .await;
+    assert!(after_finish.is_ok());
+    let finished = store.get_task(record2.id).await.unwrap();
+    assert_eq!(finished.status, TaskStatus::Finished);
+    assert_eq!(finished.result_markdown.as_deref(), Some("late"));
+
+    let stale = store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch + 1, "x"),
+            T0 + 7,
+        )
+        .await;
+    assert!(matches!(stale, Err(StoreError::StaleDelivery)));
+    let other_worker = store
+        .record_result(
+            WorkerId::new("wkr_ZZZZZZZZZZZZ"),
+            delivery.id.clone(),
+            result(epoch, "x"),
+            T0 + 8,
+        )
+        .await;
+    assert!(matches!(other_worker, Err(StoreError::Unauthorized)));
+    assert_eq!(
+        store
+            .get_task(detail.id)
+            .await
+            .unwrap()
+            .result_markdown
+            .as_deref(),
+        Some("# Findings")
     );
 }
 

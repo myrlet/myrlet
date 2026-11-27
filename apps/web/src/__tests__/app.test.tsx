@@ -202,6 +202,8 @@ function taskRecord(summary: SnapshotTaskSummary): TaskRecord {
     updatedAtMs: summary.updatedAtMs,
     finishedAtMs: summary.finishedAtMs,
     currentDelivery: summary.currentDelivery,
+    resultMarkdown: null,
+    resultRecordedAtMs: null,
     subtree: summary.subtree,
     task: {
       clientRef: null,
@@ -717,6 +719,69 @@ describe("App workspace flow", () => {
     expect(
       document.querySelector('.view-body [aria-label="Dispatch Run tests"]'),
     ).toBeNull();
+  });
+
+  it("renders the immutable Markdown result safely in Task Detail", async () => {
+    const result =
+      "# Findings\n\n- one\n- two\n\n| Item | State |\n| --- | --- |\n| Build | ok |\n\n" +
+      "```sh\ncargo test\n```\n\nSee [the PR](https://example.test/pr/1).\n\n" +
+      '<script>alert("x")</script>\n\n![chart](https://example.test/chart.png)\n';
+    stubFetch((url) => {
+      const path = url.replace(/^https?:\/\/[^/]+/, "");
+      if (path.startsWith("/v1/events")) {
+        return idleEventStream();
+      }
+      if (path.startsWith("/v1/snapshot")) {
+        return jsonResponse(buildSnapshot());
+      }
+      if (path.startsWith("/v1/workers")) {
+        return jsonResponse({ workers: [workerRecord()] });
+      }
+      const [pathname] = path.split("?");
+      const match = /^\/v1\/tasks\/([^/]+)(\/tree)?$/.exec(pathname);
+      const id = match === null ? "t1" : decodeURIComponent(match[1]);
+      const summary = buildSnapshot().tasks.find((task) => task.id === id);
+      if (summary === undefined) {
+        return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
+      }
+      if (match !== null && match[2] !== undefined) {
+        return jsonResponse({
+          rootTaskId: summary.rootTaskId,
+          tasks: [taskRecord(summary)],
+          truncated: false,
+        });
+      }
+      return jsonResponse({
+        ...taskRecord(summary),
+        resultMarkdown: result,
+        resultRecordedAtMs: 1_700_000_000_600,
+      });
+    });
+
+    await connectWorkspace();
+    fireEvent.click(document.querySelector('.atlas-node[data-task-id="t3"]') as HTMLElement);
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane .result-markdown")).not.toBeNull();
+    });
+
+    const pane = document.querySelector(".detail-pane") as HTMLElement;
+    const markdown = pane.querySelector(".result-markdown") as HTMLElement;
+    expect(within(markdown).getByRole("heading", { name: "Findings" })).toBeInTheDocument();
+    expect(markdown.querySelectorAll("li")).toHaveLength(2);
+    expect(markdown.querySelector("table")).not.toBeNull();
+    expect(markdown.querySelector("pre code")?.textContent).toContain("cargo test");
+
+    const link = within(markdown).getByRole("link", { name: /the pr/i });
+    expect(link).toHaveAttribute("href", "https://example.test/pr/1");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel") ?? "").toMatch(/noopener/);
+
+    // No raw HTML, no remotely loaded image: markdown shows the alt text instead.
+    expect(markdown.querySelector("script")).toBeNull();
+    expect(markdown.querySelector("img")).toBeNull();
+    expect(markdown.textContent ?? "").not.toContain("alert(\"x\")");
+    expect(markdown.textContent ?? "").toContain("[image: chart]");
+    expect(pane.textContent ?? "").toMatch(/Synced|Recorded/);
   });
 
   it("never renders a native select in the gate, workspace, or Workers drawer", async () => {

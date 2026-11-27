@@ -4,7 +4,7 @@ Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/
 
 **Channel split:**
 - **WSS** carries handshake, heartbeats, inventory updates, Delivery offers, pre-registration rejections, cancellation commands/responses, and reconnect resync.
-- **Hub HTTP** carries Harness-authored **Progress** (`POST /v1/worker/deliveries/{id}/progress`) and Worker-reported **Finish** (`POST /v1/worker/deliveries/{id}/finish`).
+- **Hub HTTP** carries Harness-authored **Progress** (`POST /v1/worker/deliveries/{id}/progress`), the optional final Harness-written **Result** (`POST /v1/worker/deliveries/{id}/result`), and Worker-reported **Finish** (`POST /v1/worker/deliveries/{id}/finish`).
 - **CLI (`myrlet`)** is the **only** supported channel for a Harness to inspect or operate on Myrlet Tasks. Harnesses never connect to Worker WSS or Hub internals directly.
 
 ## Worker Topology, Enrollment, and Inventory
@@ -70,6 +70,7 @@ Hub commits offered Delivery ─> sends task.offer
   └─> Worker: Receive ─> Validate ─┬─ Missing local prerequisite ─> persist refusal ─> send task.rejected (Task ─> held)
                                    └─ Ready ─> Register locally ─> Adapter.submit()
                                                  ├─ Watch local Progress file ─> HTTP POST /progress (first accepted ─> accepted/started)
+                                                 ├─ Read final local Markdown at end ─> HTTP POST /result (once, also after finish)
                                                  └─ Observe end of handling ─> HTTP POST /finish (Task ─> finished)
 ```
 
@@ -77,7 +78,7 @@ Hub commits offered Delivery ─> sends task.offer
 - **Worker never reruns Hub policy**: Worker checks only authenticated epoch, immutable `deliveryId`, recovery readiness, and presence of the configured Adapter—never capacity or Hub capability matching.
 - **No duplicate execution**: Worker durably writes `deliveryId` to its local registry **before** invoking `Adapter.submit()`. Duplicate `task.offer` frames for an existing `deliveryId` are ignored.
 - **Post-registration failure stays unreported**: A local submission/start failure *after* durable registration leaves the Task `dispatched`; Worker never fabricates a failure verdict or silently requeues/resubmits.
-- **Restart & reconnect**: Worker loads its local registry before resyncing, waits for a valid non-zero `connectionEpoch` from `hub.welcome`, sends `worker.resync`, and flushes unacknowledged HTTP Progress/Finish (guarded against concurrent duplicate finish posts) and WSS cancel reports. It never blindly resubmits.
+- **Restart & reconnect**: Worker loads its local registry before resyncing, waits for a valid non-zero `connectionEpoch` from `hub.welcome`, sends `worker.resync`, and flushes unacknowledged HTTP Progress/Result/Finish (guarded against concurrent duplicate finish posts) and WSS cancel reports. It never blindly resubmits.
 - **No `offer_acceptance_overdue` timer fencing**: Because Progress is optional, Hub must never fence an `offered` Delivery merely because no Progress arrived within a timeout.
 - **Delivery states**: `offered`, `accepted` (first Progress accepted), `rejected`, `released`, `finished`, `cancelled`.
 
@@ -89,11 +90,13 @@ Adapters are thin, non-invasive bridges over existing Harness interfaces (prefer
 - **Explicitly forbidden on the generic Adapter trait**: `capabilities()`, `validate()`, `inspect()`, `reconcile()`, `reattach()`, `resume_execution()`, and interactive `input()` / `steer()` / `follow_up()`. Capability differences stay honest and unsupported fields remain absent.
 - **Short startup prompt**: Worker passes only minimal Task identification (`taskId` / `deliveryId` / prompt) and the Progress file path (`<worker>/progress/<delivery_id>.json`). Harnesses fetch extra Task context via the `myrlet` CLI when needed.
 - **Progress file ownership**: Worker creates the `progress/` directory and **never** creates, writes, or edits the Progress file itself. The Harness optionally writes bounded JSON (`{ "text": "..." }`, unknown fields ignored, max 64 KiB file / 16 KiB text); Worker watches changes and relays them via Hub HTTP. Never make an extra LLM call to generate Progress.
+
+- **Result file ownership**: Worker creates the `results/` directory and **never** creates, writes, or edits `<delivery_id>.md`. The Harness optionally writes one UTF-8 Markdown result (max 64 KiB); when local handling ends, the Worker reads it **once**, persists the text in its local Delivery record, and posts it to Hub HTTP. Result sync is independent of Progress and Finish: it runs even after the Finish ACK, retries across reconnects and Worker restarts with the identical text (Hub accepts identical replays), and never invokes the Harness again. A missing, empty, oversized, invalid-UTF-8, symlinked, or group/world-accessible result file is ignored, never replaced.
 - **Zero intrusion**: Never patch/fork a Harness, inject hooks/extensions/MCP servers, rewrite repo files (`AGENTS.md`, `CLAUDE.md`, `.mcp.json`), or manage Harness Sessions, Workspaces, or Provider Credentials.
 - **End detection & cancellation**: Worker detects end of handling locally (e.g., child process exit or backend turn-end) and posts HTTP `/finish` without judging success or failure. `cancel(execution_ref)` signals the process group / native interrupt and relays what the backend answered without claiming physical termination of external side effects.
 - **Tool Call & Execution Summary**: Outside V1 baseline; never required for Progress or finish.
 
 ## Worker Local State and Shutdown
 
-- Worker uses **one lightweight local store** under `MYRLET_HOME/worker/state/` (atomic per-Delivery JSON files + small `inventory.json`, never two separate storage engines) for Delivery correlation, pending finish/cancel intent, and inventory revision.
+- Worker uses **one lightweight local store** under `MYRLET_HOME/worker/state/` (atomic per-Delivery JSON files + small `inventory.json`, never two separate storage engines) for Delivery correlation, pending finish/cancel/result intent, and inventory revision.
 - On `SIGTERM` / `SIGINT`, Worker closes WSS, stops admitting offers, drains active work up to `MYRLET_WORKER_SHUTDOWN_TIMEOUT_MS` (default 30s), reaps owned Unix process groups where applicable, and exits without fabricating `finished` reports.
