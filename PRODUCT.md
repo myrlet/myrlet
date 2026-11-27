@@ -11,6 +11,8 @@ Myrlet is a self-hosted, single-Hub Task Broker connecting developers, operators
 
 ## Product Principles
 
+An agent should be able to discover each supported operation, see who acts on it, and inspect the facts that explain its outcome. When work is blocked, expose the reason and the actions available to the caller. Decisions to relax requirements, change dependencies, or retry work belong to the agent. See the [proposed agent workflow](docs/design/agent-workflow.md).
+
 1. **Preserve authority and truth**: Task coordination state (`held`, `queued`, `dispatched`, `finished`, `cancelled`), Delivery handoff state, and Harness-authored Progress stay distinct. Never display `finished` as success or `cancelled` as system failure.
 2. **Make uncertainty visible**: Offline Workers, missing Progress, and stale reports are shown explicitly—never fabricated as zeros, running states, or outcomes.
 3. **Calm, dense, native UI**: Use the Porcelain (light) and Graphite (dark) palettes, lavender accent, system typography, restrained motion, and text+shape status labels accessible without color.
