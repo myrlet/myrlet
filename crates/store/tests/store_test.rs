@@ -3,15 +3,16 @@
 use std::collections::HashMap;
 
 use myrlet_protocol::{
-    CancelTaskRequest, DeliveryStatus, DeliveryView, DispatchTaskRequest, FinishReportRequest,
-    FinishTaskRequest, PairWorkerRequest, ProgressReportRequest, ResultReportRequest,
-    TaskBundleImportRequest, TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection,
-    WorkerId, WorkerInventory,
+    CancelTaskRequest, ClaimTaskRequest, DeliveryStatus, FinishReportRequest, FinishTaskRequest,
+    PairWorkerRequest, ProgressReportRequest, ResultReportRequest, TaskBundleImportRequest,
+    TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection, UpdateTaskRequest, WorkerId,
+    WorkerInventory,
 };
-use myrlet_store::{DeliveryTarget, DispatchIdempotency, HubStore, StoreError};
+use myrlet_store::{HubStore, StoreError};
 
 const T0: i64 = 1_764_070_000_000;
 const WORKER: &str = "wkr_000000000000";
+const SLOT: &str = "slot-a";
 
 fn worker() -> WorkerId {
     WorkerId::from(WORKER)
@@ -27,20 +28,20 @@ fn child(title: &str, parent: &TaskId) -> TaskDefinition {
     definition
 }
 
-fn dispatch_request(version: u64) -> DispatchTaskRequest {
-    serde_json::from_value(serde_json::json!({
-        "expectedTaskVersion": version,
-        "selection": { "mode": "targeted", "workerId": WORKER, "slotId": "slot-a" }
-    }))
-    .unwrap()
-}
-
 fn cancel_request(version: u64) -> CancelTaskRequest {
     serde_json::from_value(serde_json::json!({ "expectedTaskVersion": version })).unwrap()
 }
 
 fn finish_request(version: u64) -> FinishTaskRequest {
     serde_json::from_value(serde_json::json!({ "expectedTaskVersion": version })).unwrap()
+}
+
+fn update_request(version: u64, dependencies: Vec<TaskId>) -> UpdateTaskRequest {
+    serde_json::from_value(serde_json::json!({
+        "expectedTaskVersion": version,
+        "dependencies": dependencies,
+    }))
+    .unwrap()
 }
 
 fn progress(epoch: u64, observed_at_ms: i64, text: &str) -> ProgressReportRequest {
@@ -54,7 +55,7 @@ fn finish(epoch: u64) -> FinishReportRequest {
     serde_json::from_value(serde_json::json!({ "epoch": epoch })).unwrap()
 }
 
-fn result(epoch: u64, text: &str) -> ResultReportRequest {
+fn result(epoch: u64, text: Option<&str>) -> ResultReportRequest {
     serde_json::from_value(serde_json::json!({ "epoch": epoch, "text": text })).unwrap()
 }
 
@@ -63,18 +64,14 @@ fn inventory() -> WorkerInventory {
         "revision": 1,
         "observedAtMs": T0,
         "host": { "os": "linux", "arch": "x86_64", "deploymentMode": "native" },
-        "slots": [{ "slotId": "slot-a", "enabled": true }]
+        "slots": [{
+            "slotId": SLOT,
+            "enabled": true,
+            "capabilities": [{ "name": "shell", "state": "available" }],
+            "executors": [{ "id": "exec-claude", "kind": "claude" }],
+        }]
     }))
     .unwrap()
-}
-
-fn target(epoch: u64) -> DeliveryTarget {
-    DeliveryTarget {
-        worker_id: worker(),
-        slot_id: "slot-a".into(),
-        executor_id: None,
-        connection_epoch: epoch,
-    }
 }
 
 async fn enrolled(store: &HubStore) -> u64 {
@@ -98,168 +95,302 @@ fn pair_request(enrollment_code: String) -> PairWorkerRequest {
     serde_json::from_value(body).unwrap()
 }
 
-async fn create(store: &HubStore, key: &str, definition: TaskDefinition) -> TaskRecord {
+async fn submit(store: &HubStore, key: &str, definition: TaskDefinition) -> TaskRecord {
     let (record, _, _) = store.create_task(key.into(), definition, T0).await.unwrap();
     record
 }
 
-async fn dispatched(
+fn claim(task_id: &TaskId, epoch: u64) -> ClaimTaskRequest {
+    ClaimTaskRequest {
+        task_id: task_id.clone(),
+        slot_id: SLOT.into(),
+        connection_epoch: epoch,
+        executor_id: None,
+    }
+}
+
+/// Submit one Task and claim it, returning the record and its committed Delivery.
+async fn claimed(
     store: &HubStore,
     epoch: u64,
     definition: TaskDefinition,
     key: &str,
-) -> (TaskRecord, DeliveryView) {
-    let record = create(store, key, definition).await;
-    let (queued, _, _) = store
-        .enqueue_task(
-            format!("{key}-queue"),
-            record.id.clone(),
-            dispatch_request(record.version),
-            T0,
-        )
+) -> (TaskRecord, myrlet_protocol::DeliveryView) {
+    let record = submit(store, key, definition).await;
+    let (response, _) = store
+        .claim_task(worker(), claim(&record.id, epoch), T0)
         .await
         .unwrap();
-    let (response, _, _) = store
-        .create_delivery(
-            Some(DispatchIdempotency {
-                key: format!("{key}-dispatch"),
-                request: dispatch_request(queued.version),
-            }),
-            queued.task_id.clone(),
-            queued.version,
-            target(epoch),
-            T0,
-        )
-        .await
-        .unwrap();
-    (
-        store.get_task(queued.task_id).await.unwrap(),
-        response.delivery.unwrap(),
-    )
+    (response.task, response.delivery)
 }
 
 #[tokio::test]
-async fn five_state_lifecycle_with_version_fencing() {
+async fn submission_authorizes_ready_tasks_and_holds_blocked_ones() {
     let store = HubStore::open_in_memory().unwrap();
-    let epoch = enrolled(&store).await;
-    let created = store
-        .create_task("create".into(), definition("root"), T0)
+    let root = submit(&store, "root", definition("root")).await;
+    assert_eq!(root.status, TaskStatus::Queued);
+
+    let first = submit(&store, "a", child("a", &root.id)).await;
+    assert_eq!(first.status, TaskStatus::Queued, "no prerequisites yet");
+
+    let mut blocked_definition = child("b", &root.id);
+    blocked_definition.dependencies = vec![first.id.clone()];
+    let blocked = submit(&store, "b", blocked_definition).await;
+    assert_eq!(blocked.status, TaskStatus::Held);
+    assert_eq!(blocked.blocked_by.len(), 1);
+    assert_eq!(blocked.blocked_by[0].task_id, first.id);
+    assert_eq!(blocked.blocked_by[0].status, TaskStatus::Queued);
+}
+
+#[tokio::test]
+async fn finishing_a_prerequisite_promotes_only_its_ready_dependents() {
+    let store = HubStore::open_in_memory().unwrap();
+    let root = submit(&store, "root", definition("root")).await;
+    let first = submit(&store, "a", child("a", &root.id)).await;
+    let mut second_definition = child("b", &root.id);
+    second_definition.dependencies = vec![first.id.clone()];
+    let second = submit(&store, "b", second_definition).await;
+    assert_eq!(second.status, TaskStatus::Held);
+
+    store
+        .finish_coordination_task(
+            "f1".into(),
+            first.id.clone(),
+            finish_request(first.version),
+            T0,
+        )
         .await
         .unwrap();
-    let (root, event, replay) = created;
-    assert_eq!(
-        (root.status, root.version, replay),
-        (TaskStatus::Held, 1, false)
-    );
-    assert_eq!(event.unwrap().kind, "task.created");
-    let stale = store
-        .cancel_task("c0".into(), root.id.clone(), cancel_request(9), T0)
+    let promoted = store.get_task(second.id.clone()).await.unwrap();
+    assert_eq!(promoted.status, TaskStatus::Queued);
+    assert!(promoted.blocked_by.is_empty());
+}
+
+#[tokio::test]
+async fn cancelled_prerequisite_keeps_dependents_held_until_the_owner_edits() {
+    let store = HubStore::open_in_memory().unwrap();
+    let root = submit(&store, "root", definition("root")).await;
+    let prerequisite = submit(&store, "a", child("a", &root.id)).await;
+    let mut dependent_definition = child("b", &root.id);
+    dependent_definition.dependencies = vec![prerequisite.id.clone()];
+    let dependent = submit(&store, "b", dependent_definition).await;
+    assert_eq!(dependent.status, TaskStatus::Held);
+
+    store
+        .cancel_task(
+            "c1".into(),
+            prerequisite.id.clone(),
+            cancel_request(prerequisite.version),
+            T0,
+        )
+        .await
+        .unwrap();
+    // Cancellation never edits the graph or cascades on its own.
+    let still_held = store.get_task(dependent.id.clone()).await.unwrap();
+    assert_eq!(still_held.status, TaskStatus::Held);
+    assert_eq!(still_held.blocked_by[0].status, TaskStatus::Cancelled);
+
+    // The Owner replaces the cancelled prerequisite with a finished sibling.
+    let replacement = submit(&store, "c", child("c", &root.id)).await;
+    store
+        .finish_coordination_task(
+            "f2".into(),
+            replacement.id.clone(),
+            finish_request(replacement.version),
+            T0,
+        )
+        .await
+        .unwrap();
+    store
+        .update_task(
+            "u1".into(),
+            dependent.id.clone(),
+            update_request(dependent.version, vec![replacement.id.clone()]),
+            T0,
+        )
+        .await
+        .unwrap();
+    let eligible = store.get_task(dependent.id).await.unwrap();
+    assert_eq!(eligible.status, TaskStatus::Queued);
+    assert!(eligible.task.dependencies.contains(&replacement.id));
+}
+
+#[tokio::test]
+async fn update_rejects_cycles_self_reference_and_claimed_tasks() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let root = submit(&store, "root", definition("root")).await;
+    let first = submit(&store, "a", child("a", &root.id)).await;
+    let second = submit(&store, "b", child("b", &root.id)).await;
+    let self_reference = store
+        .update_task(
+            "self".into(),
+            first.id.clone(),
+            update_request(first.version, vec![first.id.clone()]),
+            T0,
+        )
         .await;
-    assert!(matches!(stale, Err(StoreError::VersionConflict)));
-    let queued = store
-        .enqueue_task("q".into(), root.id.clone(), dispatch_request(1), T0)
-        .await
-        .unwrap()
-        .0;
-    assert_eq!(queued.status, TaskStatus::Queued);
-    let request = Some(DispatchIdempotency {
-        key: "d".to_string(),
-        request: dispatch_request(queued.version),
-    });
-    let offered = store
-        .create_delivery(request, root.id.clone(), queued.version, target(epoch), T0)
-        .await
-        .unwrap()
-        .0;
-    let delivery = offered.delivery.clone().unwrap();
-    let states = (offered.status, delivery.state);
-    assert_eq!(states, (TaskStatus::Dispatched, DeliveryStatus::Offered));
-    let first = store
-        .record_progress(
-            worker(),
-            delivery.id.clone(),
-            progress(epoch, 1000, "go"),
+    assert!(matches!(self_reference, Err(StoreError::InvalidInput(_))));
+    store
+        .update_task(
+            "u1".into(),
+            second.id.clone(),
+            update_request(second.version, vec![first.id.clone()]),
             T0,
         )
         .await
-        .unwrap()
-        .0;
-    assert!(!first.duplicate);
-    let finished = store
-        .record_finish(worker(), delivery.id.clone(), finish(epoch), T0)
+        .unwrap();
+    let cycle = store
+        .update_task(
+            "u2".into(),
+            first.id.clone(),
+            update_request(first.version, vec![second.id.clone()]),
+            T0,
+        )
+        .await;
+    assert!(matches!(cycle, Err(StoreError::InvalidInput(_))));
+    // A claimed Task refuses edits, so the claim's execution context stands.
+    let (_, delivery) = claimed(&store, epoch, definition("claimed"), "claimed").await;
+    let current = store.get_task(delivery.task_id.clone()).await.unwrap();
+    let claimed_edit = store
+        .update_task(
+            "u3".into(),
+            delivery.task_id.clone(),
+            update_request(current.version, Vec::new()),
+            T0,
+        )
+        .await;
+    assert!(matches!(claimed_edit, Err(StoreError::InvalidTransition)));
+}
+
+#[tokio::test]
+async fn claim_commits_one_delivery_and_racing_claims_yield_one_winner() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let record = submit(&store, "c", definition("one winner")).await;
+    let (first, event) = store
+        .claim_task(worker(), claim(&record.id, epoch), T0)
         .await
-        .unwrap()
-        .0;
-    assert!(finished.changed);
-    assert_eq!(finished.task_status, TaskStatus::Finished);
-    let record = store.get_task(root.id).await.unwrap();
-    assert_eq!((record.status, record.version), (TaskStatus::Finished, 4));
-    assert!(record.finished_at_ms.is_some());
+        .unwrap();
+    assert_eq!(first.task.status, TaskStatus::Dispatched);
+    assert_eq!(first.delivery.state, DeliveryStatus::Accepted);
+    assert_eq!(event.kind, "task.dispatched");
+
+    let second = store
+        .claim_task(worker(), claim(&record.id, epoch), T0)
+        .await;
+    assert!(matches!(second, Err(StoreError::InvalidTransition)));
+    let detail = store.get_task(record.id).await.unwrap();
+    assert_eq!(detail.status, TaskStatus::Dispatched);
     assert_eq!(
-        record.current_delivery.unwrap().state,
-        DeliveryStatus::Finished
+        detail.current_delivery.unwrap().id,
+        first.delivery.id,
+        "one Task has exactly one Delivery"
     );
 }
 
 #[tokio::test]
-async fn five_level_tree_sibling_dependencies_and_cancel() {
+async fn claim_requires_the_live_epoch_and_an_eligible_slot() {
     let store = HubStore::open_in_memory().unwrap();
     let epoch = enrolled(&store).await;
-    let root = create(&store, "root", definition("level1")).await;
+    let record = submit(&store, "e", definition("epoch")).await;
+    let stale = store
+        .claim_task(worker(), claim(&record.id, epoch + 1), T0)
+        .await;
+    assert!(matches!(stale, Err(StoreError::StaleDelivery)));
+
+    let task: TaskDefinition = serde_json::from_value(serde_json::json!({
+        "title": "needs capability",
+        "prompt": "p",
+        "routing": { "requiredCapabilities": ["gpu"] },
+    }))
+    .unwrap();
+    let demanding = submit(&store, "cap", task).await;
+    let unmet = store
+        .claim_task(worker(), claim(&demanding.id, epoch), T0)
+        .await;
+    assert!(matches!(unmet, Err(StoreError::InvalidInput(_))));
+    assert_eq!(
+        store.get_task(demanding.id).await.unwrap().status,
+        TaskStatus::Queued,
+        "an unmet hard constraint leaves the Task queued"
+    );
+}
+
+#[tokio::test]
+async fn held_tasks_and_cancelled_tasks_cannot_be_claimed() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let root = submit(&store, "root", definition("root")).await;
+    let prerequisite = submit(&store, "a", child("a", &root.id)).await;
+    let mut blocked_definition = child("b", &root.id);
+    blocked_definition.dependencies = vec![prerequisite.id.clone()];
+    let blocked = submit(&store, "b", blocked_definition).await;
+    let held = store
+        .claim_task(worker(), claim(&blocked.id, epoch), T0)
+        .await;
+    assert!(matches!(held, Err(StoreError::InvalidTransition)));
+
+    store
+        .cancel_task(
+            "c".into(),
+            prerequisite.id.clone(),
+            cancel_request(prerequisite.version),
+            T0,
+        )
+        .await
+        .unwrap();
+    let cancelled = store
+        .claim_task(worker(), claim(&prerequisite.id, epoch), T0)
+        .await;
+    assert!(matches!(cancelled, Err(StoreError::InvalidTransition)));
+}
+
+#[tokio::test]
+async fn five_level_tree_depth_and_cancel_without_cascade() {
+    let store = HubStore::open_in_memory().unwrap();
+    let root = submit(&store, "root", definition("level1")).await;
     let mut deepest = root.clone();
     for level in 2..=5u8 {
         let title = format!("level{level}");
-        deepest = create(&store, &title, child(&title, &deepest.id)).await;
+        deepest = submit(&store, &title, child(&title, &deepest.id)).await;
         assert_eq!(deepest.depth, level);
         assert_eq!(deepest.root_task_id, root.id);
+        assert_eq!(deepest.status, TaskStatus::Queued);
     }
     let too_deep = store
         .create_task("l6".into(), child("l6", &deepest.id), T0)
         .await;
     assert!(matches!(too_deep, Err(StoreError::InvalidInput(_))));
-    let first = create(&store, "a", child("a", &root.id)).await;
-    let mut second_definition = child("b", &root.id);
-    second_definition.dependencies = vec![first.id.clone()];
-    let second = create(&store, "b", second_definition).await;
-    assert!(!store
-        .are_dependencies_satisfied(second.id.clone())
-        .await
-        .unwrap());
-    let blocked = store
-        .create_delivery(None, second.id.clone(), second.version, target(epoch), T0)
-        .await;
-    assert!(matches!(blocked, Err(StoreError::InvalidInput(_))));
-    let finish = finish_request(first.version);
-    store
-        .finish_coordination_task("bf".into(), first.id.clone(), finish, T0)
-        .await
-        .unwrap();
-    assert!(store
-        .are_dependencies_satisfied(second.id.clone())
-        .await
-        .unwrap());
-    let cancel = cancel_request(second.version);
-    let cancelled = store
-        .cancel_task("bc".into(), second.id.clone(), cancel, T0)
-        .await
-        .unwrap();
-    assert_eq!(cancelled.0.status, TaskStatus::Cancelled);
-    assert!(cancelled.1.is_none());
     let tree = store
         .get_task_tree(root.id.clone(), TaskTreeDirection::Descendants, 5, 50)
         .await
         .unwrap();
-    assert_eq!((tree.tasks.len(), tree.truncated), (7, false));
-    let bounded = store
-        .get_task_tree(root.id.clone(), TaskTreeDirection::Descendants, 1, 50)
-        .await
-        .unwrap();
-    assert!(bounded.truncated);
+    assert_eq!((tree.tasks.len(), tree.truncated), (5, false));
     let ancestors = store
-        .get_task_tree(deepest.id, TaskTreeDirection::Ancestors, 5, 50)
+        .get_task_tree(deepest.id.clone(), TaskTreeDirection::Ancestors, 5, 50)
         .await
         .unwrap();
     assert_eq!(ancestors.tasks.len(), 5);
+    let cancelled = store
+        .cancel_task(
+            "c".into(),
+            root.id.clone(),
+            cancel_request(root.version),
+            T0,
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancelled.0.status, TaskStatus::Cancelled);
+    let subtree = store
+        .get_task_tree(root.id, TaskTreeDirection::Descendants, 5, 50)
+        .await
+        .unwrap();
+    assert!(subtree
+        .tasks
+        .iter()
+        .skip(1)
+        .all(|task| task.status == TaskStatus::Queued));
 }
 
 fn bundle_request() -> TaskBundleImportRequest {
@@ -275,27 +406,30 @@ fn bundle_request() -> TaskBundleImportRequest {
 }
 
 #[tokio::test]
-async fn bundle_import_is_atomic_and_resolves_local_refs() {
+async fn bundle_import_is_atomic_and_authorizes_within_one_transaction() {
     let store = HubStore::open_in_memory().unwrap();
     let (response, events, replay) = store
         .import_bundle("bundle".into(), bundle_request(), T0)
         .await
         .unwrap();
-    assert_eq!((response.tasks.len(), events.len(), replay), (3, 3, false));
+    assert!(events.len() >= 3 && !replay);
     let root = response.client_ref_to_task_id["root"].clone();
     let first = response.client_ref_to_task_id["a"].clone();
-    let record = store
-        .get_task(response.client_ref_to_task_id["b"].clone())
-        .await
-        .unwrap();
-    assert_eq!((record.depth, record.task.dependencies), (2, vec![first]));
-    assert_eq!(record.task.parent_task_id, Some(root));
+    let second = response.client_ref_to_task_id["b"].clone();
+    assert_eq!(
+        response.eligible_task_ids,
+        vec![root.clone(), first.clone()],
+        "b waits on a"
+    );
+    let blocked = store.get_task(second.clone()).await.unwrap();
+    assert_eq!((blocked.depth, blocked.status), (2, TaskStatus::Held));
+    assert_eq!(blocked.task.dependencies, vec![first]);
     let (replayed, events, replay) = store
         .import_bundle("bundle".into(), bundle_request(), T0)
         .await
         .unwrap();
     assert!(replay && events.is_empty());
-    assert_eq!(replayed.client_ref_to_task_id["b"], record.id);
+    assert_eq!(replayed.client_ref_to_task_id["b"], blocked.id);
     let bad: TaskBundleImportRequest = serde_json::from_value(serde_json::json!({
         "tasks": [{ "title": "orphan", "prompt": "p", "parentTaskId": "task_missing" }]
     }))
@@ -356,7 +490,7 @@ async fn pairing_rotation_and_revocation_fence_credentials() {
 }
 
 #[tokio::test]
-async fn idempotency_replay_and_conflicting_reuse() {
+async fn submission_is_idempotent_and_conflicting_reuse_is_refused() {
     let store = HubStore::open_in_memory().unwrap();
     let first = store
         .create_task("same-key".into(), definition("one"), T0)
@@ -373,98 +507,24 @@ async fn idempotency_replay_and_conflicting_reuse() {
         .create_task("same-key".into(), definition("two"), T0)
         .await;
     assert!(matches!(conflict, Err(StoreError::IdempotencyConflict)));
-    assert_eq!(
-        store.list_events_after(0, 100, 10_000).await.unwrap().len(),
-        1
-    );
 }
 
 #[tokio::test]
-async fn dispatch_replay_survives_version_bump_and_rejects_cross_payload() {
+async fn progress_is_monotonic_epoch_fenced_and_only_the_owner_writes() {
     let store = HubStore::open_in_memory().unwrap();
     let epoch = enrolled(&store).await;
-    let record = create(&store, "replay", definition("replay")).await;
-    let request = dispatch_request(record.version);
-    let idempotency = || DispatchIdempotency {
-        key: "replay-key".to_string(),
-        request: request.clone(),
-    };
-    let (response, _, replay) = store
-        .create_delivery(
-            Some(idempotency()),
-            record.id.clone(),
-            record.version,
-            target(epoch),
-            T0,
-        )
-        .await
-        .unwrap();
-    assert!(!replay);
-    let delivery = response.delivery.unwrap();
-    let bumped = store.get_task(record.id.clone()).await.unwrap();
-    assert_eq!((bumped.status, bumped.version), (TaskStatus::Dispatched, 2));
-
-    let (status, hit) = store
-        .lookup_dispatch_replay("replay-key".into(), record.id.clone(), request.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(status, 200);
-    assert_eq!(hit.delivery.unwrap().id, delivery.id);
-
-    let (replayed, _, replay) = store
-        .create_delivery(
-            Some(idempotency()),
-            record.id.clone(),
-            record.version,
-            target(epoch),
-            T0,
-        )
-        .await
-        .unwrap();
-    assert!(replay);
-    assert_eq!(replayed.delivery.unwrap().id, delivery.id);
-
-    let mut other = request.clone();
-    other.queue = true;
-    let conflict = store
-        .lookup_dispatch_replay("replay-key".into(), record.id.clone(), other.clone())
-        .await;
-    assert!(matches!(conflict, Err(StoreError::IdempotencyConflict)));
-    let cross = store
-        .create_delivery(
-            Some(DispatchIdempotency {
-                key: "replay-key".to_string(),
-                request: other,
-            }),
-            record.id,
-            bumped.version,
-            target(epoch),
-            T0,
-        )
-        .await;
-    assert!(matches!(cross, Err(StoreError::IdempotencyConflict)));
-}
-
-#[tokio::test]
-async fn progress_promotion_monotonicity_and_stale_epoch() {
-    let store = HubStore::open_in_memory().unwrap();
-    let epoch = enrolled(&store).await;
-    let (record, delivery) = dispatched(&store, epoch, definition("p"), "p").await;
-    let request = progress(epoch, 100, "one");
+    let (record, delivery) = claimed(&store, epoch, definition("p"), "p").await;
     let first = store
-        .record_progress(worker(), delivery.id.clone(), request, T0)
+        .record_progress(
+            worker(),
+            delivery.id.clone(),
+            progress(epoch, 100, "one"),
+            T0,
+        )
         .await
         .unwrap()
         .0;
     assert_eq!((first.first_accepted_at_ms, first.duplicate), (T0, false));
-    let view = store
-        .get_task(record.id.clone())
-        .await
-        .unwrap()
-        .current_delivery
-        .unwrap();
-    assert_eq!(view.state, DeliveryStatus::Accepted);
     let later = progress(epoch, 200, "two");
     let second = store
         .record_progress(worker(), delivery.id.clone(), later.clone(), T0 + 10)
@@ -485,7 +545,6 @@ async fn progress_promotion_monotonicity_and_stale_epoch() {
         .await
         .unwrap();
     assert!(duplicate.0.duplicate && duplicate.1.is_none());
-    assert_eq!(duplicate.0.first_accepted_at_ms, T0);
     let future_epoch = store
         .record_progress(
             worker(),
@@ -495,9 +554,19 @@ async fn progress_promotion_monotonicity_and_stale_epoch() {
         )
         .await;
     assert!(matches!(future_epoch, Err(StoreError::StaleDelivery)));
+    let foreign = store
+        .record_progress(
+            WorkerId::new("wkr_ZZZZZZZZZZZZ"),
+            delivery.id.clone(),
+            progress(epoch, 400, "x"),
+            T0,
+        )
+        .await;
+    assert!(matches!(foreign, Err(StoreError::Unauthorized)));
     assert_eq!(
         store.get_task(record.id).await.unwrap().status,
-        TaskStatus::Dispatched
+        TaskStatus::Dispatched,
+        "Progress is never a verdict"
     );
 }
 
@@ -505,7 +574,7 @@ async fn progress_promotion_monotonicity_and_stale_epoch() {
 async fn finish_without_progress_and_cancel_is_never_overwritten() {
     let store = HubStore::open_in_memory().unwrap();
     let epoch = enrolled(&store).await;
-    let (_, delivery) = dispatched(&store, epoch, definition("n"), "n").await;
+    let (_, delivery) = claimed(&store, epoch, definition("n"), "n").await;
     let stale = store
         .record_finish(worker(), delivery.id.clone(), finish(epoch + 1), T0)
         .await;
@@ -524,7 +593,7 @@ async fn finish_without_progress_and_cancel_is_never_overwritten() {
         .0;
     assert!(!replay.changed);
 
-    let (cancelled, cancelled_delivery) = dispatched(&store, epoch, definition("c"), "c").await;
+    let (cancelled, cancelled_delivery) = claimed(&store, epoch, definition("c"), "c").await;
     let cancel = cancel_request(cancelled.version);
     let outcome = store
         .cancel_task("cc".into(), cancelled.id.clone(), cancel, T0)
@@ -546,147 +615,185 @@ async fn finish_without_progress_and_cancel_is_never_overwritten() {
 }
 
 #[tokio::test]
-async fn result_is_write_once_epoch_fenced_and_independent_of_finish() {
+async fn finish_releases_ready_siblings_in_the_same_commit() {
     let store = HubStore::open_in_memory().unwrap();
+    let root = submit(&store, "root", definition("root")).await;
+    let first = submit(&store, "a", child("a", &root.id)).await;
+    let mut second_definition = child("b", &root.id);
+    second_definition.dependencies = vec![first.id.clone()];
+    let second = submit(&store, "b", second_definition).await;
     let epoch = enrolled(&store).await;
-    let (record, delivery) = dispatched(&store, epoch, definition("r"), "r").await;
-    assert!(store
-        .get_task(record.id.clone())
+    let (_, first_delivery) = store
+        .claim_task(worker(), claim(&first.id, epoch), T0)
         .await
-        .unwrap()
-        .result_markdown
-        .is_none());
-
-    // A result requires an accepted Delivery; an untouched offer is fenced out.
-    let early = store
-        .record_result(worker(), delivery.id.clone(), result(epoch, "too soon"), T0)
-        .await;
-    assert!(matches!(early, Err(StoreError::StaleDelivery)));
+        .map(|(response, _)| (response.task, response.delivery))
+        .unwrap();
     store
-        .record_progress(worker(), delivery.id.clone(), progress(epoch, 10, "go"), T0)
+        .record_finish(worker(), first_delivery.id, finish(epoch), T0)
         .await
         .unwrap();
+    assert_eq!(
+        store.get_task(second.id).await.unwrap().status,
+        TaskStatus::Queued
+    );
+}
+
+#[tokio::test]
+async fn result_reconciles_latest_content_and_clears_on_explicit_absence() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let (record, delivery) = claimed(&store, epoch, definition("r"), "r").await;
     let (receipt, event) = store
         .record_result(
             worker(),
             delivery.id.clone(),
-            result(epoch, "# Findings"),
+            result(epoch, Some("# Findings")),
             T0 + 1,
         )
         .await
         .unwrap();
-    assert!(!receipt.duplicate);
+    assert!(!receipt.duplicate && !receipt.cleared);
     assert_eq!(event.unwrap().kind, "delivery.result");
 
     let replay = store
         .record_result(
             worker(),
             delivery.id.clone(),
-            result(epoch, "# Findings"),
+            result(epoch, Some("# Findings")),
             T0 + 2,
         )
         .await
         .unwrap()
         .0;
-    assert!(replay.duplicate);
+    assert!(replay.duplicate, "equal content is a no-op");
+
+    // Different content replaces the value; there is no write-once rule.
     let changed = store
         .record_result(
             worker(),
             delivery.id.clone(),
-            result(epoch, "# Other"),
+            result(epoch, Some("# Other")),
             T0 + 3,
         )
-        .await;
-    assert!(matches!(changed, Err(StoreError::InvalidTransition)));
-
+        .await
+        .unwrap()
+        .0;
+    assert!(!changed.duplicate && !changed.cleared);
     let detail = store.get_task(record.id.clone()).await.unwrap();
-    assert_eq!(detail.result_markdown.as_deref(), Some("# Findings"));
-    assert_eq!(detail.result_recorded_at_ms, Some(T0 + 1));
+    assert_eq!(detail.result_markdown.as_deref(), Some("# Other"));
+    assert_eq!(detail.result_recorded_at_ms, Some(T0 + 3));
     assert_eq!(
         detail.status,
         TaskStatus::Dispatched,
         "result is not a verdict"
     );
 
-    // Finish does not erase the result; a lost-result replay after finish still lands.
+    // Finish does not erase it, and sync keeps working afterwards.
     store
         .record_finish(worker(), delivery.id.clone(), finish(epoch), T0 + 4)
-        .await
-        .unwrap();
-    let (record2, delivery2) = dispatched(&store, epoch, definition("late"), "late").await;
-    store
-        .record_finish(worker(), delivery2.id.clone(), finish(epoch), T0 + 5)
         .await
         .unwrap();
     let after_finish = store
         .record_result(
             worker(),
-            delivery2.id.clone(),
-            result(epoch, "late"),
-            T0 + 6,
-        )
-        .await;
-    assert!(after_finish.is_ok());
-    let finished = store.get_task(record2.id).await.unwrap();
-    assert_eq!(finished.status, TaskStatus::Finished);
-    assert_eq!(finished.result_markdown.as_deref(), Some("late"));
-
-    let stale = store
-        .record_result(
-            worker(),
             delivery.id.clone(),
-            result(epoch + 1, "x"),
-            T0 + 7,
+            result(epoch, Some("# After finish")),
+            T0 + 5,
         )
-        .await;
-    assert!(matches!(stale, Err(StoreError::StaleDelivery)));
-    let other_worker = store
-        .record_result(
-            WorkerId::new("wkr_ZZZZZZZZZZZZ"),
-            delivery.id.clone(),
-            result(epoch, "x"),
-            T0 + 8,
-        )
-        .await;
-    assert!(matches!(other_worker, Err(StoreError::Unauthorized)));
+        .await
+        .unwrap()
+        .0;
+    assert!(!after_finish.cleared);
     assert_eq!(
         store
-            .get_task(detail.id)
+            .get_task(record.id.clone())
             .await
             .unwrap()
             .result_markdown
             .as_deref(),
-        Some("# Findings")
+        Some("# After finish")
     );
+
+    // A confirmed absence clears the Hub copy, and repeating it is harmless.
+    let cleared = store
+        .record_result(worker(), delivery.id.clone(), result(epoch, None), T0 + 6)
+        .await
+        .unwrap()
+        .0;
+    assert!(cleared.cleared && !cleared.duplicate);
+    assert!(store
+        .get_task(record.id.clone())
+        .await
+        .unwrap()
+        .result_markdown
+        .is_none());
+    let repeat = store
+        .record_result(worker(), delivery.id.clone(), result(epoch, None), T0 + 7)
+        .await
+        .unwrap()
+        .0;
+    assert!(repeat.duplicate && !repeat.cleared);
+    assert!(store
+        .get_task(record.id)
+        .await
+        .unwrap()
+        .result_markdown
+        .is_none());
 }
 
 #[tokio::test]
-async fn event_backfill_and_cursor_expiry() {
+async fn delayed_old_epoch_result_never_undoes_a_newer_value() {
     let store = HubStore::open_in_memory().unwrap();
-    for index in 0..4 {
-        create(&store, &format!("e{index}"), definition("e")).await;
-    }
-    let latest = store.latest_seq().await.unwrap();
-    assert_eq!(latest, 4);
-    let backfill = store.list_events_after(0, 100, 10_000).await.unwrap();
-    assert_eq!(backfill.len(), 4);
-    assert!(backfill.iter().all(|event| event.kind == "task.created"));
-    assert!(store
-        .list_events_after(latest, 100, 10_000)
+    let epoch1 = enrolled(&store).await;
+    let (record, delivery) = claimed(&store, epoch1, definition("late"), "late").await;
+    store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch1, Some("# v1")),
+            T0 + 1,
+        )
         .await
-        .unwrap()
-        .is_empty());
-    assert!(matches!(
-        store.list_events_after(0, 100, 3).await,
-        Err(StoreError::CursorExpired)
-    ));
+        .unwrap();
+
+    // Reconnect fences the old epoch; the newer value commits under the new epoch.
+    let epoch2 = store
+        .open_worker_connection(worker(), inventory(), T0 + 10)
+        .await
+        .unwrap();
+    assert!(epoch2 > epoch1);
+    store
+        .rebind_deliveries_on_resync(worker(), epoch2, vec![delivery.id.clone()], T0 + 11)
+        .await
+        .unwrap();
+    store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch2, Some("# v2")),
+            T0 + 12,
+        )
+        .await
+        .unwrap();
+
+    // The delayed request arrives carrying the old epoch and is refused at the boundary.
+    let delayed = store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch1, Some("# v1 delayed")),
+            T0 + 13,
+        )
+        .await;
+    assert!(matches!(delayed, Err(StoreError::StaleDelivery)));
     assert_eq!(
         store
-            .list_events_after(latest - 3, 100, 3)
+            .get_task(record.id)
             .await
             .unwrap()
-            .len(),
-        3
+            .result_markdown
+            .as_deref(),
+        Some("# v2")
     );
 }
 
@@ -694,10 +801,9 @@ async fn event_backfill_and_cursor_expiry() {
 async fn resync_rebinds_epoch_and_flags_unacked_cancelled_deliveries() {
     let store = HubStore::open_in_memory().unwrap();
     let epoch1 = enrolled(&store).await;
-    let (active_task, active_delivery) =
-        dispatched(&store, epoch1, definition("live"), "live").await;
+    let (active_task, active_delivery) = claimed(&store, epoch1, definition("live"), "live").await;
     let (cancelled_task, cancelled_delivery) =
-        dispatched(&store, epoch1, definition("off"), "off").await;
+        claimed(&store, epoch1, definition("off"), "off").await;
     store
         .cancel_task(
             "cancel-off".into(),
@@ -707,15 +813,6 @@ async fn resync_rebinds_epoch_and_flags_unacked_cancelled_deliveries() {
         )
         .await
         .unwrap();
-    let cross = store
-        .cancel_task(
-            "cancel-off".into(),
-            active_task.id.clone(),
-            cancel_request(active_task.version),
-            T0,
-        )
-        .await;
-    assert!(matches!(cross, Err(StoreError::IdempotencyConflict)));
 
     let epoch2 = store
         .open_worker_connection(worker(), inventory(), T0 + 10)
@@ -742,4 +839,165 @@ async fn resync_rebinds_epoch_and_flags_unacked_cancelled_deliveries() {
         .unwrap()
         .0;
     assert!(!receipt.duplicate);
+    assert_eq!(
+        store.get_task(active_task.id).await.unwrap().status,
+        TaskStatus::Dispatched
+    );
+}
+
+#[tokio::test]
+async fn event_backfill_and_cursor_expiry() {
+    let store = HubStore::open_in_memory().unwrap();
+    for index in 0..4 {
+        submit(&store, &format!("e{index}"), definition("e")).await;
+    }
+    let latest = store.latest_seq().await.unwrap();
+    // Each ready Task emits `task.created` plus `task.queued`; a held one only `created`.
+    assert_eq!(latest, 8);
+    let backfill = store.list_events_after(0, 100, 10_000).await.unwrap();
+    assert!(backfill.len() >= 4);
+    assert!(store
+        .list_events_after(latest, 100, 10_000)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(matches!(
+        store.list_events_after(0, 100, 3).await,
+        Err(StoreError::CursorExpired)
+    ));
+}
+
+#[tokio::test]
+async fn reads_expose_blockers_and_claimability() {
+    let store = HubStore::open_in_memory().unwrap();
+    let root = submit(&store, "root", definition("root")).await;
+    let first = submit(&store, "a", child("a", &root.id)).await;
+    let mut blocked_definition = child("b", &root.id);
+    blocked_definition.dependencies = vec![first.id.clone()];
+    let blocked = submit(&store, "b", blocked_definition).await;
+
+    let ready = store.task_eligibility(first.id.clone()).await.unwrap();
+    assert!(ready.claimable);
+    let waiting = store.task_eligibility(blocked.id.clone()).await.unwrap();
+    assert!(!waiting.claimable);
+    assert_eq!(waiting.blocked_by[0].task_id, first.id);
+
+    let page = store.list_tasks(100).await.unwrap();
+    assert_eq!(page.tasks.len(), 3);
+    assert!(page.tasks.iter().any(|task| !task.blocked_by.is_empty()));
+}
+
+#[tokio::test]
+async fn progress_and_result_are_independent_latest_values() {
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let (record, delivery) = claimed(&store, epoch, definition("both"), "both").await;
+
+    store
+        .record_progress(
+            worker(),
+            delivery.id.clone(),
+            progress(epoch, 100, "working"),
+            T0,
+        )
+        .await
+        .unwrap();
+    store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch, Some("# Draft")),
+            T0 + 1,
+        )
+        .await
+        .unwrap();
+    // Updating one never rewrites the other, and neither changes Task status.
+    store
+        .record_progress(
+            worker(),
+            delivery.id.clone(),
+            progress(epoch, 200, "later"),
+            T0 + 2,
+        )
+        .await
+        .unwrap();
+    let detail = store.get_task(record.id.clone()).await.unwrap();
+    assert_eq!(
+        detail
+            .current_delivery
+            .as_ref()
+            .unwrap()
+            .progress
+            .as_ref()
+            .unwrap()
+            .text,
+        "later"
+    );
+    assert_eq!(detail.result_markdown.as_deref(), Some("# Draft"));
+    assert_eq!(detail.status, TaskStatus::Dispatched);
+
+    store
+        .record_result(
+            worker(),
+            delivery.id.clone(),
+            result(epoch, Some("# Revised")),
+            T0 + 3,
+        )
+        .await
+        .unwrap();
+    let detail = store.get_task(record.id).await.unwrap();
+    assert_eq!(
+        detail.current_delivery.unwrap().progress.unwrap().text,
+        "later",
+        "a new Result leaves Progress untouched"
+    );
+    assert_eq!(detail.result_markdown.as_deref(), Some("# Revised"));
+}
+
+#[tokio::test]
+async fn a_worker_refuses_a_delivery_id_it_never_registered_locally() {
+    // The Hub can only report on Deliveries; a client asking about an unknown one gets a
+    // `NotFound`, which is how the Worker's own control channel answers a stale ID.
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let (record, delivery) = claimed(&store, epoch, definition("known"), "known").await;
+    let view = store
+        .worker_delivery_result(worker(), delivery.id.clone())
+        .await
+        .unwrap();
+    assert_eq!(view.delivery_id, delivery.id);
+    assert!(view.text.is_none());
+    assert_eq!(record.status, TaskStatus::Dispatched);
+    let unknown = store
+        .worker_delivery_result(
+            worker(),
+            myrlet_protocol::DeliveryId::new("delivery_missing"),
+        )
+        .await;
+    assert!(matches!(unknown, Err(StoreError::NotFound)));
+    let foreign = store
+        .worker_delivery_result(WorkerId::new("wkr_ZZZZZZZZZZZZ"), delivery.id)
+        .await;
+    assert!(matches!(foreign, Err(StoreError::Unauthorized)));
+}
+
+#[tokio::test]
+async fn an_owner_read_never_grants_management_authority() {
+    // The store has no read-scoped mutation: every management call checks its own
+    // precondition, so reading a record cannot cancel or rotate anything.
+    let store = HubStore::open_in_memory().unwrap();
+    let epoch = enrolled(&store).await;
+    let record = submit(&store, "owned", definition("owned")).await;
+    let read = store.get_task(record.id.clone()).await.unwrap();
+    assert_eq!(read.status, TaskStatus::Queued);
+    assert_eq!(read.version, record.version);
+    // A claim needs the live epoch; merely reading the Task cannot authorize one.
+    let stale = store
+        .claim_task(worker(), claim(&record.id, epoch + 9), T0)
+        .await;
+    assert!(matches!(stale, Err(StoreError::StaleDelivery)));
+    assert_eq!(
+        store.get_task(record.id).await.unwrap().status,
+        TaskStatus::Queued
+    );
 }

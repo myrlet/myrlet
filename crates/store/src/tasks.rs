@@ -2,7 +2,9 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
-use myrlet_protocol::{TaskDefinition, TaskId, TaskRecord, TaskStatus};
+use myrlet_protocol::{
+    BlockingDependency, TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskValidationError,
+};
 
 use crate::deliveries;
 use crate::error::StoreError;
@@ -12,6 +14,7 @@ pub const MAX_TREE_DEPTH: u8 = 5;
 
 pub const EVENT_TASK_CREATED: &str = "task.created";
 pub const EVENT_TASK_QUEUED: &str = "task.queued";
+pub const EVENT_TASK_UPDATED: &str = "task.updated";
 pub const EVENT_TASK_DISPATCHED: &str = "task.dispatched";
 pub const EVENT_TASK_FINISHED: &str = "task.finished";
 pub const EVENT_TASK_CANCELLED: &str = "task.cancelled";
@@ -146,26 +149,27 @@ pub fn list_task_rows(conn: &Connection, limit: usize) -> Result<Vec<TaskRow>, S
     Ok(tasks)
 }
 
-/// Insert one `held` Task (version 1) plus its sibling dependency rows.
+/// Insert one Task with the given submission status, plus its sibling dependency rows.
 pub fn insert_task(
     tx: &Transaction<'_>,
     id: &TaskId,
     def: &TaskDefinition,
     root_task_id: &TaskId,
     depth: u8,
+    status: TaskStatus,
     now_ms: i64,
 ) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO tasks (id, parent_task_id, root_task_id, depth, source_task_id, status, version, \
-         category, title, definition_json, queue_request_json, queued_at_ms, created_at_ms, \
-         updated_at_ms, finished_at_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, 'held', 1, ?6, ?7, ?8, NULL, NULL, ?9, ?9, NULL)",
+         category, title, definition_json, created_at_ms, updated_at_ms, finished_at_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?10, NULL)",
         params![
             id.as_str(),
             def.parent_task_id.as_ref().map(TaskId::as_str),
             root_task_id.as_str(),
             i64::from(depth),
             def.source_task_id.as_ref().map(TaskId::as_str),
+            status_str(status),
             def.category,
             def.title,
             serde_json::to_string(def)?,
@@ -220,8 +224,8 @@ pub fn transition_task(
     write_task_state(tx, row, next, now_ms)
 }
 
-/// Apply a contract-implied state that is not a generic transition: releasing an
-/// uncommitted offer back to `queued`/`held`, or finishing a coordination-only Parent.
+/// Apply a contract-implied state outside the generic transition table: closing a
+/// coordination-only Task an Owner finishes directly.
 pub fn force_task_state(
     tx: &Transaction<'_>,
     row: &TaskRow,
@@ -231,9 +235,10 @@ pub fn force_task_state(
     write_task_state(tx, row, next, now_ms)
 }
 
-/// Build the authoritative Task record: definition, current Delivery, and subtree counts.
+/// Build the authoritative Task record: definition, current Delivery, blocking
+/// dependencies, and subtree counts.
 ///
-/// The immutable result is attached only by the single-Task read in [`crate::reads`].
+/// The latest result is attached only by the single-Task read in [`crate::reads`].
 pub fn build_record(conn: &Connection, row: &TaskRow) -> Result<TaskRecord, StoreError> {
     Ok(TaskRecord {
         id: row.id.clone(),
@@ -246,20 +251,66 @@ pub fn build_record(conn: &Connection, row: &TaskRow) -> Result<TaskRecord, Stor
         finished_at_ms: row.finished_at_ms,
         task: row.definition()?,
         current_delivery: deliveries::current_delivery(conn, &row.id)?,
+        blocked_by: blocked_dependencies(conn, &row.id)?,
         result_markdown: None,
         result_recorded_at_ms: None,
         subtree: reads::subtree_counts(conn, &row.id)?,
     })
 }
 
-/// Deterministic dispatch gate: every declared sibling dependency already finished.
-pub fn are_dependencies_satisfied(conn: &Connection, task_id: &TaskId) -> Result<bool, StoreError> {
-    load_task(conn, task_id)?;
-    let pending: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM task_deps d JOIN tasks t ON t.id = d.depends_on_task_id \
-         WHERE d.task_id = ?1 AND t.status <> 'finished'",
-        params![task_id.as_str()],
-        |row| row.get(0),
+/// Declared dependencies whose status is not `finished`, with that status.
+pub fn blocked_dependencies(
+    conn: &Connection,
+    task_id: &TaskId,
+) -> Result<Vec<BlockingDependency>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.status FROM task_deps d JOIN tasks t ON t.id = d.depends_on_task_id \
+         WHERE d.task_id = ?1 ORDER BY t.id ASC",
     )?;
-    Ok(pending == 0)
+    let rows = stmt.query_map(params![task_id.as_str()], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut blocking = Vec::new();
+    for row in rows {
+        let (id, status) = row?;
+        let status = parse_status(&status)?;
+        if status != TaskStatus::Finished {
+            blocking.push(BlockingDependency {
+                task_id: TaskId::new(id),
+                status,
+            });
+        }
+    }
+    Ok(blocking)
+}
+
+/// Deterministic submission gate: every declared dependency is already `finished`.
+pub fn are_dependencies_satisfied(conn: &Connection, task_id: &TaskId) -> Result<bool, StoreError> {
+    Ok(blocked_dependencies(conn, task_id)?.is_empty())
+}
+
+/// Resolve the status a Task should have given its dependencies and current claim.
+///
+/// `finished` and `cancelled` are terminal and never recomputed.
+pub fn recompute_readiness(
+    tx: &Transaction<'_>,
+    row: &TaskRow,
+    now_ms: i64,
+) -> Result<TaskRow, StoreError> {
+    if row.status.is_terminal() || row.status == TaskStatus::Dispatched {
+        return Ok(row.clone());
+    }
+    let satisfied = are_dependencies_satisfied(tx, &row.id)?;
+    let target = TaskDefinition::submitted_status(&row.definition()?, satisfied);
+    if target == row.status {
+        return Ok(row.clone());
+    }
+    write_task_state(tx, row, target, now_ms)?;
+    load_task(tx, &row.id)
+}
+
+/// Validate one client-supplied definition, keeping the message stable for clients.
+pub fn validate_definition(def: &TaskDefinition) -> Result<(), StoreError> {
+    def.validate()
+        .map_err(|source: TaskValidationError| StoreError::invalid(source.to_string()))
 }

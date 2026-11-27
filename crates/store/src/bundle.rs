@@ -11,7 +11,7 @@ use crate::events::insert_event;
 use crate::idempotency::{check_idempotency, digest_request, record_idempotency};
 use crate::tasks::{
     build_record, generate_task_id, insert_task, load_task, status_str, EVENT_TASK_CREATED,
-    MAX_TREE_DEPTH,
+    EVENT_TASK_QUEUED, MAX_TREE_DEPTH,
 };
 use crate::BundleOutcome;
 
@@ -131,9 +131,25 @@ pub fn import_bundle(
 
     let mut events = Vec::with_capacity(ids.len());
     let mut records = Vec::with_capacity(ids.len());
+    let mut eligible_task_ids = Vec::new();
     for (index, id) in ids.iter().enumerate() {
         let (depth, root) = &placement[index];
-        insert_task(&tx, id, &resolved[index], root, *depth, now_ms)?;
+        insert_task(
+            &tx,
+            id,
+            &resolved[index],
+            root,
+            *depth,
+            TaskStatus::Held,
+            now_ms,
+        )?;
+        // Submission authorizes every Task in the bundle; readiness is computed after all
+        // rows exist so in-bundle prerequisite references resolve against real statuses.
+        let row =
+            crate::tasks::recompute_readiness(&tx, &crate::tasks::load_task(&tx, id)?, now_ms)?;
+        if row.status == TaskStatus::Queued {
+            eligible_task_ids.push(id.clone());
+        }
         events.push(insert_event(
             &tx,
             EVENT_TASK_CREATED,
@@ -141,17 +157,30 @@ pub fn import_bundle(
                 "taskId": id.as_str(),
                 "parentTaskId": resolved[index].parent_task_id.as_ref().map(TaskId::as_str),
                 "rootTaskId": root.as_str(),
-                "status": status_str(TaskStatus::Held),
+                "status": status_str(row.status),
                 "version": 1,
             }),
             now_ms,
         )?);
-        records.push(build_record(&tx, &load_task(&tx, id)?)?);
+        if row.status == TaskStatus::Queued {
+            events.push(insert_event(
+                &tx,
+                EVENT_TASK_QUEUED,
+                &serde_json::json!({
+                    "taskId": id.as_str(),
+                    "status": status_str(TaskStatus::Queued),
+                    "version": row.version,
+                }),
+                now_ms,
+            )?);
+        }
+        records.push(build_record(&tx, &crate::tasks::load_task(&tx, id)?)?);
     }
 
     let response = TaskBundleImportResponse {
         client_ref_to_task_id: ref_to_id,
         tasks: records,
+        eligible_task_ids,
     };
     record_idempotency(
         &tx,

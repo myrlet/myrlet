@@ -1,10 +1,9 @@
-//! Delivery rows and wire views shared by dispatch, reporting, and Task reads.
+//! Delivery rows and wire views shared by claims, reporting, and Task reads.
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use myrlet_protocol::{
-    CancelState, DeliveryId, DeliveryStatus, DeliveryView, ExecutorId, RejectionCode, SlotId,
-    TaskId, WorkerId,
+    CancelState, DeliveryId, DeliveryStatus, DeliveryView, ExecutorId, SlotId, TaskId, WorkerId,
 };
 
 use crate::error::StoreError;
@@ -13,10 +12,7 @@ use crate::progress;
 /// Canonical wire token for a Delivery state.
 pub fn state_str(state: DeliveryStatus) -> &'static str {
     match state {
-        DeliveryStatus::Offered => "offered",
         DeliveryStatus::Accepted => "accepted",
-        DeliveryStatus::Rejected => "rejected",
-        DeliveryStatus::Released => "released",
         DeliveryStatus::Finished => "finished",
         DeliveryStatus::Cancelled => "cancelled",
     }
@@ -24,33 +20,11 @@ pub fn state_str(state: DeliveryStatus) -> &'static str {
 
 fn parse_state(raw: &str) -> Result<DeliveryStatus, StoreError> {
     match raw {
-        "offered" => Ok(DeliveryStatus::Offered),
         "accepted" => Ok(DeliveryStatus::Accepted),
-        "rejected" => Ok(DeliveryStatus::Rejected),
-        "released" => Ok(DeliveryStatus::Released),
         "finished" => Ok(DeliveryStatus::Finished),
         "cancelled" => Ok(DeliveryStatus::Cancelled),
         other => Err(StoreError::invalid(format!(
             "unknown delivery state {other}"
-        ))),
-    }
-}
-
-pub fn rejection_str(code: RejectionCode) -> &'static str {
-    match code {
-        RejectionCode::ExecutorUnavailable => "executor_unavailable",
-        RejectionCode::WorkerShuttingDown => "worker_shutting_down",
-        RejectionCode::RecoveryIncomplete => "recovery_incomplete",
-    }
-}
-
-fn parse_rejection(raw: &str) -> Result<RejectionCode, StoreError> {
-    match raw {
-        "executor_unavailable" => Ok(RejectionCode::ExecutorUnavailable),
-        "worker_shutting_down" => Ok(RejectionCode::WorkerShuttingDown),
-        "recovery_incomplete" => Ok(RejectionCode::RecoveryIncomplete),
-        other => Err(StoreError::invalid(format!(
-            "unknown rejection code {other}"
         ))),
     }
 }
@@ -84,7 +58,6 @@ pub struct DeliveryRow {
     pub executor_id: Option<ExecutorId>,
     pub connection_epoch: u64,
     pub state: DeliveryStatus,
-    pub rejection_code: Option<RejectionCode>,
     pub cancel_state: Option<CancelState>,
     pub cancel_reason: Option<String>,
     pub created_at_ms: i64,
@@ -92,7 +65,7 @@ pub struct DeliveryRow {
 }
 
 const DELIVERY_COLUMNS: &str = "id, task_id, worker_id, slot_id, executor_id, connection_epoch, \
-     state, rejection_code, cancel_state, cancel_reason, created_at_ms, updated_at_ms";
+     state, cancel_state, cancel_reason, created_at_ms, updated_at_ms";
 
 type RawDelivery = (
     String,
@@ -102,7 +75,6 @@ type RawDelivery = (
     Option<String>,
     i64,
     String,
-    Option<String>,
     Option<String>,
     Option<String>,
     i64,
@@ -122,7 +94,6 @@ fn map_delivery(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawDelivery> {
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
-        row.get(11)?,
     ))
 }
 
@@ -136,14 +107,13 @@ fn to_delivery_row(raw: RawDelivery) -> Result<DeliveryRow, StoreError> {
         connection_epoch: u64::try_from(raw.5)
             .map_err(|_| StoreError::invalid("stored connection epoch is negative"))?,
         state: parse_state(&raw.6)?,
-        rejection_code: raw.7.map(|stored| parse_rejection(&stored)).transpose()?,
         cancel_state: raw
-            .8
+            .7
             .map(|stored| parse_cancel_state(&stored))
             .transpose()?,
-        cancel_reason: raw.9,
-        created_at_ms: raw.10,
-        updated_at_ms: raw.11,
+        cancel_reason: raw.8,
+        created_at_ms: raw.9,
+        updated_at_ms: raw.10,
     })
 }
 
@@ -175,7 +145,6 @@ pub fn delivery_view(conn: &Connection, row: &DeliveryRow) -> Result<DeliveryVie
         executor_id: row.executor_id.clone(),
         connection_epoch: row.connection_epoch,
         state: row.state,
-        rejection_code: row.rejection_code,
         cancel_state: row.cancel_state,
         cancel_reason: row.cancel_reason.clone(),
         created_at_ms: row.created_at_ms,
@@ -184,15 +153,12 @@ pub fn delivery_view(conn: &Connection, row: &DeliveryRow) -> Result<DeliveryVie
     })
 }
 
-/// Newest Delivery for a Task, whatever its state.
+/// The Task's one Delivery, whatever its state.
 pub fn current_delivery(
     conn: &Connection,
     task_id: &TaskId,
 ) -> Result<Option<DeliveryView>, StoreError> {
-    let sql = format!(
-        "SELECT {DELIVERY_COLUMNS} FROM deliveries WHERE task_id = ?1 \
-         ORDER BY created_at_ms DESC, id DESC LIMIT 1"
-    );
+    let sql = format!("SELECT {DELIVERY_COLUMNS} FROM deliveries WHERE task_id = ?1");
     let raw = conn
         .query_row(&sql, params![task_id.as_str()], map_delivery)
         .optional()?;
@@ -202,11 +168,14 @@ pub fn current_delivery(
     Ok(Some(delivery_view(conn, &to_delivery_row(raw)?)?))
 }
 
-fn active_delivery(conn: &Connection, task_id: &TaskId) -> Result<Option<DeliveryRow>, StoreError> {
+/// The Task's Delivery while it is still live (`accepted`).
+pub fn active_delivery(
+    conn: &Connection,
+    task_id: &TaskId,
+) -> Result<Option<DeliveryRow>, StoreError> {
     let sql = format!(
         "SELECT {DELIVERY_COLUMNS} FROM deliveries \
-         WHERE task_id = ?1 AND state IN ('offered', 'accepted') \
-         ORDER BY created_at_ms DESC, id DESC LIMIT 1"
+         WHERE task_id = ?1 AND state = 'accepted'"
     );
     let raw = conn
         .query_row(&sql, params![task_id.as_str()], map_delivery)

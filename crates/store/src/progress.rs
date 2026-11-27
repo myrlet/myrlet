@@ -57,25 +57,20 @@ pub fn progress_view(
     }))
 }
 
-/// Touch the Delivery: first accepted Progress promotes `offered` to `accepted`.
-fn mark_accepted(
+/// Touch the Delivery: first accepted Progress keeps its audit timestamp current.
+fn mark_reported(
     tx: &Transaction<'_>,
     delivery: &DeliveryRow,
     now_ms: i64,
 ) -> Result<(), StoreError> {
-    let state = if delivery.state == DeliveryStatus::Offered {
-        DeliveryStatus::Accepted
-    } else {
-        delivery.state
-    };
     tx.execute(
-        "UPDATE deliveries SET state = ?1, updated_at_ms = ?2 WHERE id = ?3",
-        params![deliveries::state_str(state), now_ms, delivery.id.as_str()],
+        "UPDATE deliveries SET updated_at_ms = ?1 WHERE id = ?2",
+        params![now_ms, delivery.id.as_str()],
     )?;
     Ok(())
 }
 
-/// Store one bounded latest-state Progress; never changes Task status, even after cancel.
+/// Store one bounded latest-value Progress; never changes Task status, even after cancel.
 pub fn record_progress(
     conn: &mut Connection,
     worker_id: &WorkerId,
@@ -94,10 +89,7 @@ pub fn record_progress(
     if delivery.connection_epoch != request.epoch {
         return Err(StoreError::StaleDelivery);
     }
-    if !matches!(
-        delivery.state,
-        DeliveryStatus::Offered | DeliveryStatus::Accepted | DeliveryStatus::Cancelled
-    ) {
+    if !crate::claim::accepts_reports(delivery.state) {
         return Err(StoreError::StaleDelivery);
     }
     let existing = tx
@@ -128,7 +120,7 @@ pub fn record_progress(
                     now_ms
                 ],
             )?;
-            mark_accepted(&tx, &delivery, now_ms)?;
+            mark_reported(&tx, &delivery, now_ms)?;
             ProgressReceipt {
                 delivery_id: delivery_id.clone(),
                 accepted_at_ms: now_ms,
@@ -141,13 +133,15 @@ pub fn record_progress(
                 return Err(StoreError::StaleDelivery);
             }
             if request.observed_at_ms == observed_at_ms {
-                let duplicate = ProgressReceipt {
-                    delivery_id: delivery_id.clone(),
-                    accepted_at_ms: received_at_ms,
-                    first_accepted_at_ms: first_received_at_ms,
-                    duplicate: true,
-                };
-                return Ok((duplicate, None));
+                return Ok((
+                    ProgressReceipt {
+                        delivery_id: delivery_id.clone(),
+                        accepted_at_ms: received_at_ms,
+                        first_accepted_at_ms: first_received_at_ms,
+                        duplicate: true,
+                    },
+                    None,
+                ));
             }
             tx.execute(
                 "UPDATE delivery_progress SET text = ?1, observed_at_ms = ?2, received_at_ms = ?3 \
@@ -159,7 +153,7 @@ pub fn record_progress(
                     delivery_id.as_str()
                 ],
             )?;
-            mark_accepted(&tx, &delivery, now_ms)?;
+            mark_reported(&tx, &delivery, now_ms)?;
             ProgressReceipt {
                 delivery_id: delivery_id.clone(),
                 accepted_at_ms: now_ms,
@@ -197,7 +191,8 @@ pub fn record_finish(
     if &delivery.worker_id != worker_id {
         return Err(StoreError::Unauthorized);
     }
-    if delivery.connection_epoch != request.epoch {
+    let worker = crate::workers::load_worker(&tx, worker_id)?;
+    if worker.revoked || worker.connection_epoch != request.epoch {
         return Err(StoreError::StaleDelivery);
     }
     let task = tasks::load_task(&tx, &delivery.task_id)?;
@@ -223,26 +218,7 @@ pub fn record_finish(
             None,
         ));
     }
-    if task.status == TaskStatus::Finished {
-        tx.execute(
-            "UPDATE deliveries SET state = 'finished', updated_at_ms = ?1 WHERE id = ?2",
-            params![now_ms, delivery_id.as_str()],
-        )?;
-        tx.commit()?;
-        return Ok((
-            FinishReceipt {
-                delivery_id: delivery_id.clone(),
-                task_id: task.id,
-                task_status: TaskStatus::Finished,
-                changed: false,
-            },
-            None,
-        ));
-    }
-    if !matches!(
-        delivery.state,
-        DeliveryStatus::Offered | DeliveryStatus::Accepted
-    ) {
+    if !matches!(delivery.state, DeliveryStatus::Accepted) {
         return Err(StoreError::StaleDelivery);
     }
     tx.execute(
@@ -261,6 +237,7 @@ pub fn record_finish(
         }),
         now_ms,
     )?;
+    crate::commands::promote_siblings(&tx, &task, now_ms)?;
     tx.commit()?;
     Ok((
         FinishReceipt {

@@ -1,19 +1,20 @@
-//! Bounded Task read models: detail, tree traversal, Snapshot page, and FIFO queue view.
+//! Bounded Task read models: detail, tree traversal, Snapshot page, and claimability.
 
 use std::collections::HashMap;
 
 use rusqlite::{params, Connection};
 
 use myrlet_protocol::{
-    DispatchTaskRequest, GlobalSnapshot, SnapshotTaskSummary, SubtreeCounts, TaskDefinition,
-    TaskId, TaskRecord, TaskTreeDirection, TaskTreeResponse, WorkerId, SNAPSHOT_SCHEMA_VERSION,
+    BlockingDependency, GlobalSnapshot, SnapshotTaskSummary, SubtreeCounts, TaskEligibility,
+    TaskId, TaskListResponse, TaskRecord, TaskTreeDirection, TaskTreeResponse, WorkerId,
+    SNAPSHOT_SCHEMA_VERSION,
 };
 
 use crate::deliveries;
 use crate::error::StoreError;
 use crate::events::latest_seq;
 use crate::inventory;
-use crate::tasks::{build_record, list_task_rows, load_task, TaskRow};
+use crate::tasks::{blocked_dependencies, build_record, list_task_rows, load_task, TaskRow};
 
 /// Derived per-status counts for the subtree rooted at `task_id` (inclusive).
 pub fn subtree_counts(conn: &Connection, task_id: &TaskId) -> Result<SubtreeCounts, StoreError> {
@@ -65,13 +66,13 @@ fn dependency_ids(conn: &Connection, task_id: &TaskId) -> Result<Vec<TaskId>, St
     Ok(ids)
 }
 
-/// One authoritative Task record with its current Delivery, latest Progress, immutable
-/// result, and subtree counts. Tree and Snapshot reads never attach the result.
+/// One authoritative Task record with its Delivery, blocking dependencies, latest result,
+/// and subtree counts. Tree and Snapshot reads never attach the result text.
 pub fn get_task(conn: &Connection, task_id: &TaskId) -> Result<TaskRecord, StoreError> {
     let row = load_task(conn, task_id)?;
     let mut record = build_record(conn, &row)?;
     if let Some(delivery) = &record.current_delivery {
-        if let Some((text, recorded)) = crate::result::delivery_result(conn, &delivery.id)? {
+        if let Some((text, _, recorded)) = crate::result::delivery_result(conn, &delivery.id)? {
             record.result_markdown = Some(text);
             record.result_recorded_at_ms = Some(recorded);
         }
@@ -161,6 +162,7 @@ fn summary(conn: &Connection, row: &TaskRow) -> Result<SnapshotTaskSummary, Stor
         depth: row.depth,
         source_task_id: row.source_task_id.clone(),
         dependencies: dependency_ids(conn, &row.id)?,
+        blocked_by: blocked_dependencies(conn, &row.id)?,
         category: row.category.clone(),
         title: row.title.clone(),
         status: row.status,
@@ -198,32 +200,88 @@ pub fn list_snapshot(
     })
 }
 
-/// FIFO dispatch queue: oldest `queued` Tasks first, with their stored dispatch intent.
+/// Bounded newest-first Task summaries for `GET /v1/tasks` (no Worker inventory).
+pub fn list_tasks(conn: &Connection, limit: usize) -> Result<TaskListResponse, StoreError> {
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
+    let total_tasks = u64::try_from(total).unwrap_or(0);
+    let rows = list_task_rows(conn, limit)?;
+    let mut tasks = Vec::with_capacity(rows.len());
+    for row in &rows {
+        tasks.push(summary(conn, row)?);
+    }
+    Ok(TaskListResponse {
+        truncated: total_tasks > tasks.len() as u64,
+        total_tasks,
+        event_cursor: latest_seq(conn)?,
+        tasks,
+    })
+}
+
+/// Whether one Task is claimable right now, and which prerequisites still block it.
+pub fn eligibility(conn: &Connection, task_id: &TaskId) -> Result<TaskEligibility, StoreError> {
+    let row = load_task(conn, task_id)?;
+    let blocked_by: Vec<BlockingDependency> = blocked_dependencies(conn, task_id)?;
+    let claimable = row.status == myrlet_protocol::TaskStatus::Queued && blocked_by.is_empty();
+    Ok(TaskEligibility {
+        task_id: task_id.clone(),
+        claimable,
+        blocked_by,
+    })
+}
+
+/// Oldest `queued` Tasks this Worker's advertised Slots could run, bounded by `limit`.
+pub fn claimable_for_worker(
+    conn: &Connection,
+    inventory: Option<&myrlet_protocol::WorkerInventory>,
+    limit: usize,
+) -> Result<Vec<TaskId>, StoreError> {
+    let Some(inventory) = inventory else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        "SELECT id, definition_json FROM tasks WHERE status = 'queued' \
+         ORDER BY created_at_ms ASC, id ASC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut claimable = Vec::new();
+    for row in rows {
+        let (id, definition_json) = row?;
+        let definition: myrlet_protocol::TaskDefinition = serde_json::from_str(&definition_json)?;
+        let eligible = !deliveries::task_has_delivery(conn, &TaskId::new(id.clone()))?
+            && inventory
+                .slots
+                .iter()
+                .any(|slot| slot.accepts(&definition.routing, None));
+        if eligible {
+            claimable.push(TaskId::new(id));
+            if claimable.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(claimable)
+}
+
+/// Oldest `queued` Tasks with their immutable definition, for wakeup scheduling.
 pub fn list_queued_tasks(
     conn: &Connection,
     limit: usize,
-) -> Result<Vec<(TaskId, u64, TaskDefinition, DispatchTaskRequest)>, StoreError> {
+) -> Result<Vec<(TaskId, myrlet_protocol::TaskDefinition)>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT id, version, definition_json, queue_request_json FROM tasks \
-         WHERE status = 'queued' AND queue_request_json IS NOT NULL \
-         ORDER BY queued_at_ms ASC, id ASC LIMIT ?1",
+        "SELECT id, definition_json FROM tasks WHERE status = 'queued' \
+         ORDER BY created_at_ms ASC, id ASC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     let mut queued = Vec::new();
     for row in rows {
-        let (id, version, definition_json, queue_request_json) = row?;
+        let (id, definition_json) = row?;
         queued.push((
             TaskId::new(id),
-            u64::try_from(version).unwrap_or(1),
-            serde_json::from_str::<TaskDefinition>(&definition_json)?,
-            serde_json::from_str::<DispatchTaskRequest>(&queue_request_json)?,
+            serde_json::from_str::<myrlet_protocol::TaskDefinition>(&definition_json)?,
         ));
     }
     Ok(queued)

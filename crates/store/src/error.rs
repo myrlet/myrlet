@@ -13,6 +13,8 @@ pub enum StoreError {
     IdempotencyConflict,
     #[error("illegal state transition")]
     InvalidTransition,
+    #[error("the task already has a committed delivery")]
+    AlreadyClaimed,
     #[error("stale delivery report or connection epoch")]
     StaleDelivery,
     #[error("invalid input: {0}")]
