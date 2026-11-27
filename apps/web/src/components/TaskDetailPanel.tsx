@@ -8,11 +8,11 @@
  * Progress or Delivery is stated explicitly instead of being guessed.
  */
 
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, Copy, Inbox, X } from "lucide-react";
+import { AlertCircle, Copy, Inbox, RotateCcw, X } from "lucide-react";
 
-import type { TaskRecord, TaskTreeResponse } from "../api/types";
+import type { SnapshotTaskSummary, TaskRecord, TaskTreeResponse } from "../api/types";
 import {
   CANCEL_STATE_LABELS,
   DELIVERY_STATUS_LABELS,
@@ -20,10 +20,13 @@ import {
   formatRelativeTime,
   formatTimestamp,
 } from "../format";
+import { ResultPreview } from "./ResultPreview";
+import { ResultReader } from "./ResultReader";
 import { TaskStatusBadge } from "./StatusBadge";
-const ResultMarkdown = lazy(() => import("./ResultMarkdown"));
 
 export interface TaskDetailPanelProps {
+  readonly selectedTaskId: string | null;
+  readonly summary: SnapshotTaskSummary | null;
   readonly task: TaskRecord | null;
   readonly tree: TaskTreeResponse | null;
   readonly loading: boolean;
@@ -31,6 +34,10 @@ export interface TaskDetailPanelProps {
   readonly onClose: () => void;
   readonly onSelectTask: (taskId: string) => void;
   readonly onCopyText: (label: string, text: string) => void;
+  /** Re-read the current selection without dropping what is already shown. */
+  readonly onRetry: () => void;
+  /** Dismiss the failure notice and keep the panel open. */
+  readonly onDismissError: () => void;
 }
 
 type DetailTab = "overview" | "tree" | "delivery" | "json";
@@ -243,11 +250,65 @@ function JsonViewer({ value }: { value: unknown }) {
 }
 
 /* --------------------------------------------------------------------- */
+/* Failure notice                                                         */
+/* --------------------------------------------------------------------- */
+
+/**
+ * In-panel load failure. The last known Task name and status stay in the
+ * header; this only reports the failed read and offers a retry for the current
+ * Task plus an explicit dismiss.
+ */
+function DetailErrorNotice({
+  message,
+  busy,
+  onRetry,
+  onDismiss,
+}: {
+  message: string;
+  busy: boolean;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="detail-error" role="alert" aria-label="Task load failed">
+      <AlertCircle size={14} aria-hidden="true" />
+      <div className="detail-error-body">
+        <span className="detail-error-title">Could not load this Task</span>
+        <span className="detail-error-message">{message}</span>
+      </div>
+      <div className="detail-error-actions">
+        <button
+          type="button"
+          className="button button-sm"
+          onClick={onRetry}
+          disabled={busy}
+          aria-busy={busy}
+        >
+          <RotateCcw size={12} aria-hidden="true" />
+          <span>{busy ? "Retrying…" : "Retry"}</span>
+        </button>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onDismiss}
+          aria-label="Dismiss load failure"
+          title="Dismiss load failure"
+        >
+          <X size={13} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------- */
 /* Panel                                                                  */
 /* --------------------------------------------------------------------- */
 
 export function TaskDetailPanel(props: TaskDetailPanelProps) {
   const {
+    selectedTaskId,
+    summary,
     task,
     tree,
     loading,
@@ -255,37 +316,136 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
     onClose,
     onSelectTask,
     onCopyText,
+    onRetry,
+    onDismissError,
   } = props;
 
   const [tab, setTab] = useState<DetailTab>("overview");
 
+  // Result reader: modally over the Inspector, without touching the tab or the
+  // Overview reading position. Closing restores both focus and scroll.
+  const [readerOpen, setReaderOpen] = useState(false);
+  const detailBodyRef = useRef<HTMLDivElement | null>(null);
+  const readerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const readerScrollRef = useRef(0);
+  const readerWasOpenRef = useRef(false);
+
+  const openReader = useCallback(() => {
+    readerScrollRef.current = detailBodyRef.current?.scrollTop ?? 0;
+    readerWasOpenRef.current = true;
+    setReaderOpen(true);
+  }, []);
+
+  const closeReader = useCallback(() => {
+    setReaderOpen(false);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (readerOpen || !readerWasOpenRef.current) {
+      return;
+    }
+    readerWasOpenRef.current = false;
+    const body = detailBodyRef.current;
+    if (body !== null) {
+      body.scrollTop = readerScrollRef.current;
+    }
+    if (readerTriggerRef.current?.isConnected) {
+      // Focusing first would scroll the trigger into view and discard the
+      // restored reading position in a real browser.
+      readerTriggerRef.current.focus({ preventScroll: true });
+      if (body !== null) {
+        body.scrollTop = readerScrollRef.current;
+      }
+    }
+  }, [readerOpen]);
+
+  const selectionId = selectedTaskId ?? task?.id ?? null;
+
   // A new Task selection always starts on Overview.
   useEffect(() => {
     setTab("overview");
-  }, [task?.id]);
+  }, [selectionId]);
 
-  if (task == null) {
+  if (selectionId === null) {
     return (
       <aside className="detail-pane" aria-label="Task detail">
         <div className="pane-empty">
-          {loading ? (
-            <div className="loading-state">Loading Task…</div>
-          ) : (
-            <>
-              <Inbox size={20} aria-hidden="true" />
-              <span className="pane-empty-title">No Task selected</span>
-              <span>Select a Task to inspect its Overview, Tree &amp; Deps, and Delivery.</span>
-            </>
-          )}
+          <Inbox size={20} aria-hidden="true" />
+          <span className="pane-empty-title">No Task selected</span>
+          <span>Select a Task to inspect its Overview, Tree &amp; Deps, and Delivery.</span>
         </div>
-        {error ? (
-          <div className="detail-body">
-            <div className="alert alert-error" role="alert">
-              <AlertCircle size={14} aria-hidden="true" />
-              <span>{error}</span>
+      </aside>
+    );
+  }
+
+  if (task === null) {
+    // Snapshot facts are enough to keep the header honest while the full read
+    // loads or after it failed: the Task never appears to be unselected.
+    const summaryTitle = summary?.title || summary?.id || selectionId;
+    const summaryStatus = summary?.status ?? null;
+    return (
+      <aside className="detail-pane" aria-label="Task detail">
+        <header className="detail-header">
+          <div className="detail-heading">
+            <nav className="detail-breadcrumb" aria-label="Task ancestry">
+              <span className="detail-breadcrumb-current">Task</span>
+            </nav>
+            <h2 className="detail-title">{summaryTitle}</h2>
+            <div className="detail-subtitle" style={{ flexWrap: "nowrap" }}>
+              {summaryStatus === null ? null : <TaskStatusBadge status={summaryStatus} />}
+              <span className="detail-id-short mono" title={selectionId}>
+                {middleTruncateId(selectionId)}
+              </span>
+              {summary === null ? null : (
+                <span
+                  className="detail-version-pill mono"
+                  title="Task version (optimistic concurrency)"
+                >
+                  v{summary.version}
+                </span>
+              )}
+              {loading ? (
+                <span className="detail-refreshing" role="status">
+                  Loading…
+                </span>
+              ) : null}
             </div>
           </div>
-        ) : null}
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close task detail"
+            title="Close task detail"
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="detail-body">
+          {error === null ? (
+            loading ? (
+              <div className="loading-state" role="status">
+                Loading Task…
+              </div>
+            ) : (
+              <div className="detail-fallback">
+                <p className="detail-empty">Details are not loaded.</p>
+                <button type="button" className="button button-sm" onClick={onRetry}>
+                  <RotateCcw size={12} aria-hidden="true" />
+                  <span>Load Task</span>
+                </button>
+              </div>
+            )
+          ) : (
+            <DetailErrorNotice
+              message={error}
+              busy={loading}
+              onRetry={onRetry}
+              onDismiss={onDismissError}
+            />
+          )}
+        </div>
       </aside>
     );
   }
@@ -379,6 +539,16 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
         </MetaCell>
       </div>
 
+      {task.resultMarkdown === null ? null : (
+        <ResultPreview
+          markdown={task.resultMarkdown}
+          recordedAtMs={task.resultRecordedAtMs}
+          onCopyText={onCopyText}
+          onOpenReader={openReader}
+          triggerRef={readerTriggerRef}
+        />
+      )}
+
       {progress === null ? null : (
         <section className="overview-progress-card" aria-label="Latest Harness progress">
           <div className="overview-progress-head">
@@ -393,35 +563,6 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
             </span>
           </div>
           <p className="overview-progress-text">{progress.text}</p>
-        </section>
-      )}
-
-      {task.resultMarkdown === null ? null : (
-        <section className="detail-section" aria-label="Task result">
-          <div className="result-head">
-            <h3 className="detail-section-title">Result</h3>
-            <span className="header-spacer" />
-            {task.resultRecordedAtMs === null ? null : (
-              <span
-                className="result-recorded tabular"
-                title={`Recorded ${formatTimestamp(task.resultRecordedAtMs)}`}
-              >
-                Synced {formatRelativeTime(task.resultRecordedAtMs)}
-              </span>
-            )}
-            <button
-              type="button"
-              className="button button-sm button-ghost"
-              onClick={() => onCopyText("Result", task.resultMarkdown ?? "")}
-              title="Copy the result Markdown"
-            >
-              <Copy size={12} aria-hidden="true" />
-              <span>Copy</span>
-            </button>
-          </div>
-          <Suspense fallback={<pre>{task.resultMarkdown}</pre>}>
-            <ResultMarkdown markdown={task.resultMarkdown} />
-          </Suspense>
         </section>
       )}
 
@@ -735,19 +876,32 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
         id="detail-tabpanel"
         role="tabpanel"
         aria-labelledby={`detail-tab-${tab}`}
+        ref={detailBodyRef}
       >
-        {error ? (
-          <div className="alert alert-error" role="alert">
-            <AlertCircle size={14} aria-hidden="true" />
-            <span>{error}</span>
-          </div>
-        ) : null}
+        {error === null ? null : (
+          <DetailErrorNotice
+            message={error}
+            busy={loading}
+            onRetry={onRetry}
+            onDismiss={onDismissError}
+          />
+        )}
 
         {tab === "overview" ? renderOverview() : null}
         {tab === "tree" ? renderTree() : null}
         {tab === "delivery" ? renderDelivery() : null}
         {tab === "json" ? renderJson() : null}
       </div>
+
+      {readerOpen && task.resultMarkdown !== null ? (
+        <ResultReader
+          title={definition.title}
+          markdown={task.resultMarkdown}
+          recordedAtMs={task.resultRecordedAtMs}
+          onCopyText={onCopyText}
+          onRequestClose={closeReader}
+        />
+      ) : null}
     </aside>
   );
 }

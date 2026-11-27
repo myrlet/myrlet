@@ -83,6 +83,9 @@ export interface UseHubResult {
   readonly detailLoading: boolean;
   readonly detailError: string | null;
   selectTask: (taskId: string | null) => Promise<void>;
+  /** Re-read the current selection without changing it. */
+  retrySelected: () => Promise<void>;
+  clearDetailError: () => void;
 
   /* Worker commands */
   readonly enrollmentCode: CreateEnrollmentCodeResponse | null;
@@ -345,6 +348,64 @@ export function useHub(): UseHubResult {
     setLastSyncedAtMs(Date.now());
   }, []);
 
+  /**
+   * Read one Task and its bounded tree, guarded by the selection token so a
+   * response for an abandoned selection can never overwrite the current one.
+   * A failed read keeps whatever detail is already on screen and only records
+   * the error; the panel decides how to surface it.
+   */
+  const loadTaskDetail = useCallback(
+    async (taskId: string, requestToken: number): Promise<void> => {
+      const client = clientRef.current;
+      if (!client) {
+        return;
+      }
+      setDetailLoading(true);
+      try {
+        const task = await client.getTask(taskId);
+        if (selectTokenRef.current !== requestToken || selectedIdRef.current !== taskId) {
+          return;
+        }
+        setSelectedTask(task);
+
+        // Root-scoped descendants give the Context Mini-Tree the parent,
+        // siblings, the current Task, and its children in one read.
+        const tree = await client.getTaskTree(task.rootTaskId, "descendants", 5, 200);
+        if (selectTokenRef.current !== requestToken || selectedIdRef.current !== taskId) {
+          return;
+        }
+        setSelectedTree(tree);
+        setDetailError(null);
+      } catch (loadError) {
+        if (selectTokenRef.current !== requestToken || selectedIdRef.current !== taskId) {
+          return;
+        }
+        if (loadError instanceof HubApiError && loadError.status === 401) {
+          handleAuthFailure();
+          return;
+        }
+        if (loadError instanceof HubApiError && loadError.status === 404) {
+          selectedIdRef.current = null;
+          selectTokenRef.current += 1;
+          setSelectedTaskId(null);
+          setSelectedTask(null);
+          setSelectedTree(null);
+          setDetailLoading(false);
+          setDetailError("This Task no longer exists on the Hub.");
+          return;
+        }
+        setDetailError(
+          loadError instanceof Error ? loadError.message : "The Task could not be loaded.",
+        );
+      } finally {
+        if (selectTokenRef.current === requestToken) {
+          setDetailLoading(false);
+        }
+      }
+    },
+    [handleAuthFailure],
+  );
+
   const refreshSelected = useCallback(
     async (client: HubClient): Promise<void> => {
       const taskId = selectedIdRef.current;
@@ -387,6 +448,7 @@ export function useHub(): UseHubResult {
           setSelectedTaskId(null);
           setSelectedTask(null);
           setSelectedTree(null);
+          setDetailLoading(false);
           setDetailError("This Task no longer exists on the Hub.");
           return;
         }
@@ -599,61 +661,30 @@ export function useHub(): UseHubResult {
 
       selectedIdRef.current = taskId;
       setSelectedTaskId(taskId);
-      setSelectedTask(null);
+      setSelectedTask((current) => (current !== null && current.id === taskId ? current : null));
       setSelectedTree(null);
       setDetailError(null);
 
-      const client = clientRef.current;
-      if (!client) {
-        return;
-      }
-
       const requestToken = ++selectTokenRef.current;
-      setDetailLoading(true);
-      try {
-        const task = await client.getTask(taskId);
-        if (selectTokenRef.current !== requestToken) {
-          return;
-        }
-        setSelectedTask(task);
-
-        // Root-scoped descendants give the Context Mini-Tree the parent,
-        // siblings, the current Task, and its children in one read.
-        const tree = await client.getTaskTree(task.rootTaskId, "descendants", 5, 200);
-        if (selectTokenRef.current !== requestToken) {
-          return;
-        }
-        setSelectedTree(tree);
-        setDetailError(null);
-      } catch (selectError) {
-        if (selectTokenRef.current !== requestToken) {
-          return;
-        }
-        if (selectError instanceof HubApiError && selectError.status === 401) {
-          handleAuthFailure();
-          return;
-        }
-        if (selectError instanceof HubApiError && selectError.status === 404) {
-          selectedIdRef.current = null;
-          setSelectedTaskId(null);
-          setSelectedTask(null);
-          setSelectedTree(null);
-          setDetailError("This Task no longer exists on the Hub.");
-          return;
-        }
-        setDetailError(
-          selectError instanceof Error
-            ? selectError.message
-            : "The Task could not be loaded.",
-        );
-      } finally {
-        if (selectTokenRef.current === requestToken) {
-          setDetailLoading(false);
-        }
-      }
+      await loadTaskDetail(taskId, requestToken);
     },
-    [handleAuthFailure],
+    [loadTaskDetail],
   );
+
+  /** Re-read the current selection in place, keeping any detail already shown. */
+  const retrySelected = useCallback(async (): Promise<void> => {
+    const taskId = selectedIdRef.current;
+    if (taskId === null) {
+      return;
+    }
+    const requestToken = ++selectTokenRef.current;
+    setDetailError(null);
+    await loadTaskDetail(taskId, requestToken);
+  }, [loadTaskDetail]);
+
+  const clearDetailError = useCallback(() => {
+    setDetailError(null);
+  }, []);
 
   /**
    * Run one authenticated command, then refresh Snapshot and the selected Task.
@@ -760,6 +791,8 @@ export function useHub(): UseHubResult {
     detailLoading,
     detailError,
     selectTask,
+    retrySelected,
+    clearDetailError,
 
     enrollmentCode,
     issuingCode,

@@ -749,6 +749,20 @@ describe("App workspace flow", () => {
       "# Findings\n\n- one\n- two\n\n| Item | State |\n| --- | --- |\n| Build | ok |\n\n" +
       "```sh\ncargo test\n```\n\nSee [the PR](https://example.test/pr/1).\n\n" +
       '<script>alert("x")</script>\n\n![chart](https://example.test/chart.png)\n';
+    // jsdom has no layout; give the preview a deterministic box model so this
+    // long Result is measurably clipped and offers the full reader.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ): DOMRect {
+      if (this.classList.contains("result-markdown")) {
+        return new DOMRect(0, 0, 480, this.children.length * 24);
+      }
+      if (this.parentElement?.classList.contains("result-markdown")) {
+        const index = Array.from(this.parentElement.children).indexOf(this);
+        return new DOMRect(0, index * 24, 480, 24);
+      }
+      return new DOMRect(0, 0, 0, 0);
+    });
     stubFetch((url) => {
       const path = url.replace(/^https?:\/\/[^/]+/, "");
       if (path.startsWith("/v1/events")) {
@@ -788,23 +802,35 @@ describe("App workspace flow", () => {
     });
 
     const pane = document.querySelector(".detail-pane") as HTMLElement;
-    const markdown = pane.querySelector(".result-markdown") as HTMLElement;
+    await waitFor(() => {
+      expect(within(pane).getByRole("button", { name: /read full result/i })).toBeInTheDocument();
+    });
+    const markdown = pane.querySelector(".result-preview .result-markdown") as HTMLElement;
     expect(within(markdown).getByRole("heading", { name: "Findings" })).toBeInTheDocument();
     expect(markdown.querySelectorAll("li")).toHaveLength(2);
     expect(markdown.querySelector("table")).not.toBeNull();
-    expect(markdown.querySelector("pre code")?.textContent).toContain("cargo test");
+    expect(pane.textContent ?? "").toMatch(/Synced|Recorded/);
 
-    const link = within(markdown).getByRole("link", { name: /the pr/i });
+    // The Overview clips this long result; the complete, sanitized document
+    // lives in the reader behind `Read full result`.
+    fireEvent.click(within(pane).getByRole("button", { name: /read full result/i }));
+    const reader = await screen.findByRole("dialog");
+    await waitFor(() => {
+      expect(reader.querySelector(".result-markdown")).not.toBeNull();
+    });
+    const full = reader.querySelector(".result-markdown") as HTMLElement;
+    expect(full.querySelector("pre code")?.textContent).toContain("cargo test");
+
+    const link = within(full).getByRole("link", { name: /the pr/i });
     expect(link).toHaveAttribute("href", "https://example.test/pr/1");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link.getAttribute("rel") ?? "").toMatch(/noopener/);
 
     // No raw HTML, no remotely loaded image: markdown shows the alt text instead.
-    expect(markdown.querySelector("script")).toBeNull();
-    expect(markdown.querySelector("img")).toBeNull();
-    expect(markdown.textContent ?? "").not.toContain("alert(\"x\")");
-    expect(markdown.textContent ?? "").toContain("[image: chart]");
-    expect(pane.textContent ?? "").toMatch(/Synced|Recorded/);
+    expect(full.querySelector("script")).toBeNull();
+    expect(full.querySelector("img")).toBeNull();
+    expect(full.textContent ?? "").not.toContain("alert(\"x\")");
+    expect(full.textContent ?? "").toContain("[image: chart]");
   });
 
   it("never renders a native select in the gate, workspace, or Workers drawer", async () => {
@@ -1188,6 +1214,203 @@ describe("App workspace flow", () => {
     await waitFor(() => {
       expect(document.querySelector(".inspector-slot")).toBeNull();
     });
+  });
+
+  it("keeps the snapshot Task name and status when the detail read fails, then retries or dismisses it", async () => {
+    let detailAttempts = 0;
+    stubFetch((url) => {
+      const path = url.replace(/^https?:\/\/[^/]+/, "");
+      if (path.startsWith("/v1/events")) {
+        return idleEventStream();
+      }
+      if (path.startsWith("/v1/snapshot")) {
+        return jsonResponse(buildSnapshot());
+      }
+      if (path.startsWith("/v1/workers")) {
+        return jsonResponse({ workers: [workerRecord()] });
+      }
+      const [pathname] = path.split("?");
+      const match = /^\/v1\/tasks\/([^/]+)(\/tree)?$/.exec(pathname);
+      const id = match === null ? "t3" : decodeURIComponent(match[1]);
+      const summary = buildSnapshot().tasks.find((task) => task.id === id);
+      if (summary === undefined) {
+        return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
+      }
+      if (match !== null && match[2] !== undefined) {
+        return jsonResponse({
+          rootTaskId: summary.rootTaskId,
+          tasks: [taskRecord(summary)],
+          truncated: false,
+        });
+      }
+      detailAttempts += 1;
+      if (detailAttempts < 3) {
+        return jsonResponse(
+          { error: "Internal", message: "The Hub returned status 500." },
+          500,
+        );
+      }
+      return jsonResponse(taskRecord(summary));
+    });
+
+    await connectWorkspace();
+    openList();
+    fireEvent.click(document.querySelector('.list-row[data-task-id="t3"]') as HTMLElement);
+
+    const detailPane = (): HTMLElement =>
+      document.querySelector(".detail-pane") as HTMLElement;
+
+    // A failed detail read keeps the Snapshot name/status and states the failure
+    // inside the panel instead of claiming that nothing is selected.
+    await waitFor(() => {
+      expect(detailPane().querySelector(".detail-error")).not.toBeNull();
+    });
+    expect(detailPane().querySelector(".detail-title")?.textContent).toBe("Run tests");
+    expect(detailPane().textContent ?? "").toContain("Queued");
+    expect(detailPane().textContent ?? "").not.toContain("No Task selected");
+    // No fabricated detail from the Snapshot summary.
+    expect(detailPane().textContent ?? "").not.toContain("Work on Run tests.");
+
+    // Dismissing closes only the failure notice; the selection stays.
+    fireEvent.click(
+      within(detailPane()).getByRole("button", { name: /dismiss load failure/i }),
+    );
+    await waitFor(() => {
+      expect(detailPane().querySelector(".detail-error")).toBeNull();
+    });
+    expect(detailPane().querySelector(".detail-title")?.textContent).toBe("Run tests");
+
+    // Selecting the same Task again fails once more, then Retry reloads it.
+    fireEvent.click(document.querySelector('.list-row[data-task-id="t3"]') as HTMLElement);
+    await waitFor(() => {
+      expect(detailPane().querySelector(".detail-error")).not.toBeNull();
+    });
+    fireEvent.click(within(detailPane()).getByRole("button", { name: /retry/i }));
+    await waitFor(() => {
+      expect(detailPane().querySelector(".detail-error")).toBeNull();
+      expect(detailPane().textContent ?? "").toContain("Work on Run tests.");
+    });
+    expect(detailAttempts).toBe(3);
+  });
+
+  it("ignores a stale detail response after switching Tasks", async () => {
+    let releaseT3: () => void = () => undefined;
+    const t3Gate = new Promise<void>((resolve) => {
+      releaseT3 = resolve;
+    });
+
+    stubFetch(async (url) => {
+      const path = url.replace(/^https?:\/\/[^/]+/, "");
+      if (path.startsWith("/v1/events")) {
+        return idleEventStream();
+      }
+      if (path.startsWith("/v1/snapshot")) {
+        return jsonResponse(buildSnapshot());
+      }
+      if (path.startsWith("/v1/workers")) {
+        return jsonResponse({ workers: [workerRecord()] });
+      }
+      const [pathname] = path.split("?");
+      const match = /^\/v1\/tasks\/([^/]+)(\/tree)?$/.exec(pathname);
+      const id = match === null ? "t1" : decodeURIComponent(match[1]);
+      const summary = buildSnapshot().tasks.find((task) => task.id === id);
+      if (summary === undefined) {
+        return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
+      }
+      if (match !== null && match[2] !== undefined) {
+        return jsonResponse({
+          rootTaskId: summary.rootTaskId,
+          tasks: [taskRecord(summary)],
+          truncated: false,
+        });
+      }
+      if (id === "t3") {
+        await t3Gate;
+      }
+      return jsonResponse(taskRecord(summary));
+    });
+
+    await connectWorkspace();
+    openList();
+    fireEvent.click(document.querySelector('.list-row[data-task-id="t3"]') as HTMLElement);
+
+    // Loading is distinct from "nothing selected": the header already names the
+    // pending Task from the Snapshot.
+    await waitFor(() => {
+      const pane = document.querySelector(".detail-pane") as HTMLElement;
+      expect(pane.querySelector(".detail-title")?.textContent).toBe("Run tests");
+      expect(pane.textContent ?? "").toContain("Loading");
+    });
+    expect(document.querySelector(".detail-pane")?.textContent ?? "").not.toContain(
+      "No Task selected",
+    );
+
+    // Switch to another Task before the first response arrives.
+    fireEvent.click(document.querySelector('.list-row[data-task-id="t1"]') as HTMLElement);
+    await waitFor(() => {
+      const pane = document.querySelector(".detail-pane") as HTMLElement;
+      expect(pane.querySelector(".detail-title")?.textContent).toBe("Ship release");
+      expect(pane.textContent ?? "").toContain("Work on Ship release.");
+    });
+
+    // The late response for the abandoned selection must not overwrite t1.
+    releaseT3();
+    await act(async () => {
+      await t3Gate;
+      await Promise.resolve();
+    });
+    const pane = document.querySelector(".detail-pane") as HTMLElement;
+    expect(pane.querySelector(".detail-title")?.textContent).toBe("Ship release");
+    expect(pane.textContent ?? "").toContain("Work on Ship release.");
+    expect(pane.textContent ?? "").not.toContain("Work on Run tests.");
+  });
+
+  it("places a parent Task's subtask summary under its title without changing the card size", async () => {
+    const snapshotTasks = [
+      taskSummary({
+        id: "p1",
+        title: "Parent work",
+        status: "dispatched",
+        subtree: { total: 2, held: 0, queued: 0, dispatched: 2, finished: 0, cancelled: 0 },
+      }),
+      taskSummary({
+        id: "c1",
+        title: "Child work",
+        parentTaskId: "p1",
+        rootTaskId: "p1",
+        depth: 2,
+        status: "dispatched",
+      }),
+    ];
+    stubFetch((url) => {
+      const path = url.replace(/^https?:\/\/[^/]+/, "");
+      if (path.startsWith("/v1/events")) {
+        return idleEventStream();
+      }
+      if (path.startsWith("/v1/snapshot")) {
+        return jsonResponse({ ...buildSnapshot(), totalTasks: 2, tasks: snapshotTasks });
+      }
+      if (path.startsWith("/v1/workers")) {
+        return jsonResponse({ workers: [workerRecord()] });
+      }
+      return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
+    });
+
+    await connectWorkspace();
+    await openBoard();
+
+    const card = document.querySelector('.atlas-node[data-task-id="p1"]') as HTMLElement;
+    expect(card).not.toBeNull();
+    const title = card.querySelector(".atlas-node-title") as HTMLElement;
+    const summary = card.querySelector(".atlas-node-summary") as HTMLElement;
+    expect(title.textContent).toBe("Parent work");
+    expect(summary).not.toBeNull();
+    // The full single-line summary sits directly below the title, not at the
+    // bottom of the card.
+    expect(title.nextElementSibling).toBe(summary);
+    expect(summary.textContent ?? "").toContain("1 subtask");
+    // Card geometry stays fixed: height comes from the layout constant.
+    expect(card.style.height).toBe("140px");
   });
 
   it("lists the read-only shortcuts only", async () => {
