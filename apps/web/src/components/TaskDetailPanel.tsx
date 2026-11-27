@@ -86,6 +86,11 @@ function shortId(id: string): string {
   return id.length <= 12 ? id : id.slice(0, 12);
 }
 
+/** Keeps both ends of a Task ID readable inside a single non-wrapping row. */
+function middleTruncateId(id: string): string {
+  return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-4)}` : id;
+}
+
 /** Root-to-current ancestry resolved against the bounded tree read. */
 function buildAncestry(task: TaskRecord, tree: TaskTreeResponse | null): TaskRecord[] {
   if (tree === null || tree.tasks.length === 0) {
@@ -386,6 +391,23 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
         </MetaCell>
       </div>
 
+      {progress === null ? null : (
+        <section className="overview-progress-card" aria-label="Latest Harness progress">
+          <div className="overview-progress-head">
+            <span className="overview-progress-kicker">LATEST PROGRESS</span>
+            <span className="overview-progress-provider">Harness report</span>
+            <span className="header-spacer" />
+            <span
+              className="overview-progress-age tabular"
+              title={`Received ${formatTimestamp(progress.receivedAtMs)}`}
+            >
+              {formatRelativeTime(progress.receivedAtMs)}
+            </span>
+          </div>
+          <p className="overview-progress-text">{progress.text}</p>
+        </section>
+      )}
+
       <section className="detail-section">
         <div className="prompt-box-head">
           <h3 className="detail-section-title">Prompt</h3>
@@ -641,10 +663,10 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
             {breadcrumb}
           </nav>
           <h2 className="detail-title">{definition.title}</h2>
-          <div className="detail-subtitle">
+          <div className="detail-subtitle" style={{ flexWrap: "nowrap" }}>
             <TaskStatusBadge status={task.status} />
-            <span className="mono" title={`Task ID ${task.id}`}>
-              {task.id}
+            <span className="detail-id-short mono" title={task.id}>
+              {middleTruncateId(task.id)}
             </span>
             <button
               type="button"
@@ -655,10 +677,10 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
             >
               <Copy size={12} aria-hidden="true" />
             </button>
-            <span className="mono" title="Task version (optimistic concurrency)">
+            <span className="detail-version-pill mono" title="Task version (optimistic concurrency)">
               v{task.version}
             </span>
-            {loading ? <span>Refreshing…</span> : null}
+            {loading ? <span className="detail-refreshing">Refreshing…</span> : null}
           </div>
         </div>
         <button

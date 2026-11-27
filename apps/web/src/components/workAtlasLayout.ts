@@ -11,7 +11,7 @@
 import type { SnapshotTaskSummary } from "../api/types";
 
 export const NODE_WIDTH = 232;
-export const NODE_HEIGHT = 126;
+export const NODE_HEIGHT = 140;
 export const COL_GAP = 64;
 export const COL_STEP = NODE_WIDTH + COL_GAP;
 export const ROW_GAP = 26;
@@ -47,6 +47,11 @@ export interface AtlasEdge {
   path: string;
   labelX: number;
   labelY: number;
+  /** World-space endpoint of the routed curve (card edge, not card center). */
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
 }
 
 interface GroupDraft {
@@ -206,7 +211,74 @@ export function buildAtlasLayout(tasks: readonly SnapshotTaskSummary[]): AtlasLa
 
 const round = (value: number): number => Math.round(value * 100) / 100;
 
-interface RoutedEdge { path: string; labelX: number; labelY: number; }
+/* --------------------------------------------------------------------- */
+/* Viewport framing                                                       */
+/* --------------------------------------------------------------------- */
+
+/** Canvas transform: world point `p` lands at `pan + p * scale` in stage space. */
+export interface AtlasView { panX: number; panY: number; scale: number; }
+
+export interface AtlasFramingBounds { minX: number; minY: number; width: number; height: number; }
+
+export interface AtlasFramingOptions {
+  minScale: number;
+  maxScale: number;
+  padX: number;
+  padTop: number;
+  padBottom: number;
+}
+
+export interface AtlasComfortOptions {
+  /** Fit scales under this read as unreadable cards, so the first frame stays crisp. */
+  minScale: number;
+  maxScale: number;
+  pad: number;
+}
+
+/** Whole-atlas frame; `zoomToFit` is the same scale so callers can compare it. */
+export function fitAtlasFrame(
+  width: number,
+  height: number,
+  bounds: AtlasFramingBounds,
+  options: AtlasFramingOptions,
+): { view: AtlasView; zoomToFit: number } {
+  const availW = Math.max(120, width - options.padX * 2);
+  const availH = Math.max(120, height - options.padTop - options.padBottom);
+  const zoomToFit = Math.min(availW / bounds.width, availH / bounds.height);
+  const scale = Math.min(options.maxScale, Math.max(options.minScale, zoomToFit));
+  return {
+    view: {
+      scale,
+      panX: options.padX + (availW - bounds.width * scale) / 2 - bounds.minX * scale,
+      panY: options.padTop + (availH - bounds.height * scale) / 2 - bounds.minY * scale,
+    },
+    zoomToFit,
+  };
+}
+
+/**
+ * Readable first frame: anchor the atlas origin — never the atlas center — at a
+ * comfortable inset, so cards stay crisp and keep their Delivery/Progress
+ * footer. Off-screen groups remain reachable via the overview and `Fit`.
+ */
+export function comfortableAtlasFrame(
+  bounds: AtlasFramingBounds,
+  zoomToFit: number,
+  options: AtlasComfortOptions,
+): AtlasView {
+  const scale = Math.min(options.maxScale, Math.max(options.minScale, zoomToFit));
+  return { scale, panX: options.pad - bounds.minX * scale, panY: options.pad - bounds.minY * scale };
+}
+
+interface RoutedEdge {
+  path: string;
+  labelX: number;
+  labelY: number;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+}
 
 function cubicRoute(
   start: AtlasPosition,
@@ -222,6 +294,10 @@ function cubicRoute(
     path,
     labelX: round((start.x + 3 * controlA.x + 3 * controlB.x + end.x) / 8),
     labelY: round((start.y + 3 * controlA.y + 3 * controlB.y + end.y) / 8),
+    sourceX: round(start.x),
+    sourceY: round(start.y),
+    targetX: round(end.x),
+    targetY: round(end.y),
   };
 }
 
@@ -299,18 +375,69 @@ export function computeAtlasEdges(
   return edges;
 }
 
-/** The Task itself plus every Task directly connected to it by any edge. */
-export function computeRelatedNeighborhood(
-  taskId: string,
+/** Everything a focused Task shows on the canvas. */
+export interface AtlasSubgraph {
+  nodeIds: Set<string>;
+  edgeKeys: Set<string>;
+}
+
+/**
+ * Full relationship path through `focusId`: every upstream ancestor, every
+ * downstream descendant, plus the direct sibling Dependency and Source edges
+ * incident to the focused Task. Transitive Dependency/Source chains stay out of
+ * scope — Hub records them as direct sibling facts, not a graph walk.
+ */
+export function computeConnectedSubgraph(
+  focusId: string,
   edges: readonly AtlasEdge[],
-): Set<string> {
-  const related = new Set<string>([taskId]);
-  for (const edge of edges) {
-    if (edge.sourceId === taskId) {
-      related.add(edge.targetId);
-    } else if (edge.targetId === taskId) {
-      related.add(edge.sourceId);
+): AtlasSubgraph {
+  const nodeIds = new Set<string>([focusId]);
+  const edgeKeys = new Set<string>();
+
+  const parentEdges = edges.filter((edge) => edge.kind === "parent");
+  const parentOf = new Map<string, AtlasEdge>();
+  const childrenOf = new Map<string, AtlasEdge[]>();
+  for (const edge of parentEdges) {
+    if (!parentOf.has(edge.targetId)) parentOf.set(edge.targetId, edge);
+    const children = childrenOf.get(edge.sourceId);
+    if (children) children.push(edge);
+    else childrenOf.set(edge.sourceId, [edge]);
+  }
+
+  // Upward: the ancestry spine, one Parent edge per hop.
+  let ancestorId = focusId;
+  const visitedAncestors = new Set<string>([focusId]);
+  for (;;) {
+    const edge = parentOf.get(ancestorId);
+    if (!edge || visitedAncestors.has(edge.sourceId)) break;
+    visitedAncestors.add(edge.sourceId);
+    nodeIds.add(edge.sourceId);
+    edgeKeys.add(edge.key);
+    ancestorId = edge.sourceId;
+  }
+
+  // Downward: every descendant subtree, breadth-first over Parent edges.
+  const queue: string[] = [focusId];
+  const visitedDescendants = new Set<string>([focusId]);
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    for (const edge of childrenOf.get(current) ?? []) {
+      if (visitedDescendants.has(edge.targetId)) continue;
+      visitedDescendants.add(edge.targetId);
+      nodeIds.add(edge.targetId);
+      edgeKeys.add(edge.key);
+      queue.push(edge.targetId);
     }
   }
-  return related;
+
+  // Direct sibling relations only; these never chain further.
+  for (const edge of edges) {
+    if (edge.kind === "parent") continue;
+    if (edge.sourceId !== focusId && edge.targetId !== focusId) continue;
+    edgeKeys.add(edge.key);
+    nodeIds.add(edge.sourceId);
+    nodeIds.add(edge.targetId);
+  }
+
+  return { nodeIds, edgeKeys };
 }

@@ -253,6 +253,14 @@ export interface TreeRow {
   readonly expanded: boolean;
   /** Whether this row itself satisfies the active filter (false when inactive). */
   readonly matchesFilter: boolean;
+  /** Whether this row is the last visible child of its direct parent. */
+  readonly isLastSibling: boolean;
+  /** For each ancestor depth (0..depth-1), whether a vertical stem continues past this row. */
+  readonly ancestorContinuations: readonly boolean[];
+  /** Number of declared sibling dependencies. */
+  readonly dependencyCount: number;
+  /** Whether this Task carries a sourceTaskId (copy/retry provenance). */
+  readonly hasSourceTask: boolean;
 }
 
 function isTaskRecord(task: TaskTreeSource): task is TaskRecord {
@@ -398,7 +406,12 @@ export function buildTaskTreeRows(
   const rows: TreeRow[] = [];
   const visited = new Set<string>();
 
-  const visit = (task: TaskTreeSource, depth: number): void => {
+  const visit = (
+    task: TaskTreeSource,
+    depth: number,
+    isLastSibling: boolean,
+    ancestorContinuations: readonly boolean[],
+  ): void => {
     if (visited.has(task.id)) {
       return;
     }
@@ -413,6 +426,11 @@ export function buildTaskTreeRows(
       ? allChildren.filter((child) => included.has(child.id))
       : allChildren;
     const isOpen = allChildren.length > 0 && (autoExpanded.has(task.id) || expanded.has(task.id));
+    const dependencyCount = isTaskRecord(task)
+      ? task.task.dependencies.length
+      : task.dependencies.length;
+    const hasSourceTask =
+      (isTaskRecord(task) ? task.task.sourceTaskId : task.sourceTaskId) !== null;
 
     rows.push({
       task,
@@ -426,18 +444,24 @@ export function buildTaskTreeRows(
       childCount: allChildren.length,
       expanded: isOpen,
       matchesFilter: filterActive && matches.has(task.id),
+      isLastSibling,
+      ancestorContinuations,
+      dependencyCount,
+      hasSourceTask,
     });
 
     if (isOpen) {
-      for (const child of visibleChildren) {
-        visit(child, depth + 1);
-      }
+      const childContinuations = depth === 0 ? [] : [...ancestorContinuations, !isLastSibling];
+      visibleChildren.forEach((child, index) => {
+        visit(child, depth + 1, index === visibleChildren.length - 1, childContinuations);
+      });
     }
   };
 
-  for (const root of roots) {
-    visit(root, 0);
-  }
+  const visibleRoots = filterActive ? roots.filter((root) => included.has(root.id)) : roots;
+  visibleRoots.forEach((root, index) => {
+    visit(root, 0, index === visibleRoots.length - 1, []);
+  });
 
   return rows;
 }

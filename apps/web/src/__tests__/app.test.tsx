@@ -3,9 +3,10 @@
  *
  * These tests assert the truthful wording and provenance rules the design
  * system depends on (never "Completed"/"Succeeded", unknown capacity is `—`,
- * tokens never reach storage) plus the graph-centric top-chrome layout:
- * 52px App Bar, 48px Board toolbar, Board as the default home, and the right
- * Inspector — with no left sidebar rail.
+ * tokens never reach storage) plus the single-workspace chrome: 52px App Bar
+ * with a centered `Board | List` switch, a 42px workspace toolbar, a
+ * full-bleed Board by default (Choice A — Inspector collapsed), the Workers
+ * drawer, and no Events tab or left sidebar rail.
  */
 
 import "@testing-library/jest-dom/vitest";
@@ -19,6 +20,7 @@ import type {
   GlobalSnapshot,
   HubEventEnvelope,
   SnapshotTaskSummary,
+  TaskRecord,
   WorkerRecord,
 } from "../api/types";
 import { TASK_STATUS_META, buildTaskTreeRows, formatCapacity } from "../format";
@@ -127,6 +129,38 @@ function workerRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
       ],
     },
     ...overrides,
+  };
+}
+
+/** A full Task record, so `GET /v1/tasks/{id}` can satisfy a selection. */
+function taskRecord(summary: SnapshotTaskSummary): TaskRecord {
+  return {
+    id: summary.id,
+    rootTaskId: summary.rootTaskId,
+    depth: summary.depth,
+    status: summary.status,
+    version: summary.version,
+    createdAtMs: summary.createdAtMs,
+    updatedAtMs: summary.updatedAtMs,
+    finishedAtMs: summary.finishedAtMs,
+    currentDelivery: summary.currentDelivery,
+    subtree: summary.subtree,
+    task: {
+      clientRef: null,
+      parentTaskId: summary.parentTaskId,
+      sourceTaskId: summary.sourceTaskId,
+      dependencies: summary.dependencies,
+      category: summary.category,
+      tags: [],
+      title: summary.title,
+      prompt: `Work on ${summary.title}.`,
+      input: null,
+      expectedOutput: null,
+      externalReferences: [],
+      routing: {},
+      execution: {},
+      metadata: {},
+    },
   };
 }
 
@@ -360,15 +394,7 @@ function submitAuthGate(): void {
   fireEvent.submit(form);
 }
 
-/** The top app bar's canonical workspace navigation. */
-function workspaceNav(): HTMLElement {
-  return screen.getByRole("navigation", { name: /workspace views/i });
-}
-
-function selectView(name: RegExp): void {
-  fireEvent.click(within(workspaceNav()).getByRole("button", { name }));
-}
-
+/** The App Bar's centered Board | List switch — the only view navigation. */
 function modeSwitch(): HTMLElement {
   return screen.getByRole("group", { name: /workspace mode/i });
 }
@@ -406,8 +432,26 @@ describe("App workspace flow", () => {
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });
       }
+      if (path.startsWith("/v1/tasks/")) {
+        const [pathname] = path.split("?");
+        const match = /^\/v1\/tasks\/([^/]+)(\/tree)?$/.exec(pathname);
+        const id = match === null ? "t1" : decodeURIComponent(match[1]);
+        const isTree = match !== null && match[2] !== undefined;
+        const summary = buildSnapshot().tasks.find((task) => task.id === id);
+        if (summary === undefined) {
+          return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
+        }
+        if (isTree) {
+          return jsonResponse({
+            rootTaskId: summary.rootTaskId,
+            tasks: [taskRecord(summary)],
+            truncated: false,
+          });
+        }
+        return jsonResponse(taskRecord(summary));
+      }
       if (path.startsWith("/v1/tasks")) {
-        return jsonResponse(buildSnapshot().tasks[0]);
+        return jsonResponse(taskRecord(buildSnapshot().tasks[0]));
       }
       return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
     });
@@ -438,41 +482,91 @@ describe("App workspace flow", () => {
     }
   });
 
-  it("opens on the Board with top chrome, right Inspector, and no sidebar rail", async () => {
+  it("opens full-bleed on the Board with centered Board | List, no sidebar, no Events, Inspector collapsed", async () => {
     await connectWorkspace();
 
-    // The left rail is gone; navigation lives in the 52px app bar.
+    // No left rail, no page tabs, no Events anywhere in the chrome.
     expect(document.querySelector(".sidebar")).toBeNull();
     expect(document.querySelector(".sidebar-rail")).toBeNull();
-    expect(within(workspaceNav()).getByRole("button", { name: /workspace/i })).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+    expect(screen.queryByRole("navigation", { name: /workspace views/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^events/i })).toBeNull();
+    expect(screen.queryByText(/event stream/i)).toBeNull();
 
-    // Board is the default home view.
-    expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
-    expect(document.querySelector(".board-toolbar")).not.toBeNull();
+    // The Board | List switch is centered in the App Bar and defaults to Board.
+    const appBar = document.querySelector(".app-bar") as HTMLElement;
+    const center = appBar.querySelector(".app-bar-center");
+    expect(center).not.toBeNull();
+    expect(center?.contains(modeSwitch())).toBe(true);
     expect(within(modeSwitch()).getByRole("button", { name: /^board$/i })).toHaveAttribute(
       "data-active",
       "true",
     );
 
-    // The right Inspector is open by default and hosts the Workspace overview.
-    expect(document.querySelector(".inspector-slot")).not.toBeNull();
-    expect(document.querySelector(".inspector-pane")).not.toBeNull();
+    // Board is the home view, rendered full-bleed with a 42px toolbar.
+    expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
+    expect(document.querySelector(".board-toolbar")).not.toBeNull();
 
-    // Status bar carries live truth: counters High→low and the task/relationship facts.
-    const statusBar = document.querySelector(".status-bar");
-    expect(statusBar).not.toBeNull();
-    expect(statusBar?.textContent ?? "").toContain("Live · Event stream connected");
-    expect(statusBar?.textContent ?? "").toContain("relationships");
-    expect(within(statusBar as HTMLElement).getByRole("button", { name: /workers/i })).toHaveTextContent(
-      "1/1",
-    );
+    // Choice A: the Inspector starts collapsed so the canvas gets 100% width.
+    expect(document.querySelector(".inspector-slot")).toBeNull();
+    const inspectorToggle = within(
+      screen.getByRole("toolbar", { name: /board toolbar/i }),
+    ).getByRole("button", { name: /inspector/i });
+    expect(inspectorToggle).toHaveAttribute("aria-pressed", "false");
+
+    // The status bar carries counters, totals, and hints — but no duplicate
+    // live-stream or Workers readouts (those live in the App Bar now).
+    const statusBar = document.querySelector(".status-bar") as HTMLElement;
+    expect(statusBar.textContent ?? "").toContain("relations");
+    expect(statusBar.textContent ?? "").not.toMatch(/live · event stream/i);
+    expect(within(statusBar).queryByRole("button", { name: /^workers/i })).toBeNull();
+    expect(statusBar.textContent ?? "").toContain("⌘K · I · ?");
+
+    // Workers live in the App Bar as a drawer trigger, not a page.
+    expect(
+      within(appBar).getByRole("button", { name: /workers/i }),
+    ).toHaveTextContent("1/1");
   });
 
-  it("toggles Board and List without losing the Inspector, and never claims a verdict", async () => {
+  it("opens Task Detail on click and toggles the Workspace Inspector when nothing is selected", async () => {
     await connectWorkspace();
+
+    const node = document.querySelector<HTMLElement>('.atlas-node[data-task-id="t3"]');
+    expect(node).not.toBeNull();
+    fireEvent.click(node as HTMLElement);
+
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane")).not.toBeNull();
+    });
+    expect(document.querySelector(".inspector-slot")).not.toBeNull();
+
+    // Escape clears the selection and retracts the Inspector (full-bleed again).
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(document.querySelector(".inspector-slot")).toBeNull();
+    });
+
+    // Toggling Inspector with no selection shows the Workspace overview.
+    const toolbar = screen.getByRole("toolbar", { name: /board toolbar/i });
+    fireEvent.click(within(toolbar).getByRole("button", { name: /inspector/i }));
+    await waitFor(() => {
+      expect(document.querySelector(".inspector-pane")).not.toBeNull();
+    });
+    expect(document.querySelector(".detail-pane")).toBeNull();
+  });
+
+  it("switches Board and List without losing filters or selection, and never claims a verdict", async () => {
+    await connectWorkspace();
+
+    // A filter applied in Board mode must survive the mode switch.
+    fireEvent.change(screen.getByLabelText("Filter by status"), {
+      target: { value: "finished" },
+    });
+    const node = document.querySelector<HTMLElement>('.atlas-node[data-task-id="t1"]');
+    expect(node).not.toBeNull();
+    fireEvent.click(node as HTMLElement);
+    await waitFor(() => {
+      expect(document.querySelector(".detail-pane")).not.toBeNull();
+    });
 
     fireEvent.click(within(modeSwitch()).getByRole("button", { name: /list/i }));
     await waitFor(() => {
@@ -482,93 +576,82 @@ describe("App workspace flow", () => {
       "data-active",
       "true",
     );
-    expect(document.querySelector(".inspector-pane")).not.toBeNull();
 
-    const taskTable = screen
-      .getAllByRole("table")
-      .find((table) => (table.textContent ?? "").includes("Ship release"));
-    expect(taskTable).toBeDefined();
-    expect(taskTable).toHaveTextContent("Handling ended");
-    expect(taskTable).not.toHaveTextContent("Completed");
-    expect(taskTable).not.toHaveTextContent("Success");
+    // Filters and selection are preserved; the Inspector is still open.
+    expect((screen.getByLabelText("Filter by status") as HTMLSelectElement).value).toBe("finished");
+    expect(document.querySelector(".inspector-slot")).not.toBeNull();
+    expect(
+      document.querySelector('.list-row[data-selected="true"]'),
+    ).not.toBeNull();
+
+    // Only the filtered (finished) Task is listed, labelled honestly.
+    const listPane = document.querySelector(".task-pane") as HTMLElement;
+    expect(listPane).toHaveTextContent("Handling ended");
+    expect(listPane).not.toHaveTextContent("Completed");
+    expect(listPane).not.toHaveTextContent("Succeeded");
 
     fireEvent.click(within(modeSwitch()).getByRole("button", { name: /^board$/i }));
     await waitFor(() => {
       expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
     });
+    expect((screen.getByLabelText("Filter by status") as HTMLSelectElement).value).toBe("finished");
+    expect(document.querySelector(".detail-pane")).not.toBeNull();
   });
 
-  it("persists only myrlet.theme when the app-bar theme selector changes", async () => {
+  it("opens the Workers drawer over the canvas with unknown capacity as an em dash", async () => {
     await connectWorkspace();
 
-    const themeSelect = document.querySelector<HTMLSelectElement>(
-      ".app-bar [data-theme-select]",
+    fireEvent.click(
+      within(document.querySelector(".app-bar") as HTMLElement).getByRole("button", {
+        name: /workers/i,
+      }),
     );
-    expect(themeSelect).not.toBeNull();
-    fireEvent.change(themeSelect as HTMLSelectElement, { target: { value: "graphite" } });
+
+    const drawer = await screen.findByRole("dialog", { name: /workers and pairing/i });
+    expect(drawer).toHaveClass("workers-drawer-panel");
+    expect(within(drawer).getByText(/1 of 1 online/i)).toBeInTheDocument();
+
+    // The canvas stays mounted underneath: this is a drawer, not a page.
+    expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
+
+    const card = drawer.querySelector<HTMLElement>('[data-worker-id="wkr_00000000000a"]');
+    expect(card).not.toBeNull();
+    const slotRow = within(card as HTMLElement).getByText("mac-default").closest("tr");
+    expect(slotRow).not.toBeNull();
+    const slotRowElement = slotRow as HTMLElement;
+    expect(within(slotRowElement).getByText("—")).toBeInTheDocument();
+    expect(slotRowElement.textContent ?? "").not.toMatch(/capacity\s*0/i);
+    expect(slotRowElement.textContent ?? "").not.toContain("0");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: /workers and pairing/i })).toBeNull();
+    });
+  });
+
+  it("persists only myrlet.theme when the Settings popover changes theme", async () => {
+    await connectWorkspace();
+
+    const settingsButton = screen.getByRole("button", { name: /settings and theme/i });
+    expect(settingsButton).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(settingsButton);
+
+    const menu = await screen.findByRole("menu", { name: /settings/i });
+    expect(within(menu).getByText("THEME")).toBeInTheDocument();
+    const graphite = within(menu).getByRole("menuitemradio", { name: /graphite/i });
+    expect(graphite).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(graphite);
 
     await waitFor(() => {
       expect(window.localStorage.getItem("myrlet.theme")).toBe("graphite");
     });
+    expect(document.documentElement.dataset.theme).toBe("graphite");
 
     expect(localStorageKeys()).toEqual(["myrlet.theme"]);
     expect(window.localStorage.getItem("myrlet.token")).toBeNull();
   });
 
-  it("renders the Workers view with unknown advisory capacity as an em dash", async () => {
-    await connectWorkspace();
-
-    selectView(/^workers/i);
-    await waitFor(() => {
-      expect(document.querySelector('[data-view="workers"]')).not.toBeNull();
-    });
-
-    expect(screen.getAllByText("wkr_00000000000a").length).toBeGreaterThan(0);
-
-    const card = document.querySelector<HTMLElement>('[data-worker-id="wkr_00000000000a"]');
-    expect(card).not.toBeNull();
-
-    const slotLabel = within(card as HTMLElement).getByText("mac-default");
-    const slotRow = slotLabel.closest("tr");
-    expect(slotRow).not.toBeNull();
-
-    const slotRowElement = slotRow as HTMLElement;
-    expect(within(slotRowElement).getByText("—")).toBeInTheDocument();
-    expect(slotRowElement.textContent ?? "").toContain("mac-default");
-    expect(slotRowElement.textContent ?? "").not.toMatch(/capacity\s*0/i);
-    expect(slotRowElement.textContent ?? "").not.toContain("0");
-  });
-
-  it("switches to Events and returns to the Board from the subview bar", async () => {
-    await connectWorkspace();
-
-    selectView(/^events/i);
-    await waitFor(() => {
-      expect(document.querySelector('[data-view="events"]')).not.toBeNull();
-    });
-    expect(
-      within(document.querySelector(".events-view") as HTMLElement).getByText(/no live events yet/i),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /back to board/i }));
-    await waitFor(() => {
-      expect(document.querySelector('.view-body[data-view="board"]')).not.toBeNull();
-    });
-  });
-
-  it("filters the Board from the status bar counters", async () => {
-    await connectWorkspace();
-
-    const statusBar = document.querySelector(".status-bar") as HTMLElement;
-    fireEvent.click(within(statusBar).getByRole("button", { name: /^queued\b/i }));
-
-    await waitFor(() => {
-      const statusSelect = screen.getByLabelText("Filter by status") as HTMLSelectElement;
-      expect(statusSelect.value).toBe("queued");
-    });
-  });
-
-  it("opens the Command Palette with Ctrl+K, lists Board/List and board actions, and closes with Escape", async () => {
+  it("opens the Command Palette with Ctrl+K, lists Board/List, Workers & Pairing, and board actions, closing on Escape", async () => {
     await connectWorkspace();
 
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
@@ -580,12 +663,41 @@ describe("App workspace flow", () => {
 
     expect(within(palette).getByRole("option", { name: /^board/i })).toBeInTheDocument();
     expect(within(palette).getByRole("option", { name: /^list/i })).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("option", { name: /^workers & pairing/i }),
+    ).toBeInTheDocument();
     expect(within(palette).getByRole("option", { name: /fit board to view/i })).toBeInTheDocument();
     expect(within(palette).getByRole("option", { name: /arrange board layout/i })).toBeInTheDocument();
+    expect(within(palette).queryByRole("option", { name: /^events/i })).toBeNull();
 
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull();
+    });
+  });
+
+  it("opens the Workers drawer from the Command Palette action", async () => {
+    await connectWorkspace();
+
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: /command palette/i });
+    fireEvent.click(within(palette).getByRole("option", { name: /^workers & pairing/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: /workers and pairing/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull();
+  });
+
+  it("filters the Board from the status bar counters", async () => {
+    await connectWorkspace();
+
+    const statusBar = document.querySelector(".status-bar") as HTMLElement;
+    fireEvent.click(within(statusBar).getByRole("button", { name: /^queued\b/i }));
+
+    await waitFor(() => {
+      const statusSelect = screen.getByLabelText("Filter by status") as HTMLSelectElement;
+      expect(statusSelect.value).toBe("queued");
     });
   });
 });

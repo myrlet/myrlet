@@ -12,7 +12,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { SnapshotTaskSummary, TaskRecord } from "../api/types";
 import { TASK_STATUS_META, taskTitle } from "../format";
 import type { Theme } from "../state/useHub";
-import type { WorkspaceView } from "./TopBar";
+import type { WorkspaceMode } from "./TopBar";
 
 /* --------------------------------------------------------------------- */
 /* Command Palette                                                        */
@@ -29,11 +29,9 @@ interface Command {
   readonly run: () => void;
 }
 
-const VIEW_OPTIONS: readonly { readonly view: WorkspaceView; readonly label: string }[] = [
-  { view: "board", label: "Board" },
-  { view: "list", label: "List" },
-  { view: "workers", label: "Workers" },
-  { view: "events", label: "Events" },
+const VIEW_OPTIONS: readonly { readonly mode: WorkspaceMode; readonly label: string }[] = [
+  { mode: "board", label: "Board" },
+  { mode: "list", label: "List" },
 ];
 
 const THEME_OPTIONS: readonly { readonly theme: Theme; readonly label: string }[] = [
@@ -52,7 +50,8 @@ export interface CommandPaletteProps {
   readonly theme: Theme;
   readonly onClose: () => void;
   readonly onSelectTask: (taskId: string) => void;
-  readonly onSelectView: (view: WorkspaceView) => void;
+  readonly onSelectMode: (mode: WorkspaceMode) => void;
+  readonly onOpenWorkers: () => void;
   readonly onNewTask: () => void;
   readonly onImportBundle: () => void;
   readonly onDispatchSelected: () => void;
@@ -69,7 +68,8 @@ export function CommandPalette(props: CommandPaletteProps) {
     theme,
     onClose,
     onSelectTask,
-    onSelectView,
+    onSelectMode,
+    onOpenWorkers,
     onNewTask,
     onImportBundle,
     onDispatchSelected,
@@ -101,15 +101,23 @@ export function CommandPalette(props: CommandPaletteProps) {
     }));
 
     const viewCommands: Command[] = VIEW_OPTIONS.map((option) => ({
-      id: `view:${option.view}`,
+      id: `view:${option.mode}`,
       group: "Views",
       label: option.label,
       hint: "Switch view",
-      keywords: `${option.view} view ${option.label}`.toLowerCase(),
-      run: () => onSelectView(option.view),
+      keywords: `${option.mode} view ${option.label}`.toLowerCase(),
+      run: () => onSelectMode(option.mode),
     }));
 
     const actionCommands: Command[] = [
+      {
+        id: "action:workers",
+        group: "Actions",
+        label: "Workers & Pairing",
+        hint: "drawer",
+        keywords: "workers pairing slots pair enrollment rotate revoke",
+        run: onOpenWorkers,
+      },
       {
         id: "action:new-task",
         group: "Actions",
@@ -167,7 +175,8 @@ export function CommandPalette(props: CommandPaletteProps) {
     theme,
     selectedTask,
     onSelectTask,
-    onSelectView,
+    onSelectMode,
+    onOpenWorkers,
     onNewTask,
     onImportBundle,
     onDispatchSelected,
