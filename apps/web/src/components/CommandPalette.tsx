@@ -18,7 +18,7 @@ import type { WorkspaceMode } from "./TopBar";
 /* Command Palette                                                        */
 /* --------------------------------------------------------------------- */
 
-type CommandGroup = "Tasks" | "Views" | "Actions" | "Themes";
+type CommandGroup = "Tasks" | "Views" | "Appearance" | "Actions";
 
 interface Command {
   readonly id: string;
@@ -34,14 +34,17 @@ const VIEW_OPTIONS: readonly { readonly mode: WorkspaceMode; readonly label: str
   { mode: "list", label: "List" },
 ];
 
-const THEME_OPTIONS: readonly { readonly theme: Theme; readonly label: string }[] = [
-  { theme: "porcelain", label: "Porcelain" },
-  { theme: "paper", label: "Paper" },
-  { theme: "obsidian", label: "Obsidian" },
-  { theme: "graphite", label: "Graphite" },
+const THEME_OPTIONS: readonly {
+  readonly theme: Theme;
+  readonly label: string;
+  readonly hint: string;
+}[] = [
+  { theme: "system", label: "System", hint: "follow browser" },
+  { theme: "light", label: "Light", hint: "appearance" },
+  { theme: "dark", label: "Dark", hint: "appearance" },
 ];
 
-const GROUP_ORDER: readonly CommandGroup[] = ["Tasks", "Views", "Actions", "Themes"];
+const GROUP_ORDER: readonly CommandGroup[] = ["Tasks", "Views", "Appearance", "Actions"];
 
 export interface CommandPaletteProps {
   readonly open: boolean;
@@ -52,9 +55,7 @@ export interface CommandPaletteProps {
   readonly onSelectTask: (taskId: string) => void;
   readonly onSelectMode: (mode: WorkspaceMode) => void;
   readonly onOpenWorkers: () => void;
-  readonly onNewTask: () => void;
-  readonly onImportBundle: () => void;
-  readonly onDispatchSelected: () => void;
+  readonly onToggleInspector: () => void;
   readonly onFitBoard: () => void;
   readonly onArrangeBoard: () => void;
   readonly onChangeTheme: (theme: Theme) => void;
@@ -70,9 +71,7 @@ export function CommandPalette(props: CommandPaletteProps) {
     onSelectTask,
     onSelectMode,
     onOpenWorkers,
-    onNewTask,
-    onImportBundle,
-    onDispatchSelected,
+    onToggleInspector,
     onFitBoard,
     onArrangeBoard,
     onChangeTheme,
@@ -119,28 +118,12 @@ export function CommandPalette(props: CommandPaletteProps) {
         run: onOpenWorkers,
       },
       {
-        id: "action:new-task",
+        id: "action:inspector",
         group: "Actions",
-        label: "New Task",
-        hint: "n",
-        keywords: "create new task",
-        run: onNewTask,
-      },
-      {
-        id: "action:import",
-        group: "Actions",
-        label: "Import Bundle",
-        hint: "JSON",
-        keywords: "import bundle tasks",
-        run: onImportBundle,
-      },
-      {
-        id: "action:dispatch",
-        group: "Actions",
-        label: "Dispatch selected Task",
-        hint: selectedTask ? selectedTask.id : "no Task selected",
-        keywords: "dispatch run selected task",
-        run: onDispatchSelected,
+        label: "Toggle Inspector",
+        hint: selectedTask === null ? "i" : `i · ${selectedTask.id}`,
+        keywords: "inspector detail panel toggle",
+        run: onToggleInspector,
       },
       {
         id: "action:fit-board",
@@ -162,10 +145,10 @@ export function CommandPalette(props: CommandPaletteProps) {
 
     const themeCommands: Command[] = THEME_OPTIONS.map((option) => ({
       id: `theme:${option.theme}`,
-      group: "Themes",
+      group: "Appearance",
       label: option.label,
-      hint: theme === option.theme ? "current" : "Switch theme",
-      keywords: `theme ${option.theme} ${option.label}`.toLowerCase(),
+      hint: theme === option.theme ? "current" : option.hint,
+      keywords: `theme appearance ${option.theme} ${option.label}`.toLowerCase(),
       run: () => onChangeTheme(option.theme),
     }));
 
@@ -177,9 +160,7 @@ export function CommandPalette(props: CommandPaletteProps) {
     onSelectTask,
     onSelectMode,
     onOpenWorkers,
-    onNewTask,
-    onImportBundle,
-    onDispatchSelected,
+    onToggleInspector,
     onFitBoard,
     onArrangeBoard,
     onChangeTheme,
@@ -283,8 +264,8 @@ export function CommandPalette(props: CommandPaletteProps) {
             className="palette-input"
             type="text"
             autoFocus
-            aria-label="Search commands, Tasks, views, and themes"
-            placeholder="Search Tasks, views, actions, themes…"
+            aria-label="Search commands, Tasks, views, and appearance"
+            placeholder="Search Tasks, views, actions, appearance…"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -351,18 +332,18 @@ export function CommandPalette(props: CommandPaletteProps) {
 /* Shortcuts sheet                                                        */
 /* --------------------------------------------------------------------- */
 
+/**
+ * Read-only shortcut sheet. Every entry here exists in `App.tsx`; there are no
+ * Task write entry points to list because this UI never creates or mutates Tasks.
+ */
 const SHORTCUTS: readonly { readonly keys: string; readonly label: string }[] = [
   { keys: "⌘K", label: "Open or close the Command Palette" },
   { keys: "F", label: "Fit the Board to all Task groups" },
   { keys: "Shift+F", label: "Center the selected Task on the Board" },
-  { keys: "j / k", label: "Move the Task selection down / up in List" },
-  { keys: "← / →", label: "Collapse / expand a focused Task branch in List" },
-  { keys: "/", label: "Focus the active view's search field" },
-  { keys: "n", label: "New Task" },
-  { keys: "d", label: "Dispatch the selected Task" },
-  { keys: "i", label: "Show or hide the Inspector" },
-  { keys: "?", label: "Show this shortcut sheet" },
+  { keys: "I", label: "Show or hide the Inspector" },
+  { keys: "↑ / ↓", label: "Move the Task selection through the List" },
   { keys: "Esc", label: "Close the active overlay, or clear the selection" },
+  { keys: "?", label: "Show this shortcut sheet" },
 ];
 
 export interface ShortcutsModalProps {

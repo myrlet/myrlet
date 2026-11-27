@@ -1,14 +1,13 @@
 /*
- * Myrlet design tokens — "Quiet Precision" 2.0.
+ * Myrlet design tokens — "Quiet Precision".
  *
- * One semantic contract, four switchable themes:
- *   porcelain (default light) · obsidian (machined dark)
- *   paper (warm editorial light) · graphite (classic Myrlet dark)
+ * One semantic contract, two visual themes:
+ *   light (cool luminous light) · dark (machined dark)
  *
- * Features never scatter ad-hoc hex colours; they consume these semantic
- * variables (or the shared classes in app.css). Every status colour is always
- * paired with explicit text and a shape glyph, so colour alone never carries
- * meaning. Transitions are always explicit — never `transition: all`.
+ * Follows the browser's `prefers-color-scheme` by default (zero flash before
+ * hydration, zero inline script), and honours explicit `data-theme="light"` or
+ * `data-theme="dark"` overrides. Every status colour is always paired with
+ * explicit text and a shape glyph, so colour alone never carries meaning.
  */
 
 :root {
@@ -47,24 +46,21 @@
     border-color 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
 
   /* Layout ------------------------------------------------------------ */
-  --sidebar-width: 220px;
-  --sidebar-collapsed-width: 56px;
   --view-header-height: 52px;
+  --header-height: 52px;
   --status-bar-height: 26px;
   --row-height: 38px;
   --control-compact: 28px;
   --control-default: 32px;
   --tree-indent: 18px;
   --inspector-width: 420px;
-  /* Legacy aliases kept for the pre-Wave-7 component tree. */
-  --header-height: 52px;
   --detail-width: 420px;
 
   /* Focus ------------------------------------------------------------- */
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
 
-  /* Terminal surfaces: deliberately dark in every theme. */
+  /* Terminal surfaces: deliberately dark in both themes. */
   --terminal-bg: #0d1117;
   --terminal-fg: #e6edf3;
   --terminal-muted: #8b949e;
@@ -78,10 +74,10 @@
 }
 
 /* ===================================================================== */
-/* 1. Porcelain — cool luminous light (default)                          */
+/* 1. Light — cool luminous surface (default when browser prefers light) */
 /* ===================================================================== */
 :root,
-:root[data-theme="porcelain"] {
+:root[data-theme="light"] {
   color-scheme: light;
 
   --bg-canvas: #f6f7f9;
@@ -158,9 +154,81 @@
 }
 
 /* ===================================================================== */
-/* 2. Obsidian — machined dark (mineral teal, zero neon glow)             */
+/* 2. Dark — machined dark (browser dark preference or explicit override) */
 /* ===================================================================== */
-:root[data-theme="obsidian"] {
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg-canvas: #0b0d11;
+    --bg-surface: #11141b;
+    --bg-elevated: #181c25;
+    --bg-well: #181c25;
+    --bg-subtle: #181c25;
+    --bg-hover: #171c25;
+    --bg-active: #1d232e;
+    --bg-selected: #132629;
+    --bg-overlay: rgba(0, 0, 0, 0.68);
+
+    --border-subtle: #232936;
+    --border-default: #2c3443;
+    --border-strong: #3c4658;
+
+    --text-primary: #edf0f5;
+    --text-secondary: #98a2b3;
+    --text-muted: #646f82;
+    --text-inverse: #0b0d11;
+
+    --accent: #2dd4bf;
+    --accent-hover: #5ce4d3;
+    --accent-fg: #062420;
+    --accent-soft: #132629;
+
+    --control-primary-bg: #edf0f5;
+    --control-primary-bg-hover: #ffffff;
+    --control-primary-fg: #0b0d11;
+
+    --focus-ring: #2dd4bf;
+
+    --shadow-overlay: 0 18px 44px rgba(0, 0, 0, 0.62);
+    --shadow-popover: 0 10px 28px rgba(0, 0, 0, 0.5);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+    --status-held-fg: #aeb8c6;
+    --status-held-bg: #171b23;
+    --status-held-border: #2b3342;
+
+    --status-queued-fg: #e4b85e;
+    --status-queued-bg: #2a2313;
+    --status-queued-border: #4a3e1f;
+
+    --status-dispatched-fg: #7fb6f0;
+    --status-dispatched-bg: #12202f;
+    --status-dispatched-border: #24425f;
+
+    --status-finished-fg: #6fd3b5;
+    --status-finished-bg: #0f2420;
+    --status-finished-border: #1e4a3e;
+
+    --status-cancelled-fg: #f0907e;
+    --status-cancelled-bg: #2a1815;
+    --status-cancelled-border: #4e2b24;
+
+    --status-online-fg: #6fd3b5;
+    --status-online-bg: #0f2420;
+    --status-online-border: #1e4a3e;
+
+    --status-offline-fg: #98a2b3;
+    --status-offline-bg: #171b23;
+    --status-offline-border: #2b3342;
+
+    --status-revoked-fg: #f0907e;
+    --status-revoked-bg: #2a1815;
+    --status-revoked-border: #4e2b24;
+  }
+}
+
+:root[data-theme="dark"] {
   color-scheme: dark;
 
   --bg-canvas: #0b0d11;
@@ -229,151 +297,3 @@
   --status-revoked-bg: #2a1815;
   --status-revoked-border: #4e2b24;
 }
-
-/* ===================================================================== */
-/* 3. Paper — warm editorial light                                       */
-/* ===================================================================== */
-:root[data-theme="paper"] {
-  color-scheme: light;
-
-  --bg-canvas: #f4f0e8;
-  --bg-surface: #fcfbf8;
-  --bg-elevated: #fcfbf8;
-  --bg-well: #ece6da;
-  --bg-subtle: #ece6da;
-  --bg-hover: #f0eae0;
-  --bg-active: #e7e0d3;
-  --bg-selected: #f6eae5;
-  --bg-overlay: rgba(26, 24, 22, 0.3);
-
-  --border-subtle: #dfd8ca;
-  --border-default: #d0c7b7;
-  --border-strong: #b4a895;
-
-  --text-primary: #1a1816;
-  --text-secondary: #5f584e;
-  --text-muted: #8e867b;
-  --text-inverse: #fcfbf8;
-
-  --accent: #c84b31;
-  --accent-hover: #ae3d26;
-  --accent-fg: #fff9f5;
-  --accent-soft: #f6eae5;
-
-  --control-primary-bg: #1a1816;
-  --control-primary-bg-hover: #332f2a;
-  --control-primary-fg: #fcfbf8;
-
-  --focus-ring: #c84b31;
-
-  --shadow-overlay: 0 16px 40px rgba(26, 24, 22, 0.18);
-  --shadow-popover: 0 8px 24px rgba(26, 24, 22, 0.13);
-  --shadow-card: 0 1px 2px rgba(26, 24, 22, 0.05);
-
-  --status-held-fg: #5f584e;
-  --status-held-bg: #efeae0;
-  --status-held-border: #dcd3c4;
-
-  --status-queued-fg: #7a5a13;
-  --status-queued-bg: #f8efd8;
-  --status-queued-border: #e5d4a6;
-
-  --status-dispatched-fg: #1e5fa8;
-  --status-dispatched-bg: #e8f0f8;
-  --status-dispatched-border: #c7daec;
-
-  --status-finished-fg: #356b58;
-  --status-finished-bg: #e6f0ea;
-  --status-finished-border: #c3d9cd;
-
-  --status-cancelled-fg: #a03d28;
-  --status-cancelled-bg: #f9e7e1;
-  --status-cancelled-border: #edc9be;
-
-  --status-online-fg: #356b58;
-  --status-online-bg: #e6f0ea;
-  --status-online-border: #c3d9cd;
-
-  --status-offline-fg: #6b645a;
-  --status-offline-bg: #f0ebe1;
-  --status-offline-border: #ddd5c7;
-
-  --status-revoked-fg: #a03d28;
-  --status-revoked-bg: #f9e7e1;
-  --status-revoked-border: #edc9be;
-}
-
-/* ===================================================================== */
-/* 4. Graphite — classic Myrlet dark                                     */
-/* ===================================================================== */
-:root[data-theme="graphite"] {
-  color-scheme: dark;
-
-  --bg-canvas: #101216;
-  --bg-surface: #171b22;
-  --bg-elevated: #202630;
-  --bg-well: #202630;
-  --bg-subtle: #202630;
-  --bg-hover: #1d222b;
-  --bg-active: #242b36;
-  --bg-selected: #26233a;
-  --bg-overlay: rgba(3, 4, 7, 0.66);
-
-  --border-subtle: #2c333f;
-  --border-default: #363e4c;
-  --border-strong: #4a5464;
-
-  --text-primary: #e9ecf2;
-  --text-secondary: #a0aab9;
-  --text-muted: #768191;
-  --text-inverse: #14161b;
-
-  --accent: #b2a7f0;
-  --accent-hover: #c6bef6;
-  --accent-fg: #17142b;
-  --accent-soft: #26233a;
-
-  --control-primary-bg: #ecebf0;
-  --control-primary-bg-hover: #ffffff;
-  --control-primary-fg: #14161b;
-
-  --focus-ring: #b2a7f0;
-
-  --shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.55);
-  --shadow-popover: 0 10px 28px rgba(0, 0, 0, 0.45);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
-
-  --status-held-fg: #b9c0c9;
-  --status-held-bg: #232830;
-  --status-held-border: #343b45;
-
-  --status-queued-fg: #e0bd6a;
-  --status-queued-bg: #2e2818;
-  --status-queued-border: #4a3f22;
-
-  --status-dispatched-fg: #8dbfe8;
-  --status-dispatched-bg: #1b2a38;
-  --status-dispatched-border: #2c465e;
-
-  --status-finished-fg: #8fc4b2;
-  --status-finished-bg: #1b2a26;
-  --status-finished-border: #2d4840;
-
-  --status-cancelled-fg: #e0a08f;
-  --status-cancelled-bg: #2e211d;
-  --status-cancelled-border: #4a332c;
-
-  --status-online-fg: #8fc4b2;
-  --status-online-bg: #1b2a26;
-  --status-online-border: #2d4840;
-
-  --status-offline-fg: #a0a6ad;
-  --status-offline-bg: #232830;
-  --status-offline-border: #343b45;
-
-  --status-revoked-fg: #e0a08f;
-  --status-revoked-bg: #2e211d;
-  --status-revoked-border: #4a332c;
-}
-
-/* End of theme contract. app.css consumes only these semantic names. */

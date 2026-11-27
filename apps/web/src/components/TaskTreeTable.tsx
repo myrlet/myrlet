@@ -4,8 +4,8 @@
  * Mirrors Work Atlas's Task Group mental model: multi-task root trees each get
  * their own elevated card with an honest subtree summary and rounded SVG tree
  * connectors (`├` / `└` / `│`), while standalone root Tasks group cleanly into
- * a single calm section. Actions live in a dedicated right column so they never
- * cover the Task title.
+ * a single calm section. The outline is read-only: the only row action is
+ * copying the Task ID.
  *
  * Fact honesty: five Hub states only (`Handling ended`, never a verdict),
  * worker online/offline indicators read strictly from live Worker records, and
@@ -16,12 +16,13 @@ import { useMemo } from "react";
 import type { KeyboardEvent } from "react";
 import {
   AlertTriangle,
-  ArrowRight,
+  ChevronsUpDown,
   ChevronRight,
   Copy,
   GitBranch,
-  Plus,
+  PanelRight,
   RotateCcw,
+  X,
 } from "lucide-react";
 
 import type { WorkerRecord } from "../api/types";
@@ -29,21 +30,26 @@ import { DELIVERY_STATUS_LABELS, formatCount, formatRelativeTime } from "../form
 import type { TreeRow } from "../format";
 import { TaskStatusBadge } from "./StatusBadge";
 
+/** One visible outline row, as built by `buildTaskTreeRows`. */
+export type TaskTreeRow = TreeRow;
+
 export interface TaskTreeTableProps {
-  rows: readonly TreeRow[];
-  workers?: readonly WorkerRecord[];
-  totalTasks: number;
-  loadedCount: number;
-  tasksTruncated: boolean;
-  selectedTaskId: string | null;
-  onSelectTask: (taskId: string) => void;
-  onToggleExpand: (taskId: string) => void;
-  onQuickDispatch: (taskId: string) => void;
-  onQuickAddSubtask: (parentTaskId: string) => void;
-  onCopyId: (taskId: string) => void;
-  onOpenNewTask: () => void;
-  hasActiveFilter: boolean;
-  onClearFilters: () => void;
+  readonly rows: readonly TaskTreeRow[];
+  readonly workers: readonly WorkerRecord[];
+  readonly totalTasks: number;
+  readonly loadedCount: number;
+  readonly tasksTruncated: boolean;
+  readonly selectedTaskId: string | null;
+  readonly allExpanded: boolean;
+  readonly inspectorOpen: boolean;
+  readonly activeStatusLabel: string | null;
+  readonly onSelectTask: (taskId: string) => void;
+  readonly onToggleExpand: (taskId: string) => void;
+  readonly onToggleExpandAll: () => void;
+  readonly onToggleInspector: () => void;
+  readonly onCopyId: (taskId: string) => void;
+  readonly hasActiveFilter: boolean;
+  readonly onClearFilters: () => void;
 }
 
 const ID_PREVIEW_LENGTH = 12;
@@ -51,10 +57,6 @@ const GUIDE_SLOT = 22;
 
 function shortId(id: string): string {
   return id.length <= ID_PREVIEW_LENGTH ? id : id.slice(0, ID_PREVIEW_LENGTH);
-}
-
-function dispatchable(status: TreeRow["status"]): boolean {
-  return status === "held" || status === "queued";
 }
 
 function isWorkerOnline(worker: WorkerRecord | undefined): boolean {
@@ -212,8 +214,6 @@ interface OutlineRowProps {
   workerById: ReadonlyMap<string, WorkerRecord>;
   onSelectTask: (taskId: string) => void;
   onToggleExpand: (taskId: string) => void;
-  onQuickDispatch: (taskId: string) => void;
-  onQuickAddSubtask: (parentTaskId: string) => void;
   onCopyId: (taskId: string) => void;
 }
 
@@ -224,8 +224,6 @@ function OutlineRow(props: OutlineRowProps) {
     workerById,
     onSelectTask,
     onToggleExpand,
-    onQuickDispatch,
-    onQuickAddSubtask,
     onCopyId,
   } = props;
 
@@ -411,35 +409,9 @@ function OutlineRow(props: OutlineRowProps) {
         )}
       </div>
 
-      {/* 6. Dedicated quick actions column (never overlaps title) */}
+      {/* 6. Read-only actions column (copy ID only; never overlaps title) */}
       <div role="cell" className="list-cell list-cell-actions">
         <div className="list-row-actions">
-          {dispatchable(row.status) ? (
-            <button
-              type="button"
-              className="list-action-btn list-action-dispatch"
-              title="Dispatch this Task"
-              aria-label={`Dispatch ${row.title}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onQuickDispatch(row.id);
-              }}
-            >
-              <ArrowRight size={12} aria-hidden="true" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="list-action-btn"
-            title="Add a subtask under this Task"
-            aria-label={`Add subtask under ${row.title}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onQuickAddSubtask(row.id);
-            }}
-          >
-            <Plus size={12} aria-hidden="true" />
-          </button>
           <button
             type="button"
             className="list-action-btn"
@@ -461,17 +433,19 @@ function OutlineRow(props: OutlineRowProps) {
 export function TaskTreeTable(props: TaskTreeTableProps) {
   const {
     rows,
-    workers = [],
+    workers,
     totalTasks,
     loadedCount,
     tasksTruncated,
     selectedTaskId,
+    allExpanded,
+    inspectorOpen,
+    activeStatusLabel,
     onSelectTask,
     onToggleExpand,
-    onQuickDispatch,
-    onQuickAddSubtask,
+    onToggleExpandAll,
+    onToggleInspector,
     onCopyId,
-    onOpenNewTask,
     hasActiveFilter,
     onClearFilters,
   } = props;
@@ -486,23 +460,8 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
 
   const groups = useMemo(() => groupRowsForOutline(rows), [rows]);
 
-  const countLabel = tasksTruncated
-    ? `${formatCount(loadedCount)} of ${formatCount(totalTasks)} loaded`
-    : `${formatCount(totalTasks)} ${totalTasks === 1 ? "task" : "tasks"}`;
-
   return (
     <section className="task-pane" aria-label="Task tree">
-      {hasActiveFilter ? (
-        <div className="task-pane-header">
-          <span className="task-pane-count">{countLabel}</span>
-          <span className="muted">· {formatCount(rows.length)} shown</span>
-          <span className="header-spacer" />
-          <button type="button" className="button button-sm button-ghost" onClick={onClearFilters}>
-            Clear filters
-          </button>
-        </div>
-      ) : null}
-
       {tasksTruncated ? (
         <div className="notice-bar">
           <AlertTriangle size={13} aria-hidden="true" />
@@ -512,7 +471,47 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
         </div>
       ) : null}
 
-      <div className="task-table-scroll">
+      <div className="task-table-scroll list-outline-scroll">
+        <div className="list-inline-controls">
+          {activeStatusLabel === null ? (
+            <span />
+          ) : (
+            <span className="active-filter-pill">
+              <span>Filtered: {activeStatusLabel}</span>
+              <button
+                type="button"
+                className="active-filter-clear"
+                aria-label="Clear status filter"
+                onClick={onClearFilters}
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            </span>
+          )}
+          <div className="list-inline-actions">
+            <button
+              type="button"
+              className="button button-sm"
+              title={allExpanded ? "Collapse every Task Group" : "Expand every Task Group"}
+              onClick={onToggleExpandAll}
+            >
+              <ChevronsUpDown size={12} aria-hidden="true" />
+              <span>{allExpanded ? "Collapse all" : "Expand all"}</span>
+            </button>
+            <button
+              type="button"
+              className="button button-sm"
+              data-active={inspectorOpen}
+              aria-pressed={inspectorOpen}
+              title="Toggle Inspector (I)"
+              onClick={onToggleInspector}
+            >
+              <PanelRight size={12} aria-hidden="true" />
+              <span>Inspector</span>
+            </button>
+          </div>
+        </div>
+
         {rows.length === 0 ? (
           <div className="pane-empty">
             {hasActiveFilter ? (
@@ -525,71 +524,65 @@ export function TaskTreeTable(props: TaskTreeTableProps) {
               </>
             ) : (
               <>
-                <span className="pane-empty-title">No tasks yet</span>
-                <span>Tasks created on this Hub will appear here.</span>
-                <button
-                  type="button"
-                  className="button button-sm button-primary"
-                  onClick={onOpenNewTask}
-                >
-                  <Plus size={13} aria-hidden="true" />
-                  New Task
-                </button>
+                <span className="pane-empty-title">No Tasks in this Hub yet</span>
+                <span>
+                  Submit Tasks from the Myrlet CLI or an enrolled agent to see them here.
+                </span>
               </>
             )}
           </div>
         ) : (
-          <div
-            role="table"
-            className="list-outline"
-            aria-label="Tasks grouped by Task Tree with hierarchy, status, progress, and assigned Worker"
-          >
-            {groups.map((group) => (
-              <div key={group.key} className="list-group-card" role="rowgroup">
-                <div className="list-group-head" role="row">
-                  <div className="list-group-head-main" role="columnheader">
-                    <span className="list-group-kicker">
-                      {group.kind === "tree" ? "TASK GROUP" : "STANDALONE"}
-                    </span>
-                    <span className="list-group-title truncate" title={group.title}>
-                      {group.kind === "tree" ? group.title : "Independent Tasks"}
-                    </span>
-                    <span className="list-group-summary mono">{group.summary}</span>
+          <div className="list-outline-inner">
+            <div
+              role="table"
+              className="list-outline"
+              aria-label="Tasks grouped by Task Tree with hierarchy, status, progress, and assigned Worker"
+            >
+              {groups.map((group) => (
+                <div key={group.key} className="list-group-card" role="rowgroup">
+                  <div className="list-group-head" role="row">
+                    <div className="list-group-head-main" role="columnheader">
+                      <span className="list-group-kicker">
+                        {group.kind === "tree" ? "TASK GROUP" : "STANDALONE"}
+                      </span>
+                      <span className="list-group-title truncate" title={group.title}>
+                        {group.kind === "tree" ? group.title : "Independent Tasks"}
+                      </span>
+                      <span className="list-group-summary mono">{group.summary}</span>
+                    </div>
+                    <div className="list-col-label" role="columnheader">
+                      Category
+                    </div>
+                    <div className="list-col-label" role="columnheader">
+                      Status
+                    </div>
+                    <div className="list-col-label" role="columnheader">
+                      Progress
+                    </div>
+                    <div className="list-col-label" role="columnheader">
+                      Worker
+                    </div>
+                    <div className="list-col-label list-col-actions" role="columnheader">
+                      <span className="visually-hidden">Actions</span>
+                    </div>
                   </div>
-                  <div className="list-col-label" role="columnheader">
-                    Category
-                  </div>
-                  <div className="list-col-label" role="columnheader">
-                    Status
-                  </div>
-                  <div className="list-col-label" role="columnheader">
-                    Progress
-                  </div>
-                  <div className="list-col-label" role="columnheader">
-                    Worker
-                  </div>
-                  <div className="list-col-label list-col-actions" role="columnheader">
-                    <span className="visually-hidden">Actions</span>
-                  </div>
-                </div>
 
-                <div className="list-group-rows">
-                  {group.rows.map((row) => (
-                    <OutlineRow
-                      key={row.id}
-                      row={row}
-                      selected={row.id === selectedTaskId}
-                      workerById={workerById}
-                      onSelectTask={onSelectTask}
-                      onToggleExpand={onToggleExpand}
-                      onQuickDispatch={onQuickDispatch}
-                      onQuickAddSubtask={onQuickAddSubtask}
-                      onCopyId={onCopyId}
-                    />
-                  ))}
+                  <div className="list-group-rows">
+                    {group.rows.map((row) => (
+                      <OutlineRow
+                        key={row.id}
+                        row={row}
+                        selected={row.id === selectedTaskId}
+                        workerById={workerById}
+                        onSelectTask={onSelectTask}
+                        onToggleExpand={onToggleExpand}
+                        onCopyId={onCopyId}
+                      />
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
       </div>

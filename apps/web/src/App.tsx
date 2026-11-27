@@ -1,12 +1,13 @@
 /**
  * Myrlet Web UI root — the Work Atlas console.
  *
- * Renders the Auth gate until a Hub session exists, then the 52px top app bar,
- * the 42px workspace toolbar, the full-bleed Board (default) or List, the
- * collapsible right Inspector, and the 26px status bar. Workers & Pairing is a
- * slide-over drawer rather than a separate page, and every other overlay is
- * rendered from here. All non-session state lives in this component; the bearer
- * token stays inside `useHub`.
+ * Renders the Auth gate until a Hub session exists, then one 52px top app bar,
+ * the full-bleed Board (default) or List, the collapsible right Inspector, and
+ * the 26px status bar. Workers & Pairing is a slide-over drawer rather than a
+ * separate page. The Task surface is strictly read-only: creation, import,
+ * dispatch, cancel, finish, subtask, and retry belong to the CLI, never here.
+ * All non-session state lives in this component; the bearer token stays inside
+ * `useHub`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,75 +15,34 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import {
-  ChevronsUpDown,
-  Crosshair,
-  LayoutGrid,
-  Maximize2,
-  PanelRight,
-  RotateCcw,
-  Search,
-  X,
-} from "lucide-react";
+import { X } from "lucide-react";
 
-import type { TaskRecord, TaskStatus } from "./api/types";
+import type { TaskStatus } from "./api/types";
 import { AuthGate } from "./components/AuthGate";
 import { CommandPalette, ShortcutsModal, ToastStack } from "./components/CommandPalette";
 import type { ToastItem } from "./components/CommandPalette";
 import { TaskDetailPanel } from "./components/TaskDetailPanel";
 import { TaskGraphView } from "./components/TaskGraphView";
-import type { WorkAtlasHandle, WorkAtlasMeta } from "./components/TaskGraphView";
-import {
-  CancelDialog,
-  DispatchDialog,
-  FinishDialog,
-  ImportBundleDialog,
-  NewTaskDialog,
-} from "./components/TaskModals";
+import type { AtlasBoardMeta, TaskGraphControls } from "./components/TaskGraphView";
 import { TaskTreeTable } from "./components/TaskTreeTable";
 import { TopBar } from "./components/TopBar";
 import type { WorkspaceMode } from "./components/TopBar";
 import { WorkersView } from "./components/WorkersView";
 import { WorkspaceInspector } from "./components/WorkspaceInspector";
-import {
-  TASK_STATUSES,
-  TASK_STATUS_META,
-  buildTaskTreeRows,
-  canDispatchTask,
-} from "./format";
+import { TASK_STATUSES, TASK_STATUS_META, buildTaskTreeRows } from "./format";
 import type { TaskFilter } from "./format";
 import { useHub } from "./state/useHub";
 
-const EMPTY_FILTER: TaskFilter = {};
 const INSPECTOR_MIN_WIDTH = 320;
 const INSPECTOR_MAX_WIDTH = 540;
 const DEFAULT_INSPECTOR_WIDTH = 414;
 const TOAST_TIMEOUT_MS = 3_800;
 
-const INITIAL_ATLAS_META: WorkAtlasMeta = {
+const INITIAL_ATLAS_META: AtlasBoardMeta = {
   zoomPercent: 100,
   relationCount: 0,
   canRestore: false,
 };
-
-function isFilterActive(filter: TaskFilter): boolean {
-  const query = (filter.query ?? "").trim();
-  const status = filter.status;
-  const workerId = filter.workerId;
-  return (
-    query !== "" ||
-    (status !== undefined && status !== null && status !== "all") ||
-    (workerId !== undefined && workerId !== null && workerId !== "all")
-  );
-}
-
-interface NewTaskRequest {
-  readonly open: boolean;
-  readonly sourceTask: TaskRecord | null;
-  readonly parentTaskId: string | null;
-}
-
-const CLOSED_NEW_TASK: NewTaskRequest = { open: false, sourceTask: null, parentTaskId: null };
 
 export default function App() {
   const hub = useHub();
@@ -93,23 +53,21 @@ export default function App() {
   const [workersOpen, setWorkersOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
-  const [filter, setFilter] = useState<TaskFilter>(EMPTY_FILTER);
-  const [atlasMeta, setAtlasMeta] = useState<WorkAtlasMeta>(INITIAL_ATLAS_META);
-  const atlasRef = useRef<WorkAtlasHandle | null>(null);
-
-  const [newTask, setNewTask] = useState<NewTaskRequest>(CLOSED_NEW_TASK);
-  const [importOpen, setImportOpen] = useState(false);
-  const [dispatchTarget, setDispatchTarget] = useState<TaskRecord | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<TaskRecord | null>(null);
-  const [finishTarget, setFinishTarget] = useState<TaskRecord | null>(null);
+  /** The only filter: one Task status, toggled from the status bar counters. */
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null);
+  const [atlasMeta, setAtlasMeta] = useState<AtlasBoardMeta>(INITIAL_ATLAS_META);
+  const atlasRef = useRef<TaskGraphControls | null>(null);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [narrowInspector, setNarrowInspector] = useState(false);
+  const [workspaceInert, setWorkspaceInert] = useState(false);
+  const inspectorRef = useRef<HTMLDivElement | null>(null);
+  const inspectorReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
   const toastIdRef = useRef(0);
   const toastTimersRef = useRef<number[]>([]);
-  const pendingDispatchRef = useRef<string | null>(null);
 
   const tasks = hub.tasks;
   const expandInitialized = useRef(false);
@@ -137,6 +95,11 @@ export default function App() {
       setExpanded(next);
     }
   }, [tasks]);
+
+  const filter = useMemo<TaskFilter>(
+    () => (statusFilter === null ? {} : { status: statusFilter }),
+    [statusFilter],
+  );
 
   const rows = useMemo(
     () => buildTaskTreeRows(tasks, expanded, filter),
@@ -170,39 +133,12 @@ export default function App() {
     return counts;
   }, [tasks]);
 
-  // The Board takes Tasks directly, so shared status/worker filters are applied
-  // here to keep Board and List honest about what is being shown.
-  const visibleTasks = useMemo(() => {
-    const query = (filter.query ?? "").trim().toLowerCase();
-    const status =
-      filter.status !== undefined && filter.status !== null && filter.status !== "all"
-        ? filter.status
-        : null;
-    const workerId =
-      filter.workerId !== undefined && filter.workerId !== null && filter.workerId !== "all"
-        ? filter.workerId
-        : null;
-    if (query === "" && status === null && workerId === null) {
-      return tasks;
-    }
-    return tasks.filter((task) => {
-      if (status !== null && task.status !== status) {
-        return false;
-      }
-      if (workerId !== null && task.currentDelivery?.workerId !== workerId) {
-        return false;
-      }
-      if (query !== "") {
-        const haystack =
-          `${task.id} ${task.title} ${task.category} ${task.currentDelivery?.workerId ?? ""}`
-            .toLowerCase();
-        if (!haystack.includes(query)) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [tasks, filter]);
+  /* The Board takes Tasks directly; the shared status filter applies here too. */
+  const visibleTasks = useMemo(
+    () =>
+      statusFilter === null ? tasks : tasks.filter((task) => task.status === statusFilter),
+    [tasks, statusFilter],
+  );
 
   const toggleExpand = useCallback((taskId: string) => {
     setExpanded((current) => {
@@ -224,8 +160,12 @@ export default function App() {
     });
   }, [parentIds]);
 
-  const resetFilter = useCallback(() => {
-    setFilter(EMPTY_FILTER);
+  const clearFilter = useCallback(() => {
+    setStatusFilter(null);
+  }, []);
+
+  const toggleInspector = useCallback(() => {
+    setInspectorOpen((current) => !current);
   }, []);
 
   /* ------------------------------ Selection ---------------------------- */
@@ -288,119 +228,11 @@ export default function App() {
     [pushToast],
   );
 
-  /* ------------------------------ Dialogs ----------------------------- */
-
-  const closeAllModals = useCallback(() => {
-    setImportOpen(false);
-    setNewTask(CLOSED_NEW_TASK);
-    setDispatchTarget(null);
-    setCancelTarget(null);
-    setFinishTarget(null);
-    setShortcutsOpen(false);
-    setPaletteOpen(false);
-  }, []);
-
-  const openNewTask = useCallback(() => {
-    setNewTask({ open: true, sourceTask: null, parentTaskId: null });
-  }, []);
-
-  const openSubtask = useCallback((taskId: string) => {
-    setNewTask({ open: true, sourceTask: null, parentTaskId: taskId });
-  }, []);
-
-  const openCopyRetry = useCallback((task: TaskRecord) => {
-    setNewTask({ open: true, sourceTask: task, parentTaskId: null });
-  }, []);
-
   const openWorkers = useCallback(() => {
     setWorkersOpen(true);
   }, []);
 
-  /**
-   * Row-level `Dispatch` must open the dialog with a full `TaskRecord`. Ask the
-   * Hub for the detail, then let the effect below open the dialog the moment the
-   * matching record lands — no guessed Task, no race.
-   */
-  const requestQuickDispatch = useCallback(
-    (taskId: string) => {
-      if (hub.selectedTask !== null && hub.selectedTask.id === taskId) {
-        setDispatchTarget(hub.selectedTask);
-        return;
-      }
-      pendingDispatchRef.current = taskId;
-      void hub.selectTask(taskId);
-    },
-    [hub.selectedTask, hub.selectTask],
-  );
-
-  useEffect(() => {
-    const pendingId = pendingDispatchRef.current;
-    if (pendingId === null) {
-      return;
-    }
-    if (hub.selectedTask !== null && hub.selectedTask.id === pendingId) {
-      pendingDispatchRef.current = null;
-      setDispatchTarget(hub.selectedTask);
-      return;
-    }
-    if (hub.selectedTaskId !== pendingId) {
-      pendingDispatchRef.current = null;
-    }
-  }, [hub.selectedTask, hub.selectedTaskId]);
-
-  const dispatchSelected = useCallback(() => {
-    const task = hub.selectedTask;
-    if (task !== null && canDispatchTask(task)) {
-      setDispatchTarget(task);
-      return;
-    }
-    pushToast("Select a dispatchable Task first", "error");
-  }, [hub.selectedTask, pushToast]);
-
-  /* ----------------------------- Commands ----------------------------- */
-
-  const createTask = useCallback(
-    async (definition: Parameters<typeof hub.createTask>[0]): Promise<void> => {
-      await hub.createTask(definition);
-      pushToast("Task created");
-    },
-    [hub.createTask, pushToast],
-  );
-
-  const importBundle = useCallback(
-    async (request: Parameters<typeof hub.importBundle>[0]): Promise<void> => {
-      await hub.importBundle(request);
-      pushToast("Bundle imported");
-    },
-    [hub.importBundle, pushToast],
-  );
-
-  const dispatchTask = useCallback(
-    async (
-      taskId: string,
-      request: Parameters<typeof hub.dispatchTask>[1],
-    ): Promise<void> => {
-      await hub.dispatchTask(taskId, request);
-      pushToast("Dispatched");
-    },
-    [hub.dispatchTask, pushToast],
-  );
-
-  const cancelTask = useCallback(
-    async (taskId: string, request: Parameters<typeof hub.cancelTask>[1]): Promise<void> => {
-      await hub.cancelTask(taskId, request);
-      pushToast("Cancelled");
-    },
-    [hub.cancelTask, pushToast],
-  );
-
-  const finishTask = useCallback(
-    async (taskId: string, request: Parameters<typeof hub.finishTask>[1]): Promise<void> => {
-      await hub.finishTask(taskId, request);
-      pushToast("Parent finished");
-    },
-    [hub.finishTask, pushToast],
-  );
+  /* ----------------------------- Worker ops --------------------------- */
 
   const rotateWorker = useCallback(
     async (workerId: string) => {
@@ -445,15 +277,39 @@ export default function App() {
     [rows, hub.selectedTaskId, selectTaskAndReveal],
   );
 
-  const modalOpen =
-    paletteOpen ||
-    shortcutsOpen ||
-    workersOpen ||
-    importOpen ||
-    newTask.open ||
-    dispatchTarget !== null ||
-    cancelTarget !== null ||
-    finishTarget !== null;
+  const modalOpen = paletteOpen || shortcutsOpen || workersOpen;
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia("(max-width: 1024px)");
+    const sync = (): void => setNarrowInspector(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!narrowInspector || !inspectorOpen) {
+      setWorkspaceInert(false);
+      return;
+    }
+    const active = document.activeElement;
+    inspectorReturnFocusRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+    setWorkspaceInert(true);
+    const frame = window.requestAnimationFrame(() => inspectorRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      setWorkspaceInert(false);
+      const target = inspectorReturnFocusRef.current;
+      inspectorReturnFocusRef.current = null;
+      if (target?.isConnected) {
+        target.focus();
+      }
+    };
+  }, [inspectorOpen, narrowInspector]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -479,22 +335,18 @@ export default function App() {
           setShortcutsOpen(false);
           return;
         }
-        if (
-          importOpen ||
-          newTask.open ||
-          dispatchTarget !== null ||
-          cancelTarget !== null ||
-          finishTarget !== null
-        ) {
-          event.preventDefault();
-          closeAllModals();
-          return;
-        }
         // The Workers drawer sits above the workspace, so it closes before the
         // Task selection is allowed to change.
         if (workersOpen) {
           event.preventDefault();
           setWorkersOpen(false);
+          return;
+        }
+        // Filter is workspace state, below every overlay but above the
+        // Inspector/selection. Escape peels it first and leaves the Inspector.
+        if (statusFilter !== null) {
+          event.preventDefault();
+          clearFilter();
           return;
         }
         if (hub.selectedTaskId !== null || inspectorOpen) {
@@ -526,14 +378,6 @@ export default function App() {
           event.preventDefault();
           setShortcutsOpen(true);
           break;
-        case "n":
-          event.preventDefault();
-          openNewTask();
-          break;
-        case "d":
-          event.preventDefault();
-          dispatchSelected();
-          break;
         case "i":
           event.preventDefault();
           setInspectorOpen((current) => !current);
@@ -550,14 +394,6 @@ export default function App() {
             atlasRef.current?.focusSelected();
           }
           break;
-        case "/": {
-          const search = document.querySelector<HTMLInputElement>("[data-view-search]");
-          if (search) {
-            event.preventDefault();
-            search.focus();
-          }
-          break;
-        }
         case "j":
         case "ArrowDown":
           if (mode === "list") {
@@ -579,22 +415,16 @@ export default function App() {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
-    cancelTarget,
+    clearFilter,
     clearSelection,
-    closeAllModals,
-    dispatchSelected,
-    dispatchTarget,
-    finishTarget,
     hub.selectedTaskId,
-    importOpen,
     inspectorOpen,
     modalOpen,
     mode,
     moveSelection,
-    newTask.open,
-    openNewTask,
     paletteOpen,
     shortcutsOpen,
+    statusFilter,
     workersOpen,
   ]);
 
@@ -649,22 +479,13 @@ export default function App() {
   ).length;
   const totalTasks = hub.snapshot?.totalTasks ?? tasks.length;
   const tasksTruncated = hub.snapshot?.tasksTruncated ?? false;
-  const activeStatus: TaskStatus | null =
-    filter.status !== undefined && filter.status !== null && filter.status !== "all"
-      ? filter.status
-      : null;
-  const activeWorkerId =
-    filter.workerId !== undefined && filter.workerId !== null && filter.workerId !== "all"
-      ? filter.workerId
-      : "all";
+  const activeStatusLabel =
+    statusFilter === null ? null : TASK_STATUS_META[statusFilter].label;
   const boardMode = mode === "board";
-  const filterActive = isFilterActive(filter);
 
   const filterByStatus = (status: TaskStatus): void => {
-    setFilter((current) => ({ ...current, status: activeStatus === status ? "all" : status }));
+    setStatusFilter((current) => (current === status ? null : status));
   };
-
-  const openPalette = (): void => setPaletteOpen(true);
 
   return (
     <div className="app-frame">
@@ -681,168 +502,23 @@ export default function App() {
         onRefresh={refresh}
         theme={hub.theme}
         onChangeTheme={hub.setTheme}
-        onImport={() => setImportOpen(true)}
-        onNewTask={openNewTask}
         onDisconnect={hub.disconnect}
         onOpenShortcuts={() => setShortcutsOpen(true)}
       />
 
-      <div className="board-toolbar" role="toolbar" aria-label="Board toolbar">
-        <div className="toolbar-left">
-          <div className="toolbar-search-wrap">
-            <Search size={13} aria-hidden="true" />
-            <input
-              className="input toolbar-search"
-              type="search"
-              data-view-search
-              aria-label="Find a task, ID, or worker"
-              placeholder="Find a task, ID, or worker…"
-              value={filter.query ?? ""}
-              onChange={(event) => {
-                const value = event.target.value;
-                setFilter((current) => ({ ...current, query: value }));
-              }}
-            />
-            <kbd
-              className="toolbar-kbd"
-              role="button"
-              tabIndex={0}
-              title="Open the Command Palette"
-              onClick={openPalette}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  openPalette();
-                }
-              }}
-            >
-              ⌘K
-            </kbd>
-          </div>
-
-          <select
-            className="select toolbar-select"
-            aria-label="Filter by status"
-            value={activeStatus ?? "all"}
-            onChange={(event) => {
-              const value = event.target.value;
-              setFilter((current) => ({
-                ...current,
-                status: value === "all" ? "all" : (value as TaskStatus),
-              }));
-            }}
-          >
-            <option value="all">All statuses ({tasks.length})</option>
-            {TASK_STATUSES.map((status) => (
-              <option key={status} value={status}>
-                {TASK_STATUS_META[status].label} ({statusCounts[status]})
-              </option>
-            ))}
-          </select>
-
-          <select
-            className="select toolbar-select"
-            aria-label="Filter by worker"
-            value={activeWorkerId}
-            onChange={(event) => {
-              const value = event.target.value;
-              setFilter((current) => ({
-                ...current,
-                workerId: value === "all" ? "all" : value,
-              }));
-            }}
-          >
-            <option value="all">All workers</option>
-            {hub.workers.map((worker) => (
-              <option key={worker.workerId} value={worker.workerId}>
-                {worker.workerId}
-                {worker.revoked ? " (revoked)" : worker.online ? "" : " (offline)"}
-              </option>
-            ))}
-          </select>
-
-          {filterActive ? (
-            <button type="button" className="button button-sm button-ghost" onClick={resetFilter}>
-              Clear
-            </button>
-          ) : null}
-        </div>
-
-        <div className="toolbar-tools">
-          {boardMode ? (
-            <>
-              <button
-                type="button"
-                className="button button-sm"
-                title="Fit all groups (F)"
-                onClick={() => atlasRef.current?.fit()}
-              >
-                <Maximize2 size={12} aria-hidden="true" />
-                <span>Fit</span>
-              </button>
-              {hub.selectedTaskId === null ? null : (
-                <button
-                  type="button"
-                  className="button button-sm"
-                  title="Center selected Task (Shift+F)"
-                  onClick={() => atlasRef.current?.focusSelected()}
-                >
-                  <Crosshair size={12} aria-hidden="true" />
-                  <span>Focus</span>
-                </button>
-              )}
-              {atlasMeta.canRestore ? (
-                <button
-                  type="button"
-                  className="button button-sm"
-                  title="Restore the previous layout"
-                  onClick={() => atlasRef.current?.restore()}
-                >
-                  <RotateCcw size={12} aria-hidden="true" />
-                  <span>Restore</span>
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="button button-sm button-accent"
-                title="Arrange the Board layout"
-                onClick={() => atlasRef.current?.arrange()}
-              >
-                <LayoutGrid size={12} aria-hidden="true" />
-                <span>Arrange</span>
-              </button>
-            </>
-          ) : (
-            <button type="button" className="button button-sm" onClick={toggleExpandAll}>
-              <ChevronsUpDown size={12} aria-hidden="true" />
-              <span>{allExpanded ? "Collapse all" : "Expand all"}</span>
-            </button>
-          )}
-          <span className="toolbar-divider" aria-hidden="true" />
-          <button
-            type="button"
-            className="button button-sm"
-            data-active={inspectorOpen}
-            aria-pressed={inspectorOpen}
-            title="Toggle Inspector (i)"
-            onClick={() => setInspectorOpen((current) => !current)}
-          >
-            <PanelRight size={12} aria-hidden="true" />
-            <span>Inspector</span>
-          </button>
-        </div>
-      </div>
-
       <div className="workspace-split">
-        <div className="view-body" data-view={mode}>
+        <div className="view-body" data-view={mode} inert={workspaceInert}>
           {boardMode ? (
             <TaskGraphView
               tasks={visibleTasks}
               workers={hub.workers}
               selectedTaskId={hub.selectedTaskId}
+              inspectorOpen={inspectorOpen}
+              activeStatusLabel={activeStatusLabel}
+              onToggleInspector={toggleInspector}
+              onClearFilter={clearFilter}
               onSelectTask={selectTaskAndReveal}
               onClearSelection={clearSelection}
-              onOpenNewTask={openNewTask}
               onBoardMetaChange={setAtlasMeta}
               controlsRef={atlasRef}
             />
@@ -854,14 +530,16 @@ export default function App() {
               loadedCount={tasks.length}
               tasksTruncated={tasksTruncated}
               selectedTaskId={hub.selectedTaskId}
+              allExpanded={allExpanded}
+              inspectorOpen={inspectorOpen}
+              activeStatusLabel={activeStatusLabel}
               onSelectTask={selectTaskAndReveal}
               onToggleExpand={toggleExpand}
-              onQuickDispatch={requestQuickDispatch}
-              onQuickAddSubtask={openSubtask}
+              onToggleExpandAll={toggleExpandAll}
+              onToggleInspector={toggleInspector}
               onCopyId={(taskId: string) => copyText("task id", taskId)}
-              onOpenNewTask={openNewTask}
-              hasActiveFilter={filterActive}
-              onClearFilters={resetFilter}
+              hasActiveFilter={statusFilter !== null}
+              onClearFilters={clearFilter}
             />
           )}
         </div>
@@ -880,30 +558,36 @@ export default function App() {
               onPointerDown={beginResize}
               onKeyDown={resizeKeyDown}
             />
-            <div className="inspector-slot" style={{ width: `${inspectorWidth}px` }}>
+            <div
+              ref={inspectorRef}
+              className="inspector-slot"
+              style={{ width: `${inspectorWidth}px` }}
+              tabIndex={-1}
+            >
+              <button
+                type="button"
+                className="inspector-scrim"
+                aria-label={
+                  hub.selectedTaskId !== null
+                    ? "Close task detail"
+                    : "Close workspace inspector"
+                }
+                onClick={
+                  hub.selectedTaskId !== null
+                    ? clearSelection
+                    : () => setInspectorOpen(false)
+                }
+              />
               {hub.selectedTaskId !== null ? (
-                <>
-                  <button
-                    type="button"
-                    className="detail-scrim"
-                    aria-label="Close task detail"
-                    onClick={clearSelection}
-                  />
-                  <TaskDetailPanel
-                    task={hub.selectedTask}
-                    tree={hub.selectedTree}
-                    loading={hub.detailLoading}
-                    error={hub.detailError}
-                    onClose={clearSelection}
-                    onSelectTask={selectTaskAndReveal}
-                    onDispatch={(task: TaskRecord) => setDispatchTarget(task)}
-                    onAddSubtask={openSubtask}
-                    onCancel={(task: TaskRecord) => setCancelTarget(task)}
-                    onFinish={(task: TaskRecord) => setFinishTarget(task)}
-                    onCopyRetry={openCopyRetry}
-                    onCopyText={copyText}
-                  />
-                </>
+                <TaskDetailPanel
+                  task={hub.selectedTask}
+                  tree={hub.selectedTree}
+                  loading={hub.detailLoading}
+                  error={hub.detailError}
+                  onClose={clearSelection}
+                  onSelectTask={selectTaskAndReveal}
+                  onCopyText={copyText}
+                />
               ) : (
                 <WorkspaceInspector
                   tasks={tasks}
@@ -926,8 +610,8 @@ export default function App() {
               type="button"
               className="status-counter"
               data-tone={status}
-              data-active={activeStatus === status}
-              aria-pressed={activeStatus === status}
+              data-active={statusFilter === status}
+              aria-pressed={statusFilter === status}
               onClick={() => filterByStatus(status)}
             >
               <span className="state-dot" data-state={status} aria-hidden="true" />
@@ -999,39 +683,6 @@ export default function App() {
         </div>
       ) : null}
 
-      <NewTaskDialog
-        open={newTask.open}
-        sourceTask={newTask.sourceTask}
-        defaultParentTaskId={newTask.parentTaskId}
-        onClose={() => setNewTask(CLOSED_NEW_TASK)}
-        onSubmit={createTask}
-      />
-
-      <ImportBundleDialog
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        onSubmit={importBundle}
-      />
-
-      <DispatchDialog
-        task={dispatchTarget}
-        workers={hub.workers}
-        onClose={() => setDispatchTarget(null)}
-        onSubmit={dispatchTask}
-      />
-
-      <CancelDialog
-        task={cancelTarget}
-        onClose={() => setCancelTarget(null)}
-        onSubmit={cancelTask}
-      />
-
-      <FinishDialog
-        task={finishTarget}
-        onClose={() => setFinishTarget(null)}
-        onSubmit={finishTask}
-      />
-
       <CommandPalette
         open={paletteOpen}
         tasks={tasks}
@@ -1041,9 +692,7 @@ export default function App() {
         onSelectTask={selectTaskAndReveal}
         onSelectMode={setMode}
         onOpenWorkers={openWorkers}
-        onNewTask={openNewTask}
-        onImportBundle={() => setImportOpen(true)}
-        onDispatchSelected={dispatchSelected}
+        onToggleInspector={toggleInspector}
         onFitBoard={() => atlasRef.current?.fit()}
         onArrangeBoard={() => atlasRef.current?.arrange()}
         onChangeTheme={hub.setTheme}
