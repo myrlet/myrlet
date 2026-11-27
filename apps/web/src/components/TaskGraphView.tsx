@@ -15,8 +15,16 @@ import { ChevronDown, ChevronUp, Minus, Plus, Waypoints } from "lucide-react";
 import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
 import { DELIVERY_STATUS_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../format";
 import { TaskStatusBadge } from "./StatusBadge";
-import { NODE_HEIGHT, NODE_WIDTH, buildAtlasLayout, computeAtlasEdges } from "./workAtlasLayout";
-import type { AtlasPosition } from "./workAtlasLayout";
+import {
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  buildAtlasLayout,
+  comfortableAtlasFrame,
+  computeAtlasEdges,
+  computeConnectedSubgraph,
+  fitAtlasFrame,
+} from "./workAtlasLayout";
+import type { AtlasFramingOptions, AtlasPosition } from "./workAtlasLayout";
 
 export interface WorkAtlasHandle {
   fit: () => void;
@@ -40,6 +48,8 @@ export interface TaskGraphViewProps {
   onOpenNewTask: () => void;
   onBoardMetaChange?: (meta: WorkAtlasMeta) => void;
   controlsRef?: MutableRefObject<WorkAtlasHandle | null>;
+  /** localStorage key for manual card offsets; only written after a real drag. */
+  storageKey?: string;
 }
 
 const MIN_SCALE = 0.25;
@@ -48,12 +58,29 @@ const ZOOM_FACTOR = 1.15;
 const WHEEL_ZOOM_FACTOR = 1.12;
 const DRAG_THRESHOLD = 5;
 const SNAP_STEP = 12;
-const FIT_PAD_X = 56;
-const FIT_PAD_TOP = 56;
-const FIT_PAD_BOTTOM = 152;
+const FIT_PAD_X = 48;
+const FIT_PAD_TOP = 52;
+const FIT_PAD_BOTTOM = 136;
+/** First view never shrinks below this scale: cards stay readable with their footer. */
+const COMFORTABLE_MIN_SCALE = 0.82;
+const COMFORTABLE_MAX_SCALE = 0.92;
+const COMFORTABLE_PAD = 48;
+const FIT_OPTIONS: AtlasFramingOptions = {
+  minScale: MIN_SCALE,
+  maxScale: MAX_SCALE,
+  padX: FIT_PAD_X,
+  padTop: FIT_PAD_TOP,
+  padBottom: FIT_PAD_BOTTOM,
+};
+const COMFORT_OPTIONS = {
+  minScale: COMFORTABLE_MIN_SCALE,
+  maxScale: COMFORTABLE_MAX_SCALE,
+  pad: COMFORTABLE_PAD,
+};
 const COMPACT_SCALE = 0.52;
 const MINIMAP_WIDTH = 176;
 const MINIMAP_HEIGHT = 112;
+const DEFAULT_STORAGE_KEY = "myrlet.atlas.positions";
 const NODE_STYLE = { width: NODE_WIDTH, height: NODE_HEIGHT } as const;
 
 type Views = Record<string, AtlasPosition>;
@@ -69,6 +96,55 @@ const isWorkerOnline = (worker: WorkerRecord | undefined): boolean =>
   worker !== undefined && worker.online && !worker.revoked;
 const snap = (value: number): number => Math.round(value / SNAP_STEP) * SNAP_STEP;
 
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+/** Manual offsets are convenience state; private-mode or quota failures are non-fatal. */
+function readStoredOffsets(storageKey: string): Views {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw === null) {
+      return {};
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const offsets: Views = {};
+    for (const [taskId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === null || typeof value !== "object") continue;
+      const { x, y } = value as { x?: unknown; y?: unknown };
+      if (isFiniteNumber(x) && isFiniteNumber(y)) {
+        offsets[taskId] = { x, y };
+      }
+    }
+    return offsets;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredOffsets(storageKey: string, offsets: Views): void {
+  try {
+    const entries = Object.entries(offsets).filter(([, offset]) => offset.x !== 0 || offset.y !== 0);
+    if (entries.length === 0) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
+    window.localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    /* Storage is optional: never break dragging over a persistence failure. */
+  }
+}
+
+function clearStoredOffsets(storageKey: string): void {
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    /* Ignore unavailable storage. */
+  }
+}
+
 interface AtlasTaskNodeProps {
   task: SnapshotTaskSummary;
   x: number;
@@ -76,6 +152,7 @@ interface AtlasTaskNodeProps {
   selected: boolean;
   hovered: boolean;
   dragging: boolean;
+  dimmed: boolean;
   density: Density;
   worker: WorkerRecord | undefined;
   onHover: (taskId: string | null) => void;
@@ -83,7 +160,7 @@ interface AtlasTaskNodeProps {
 }
 
 function AtlasTaskNode(props: AtlasTaskNodeProps) {
-  const { task, x, y, selected, hovered, dragging, density, worker, onHover, onSelect } = props;
+  const { task, x, y, selected, hovered, dragging, dimmed, density, worker, onHover, onSelect } = props;
   const delivery = task.currentDelivery;
   const online = isWorkerOnline(worker);
   const title = task.title || task.id;
@@ -118,6 +195,7 @@ function AtlasTaskNode(props: AtlasTaskNodeProps) {
     <div
       role="button" tabIndex={0} className="atlas-node" data-task-id={task.id}
       data-selected={selected} data-hovered={hovered} data-dragging={dragging} data-density={density}
+      data-dimmed={dimmed ? "true" : undefined}
       aria-label={`${title} — ${statusLabel}${delivery ? ` — Worker ${delivery.workerId} ${online ? "online" : "offline"}` : ""}`}
       title={`${title} (${task.id})`}
       style={{ ...NODE_STYLE, left: x, top: y, cursor: dragging ? "grabbing" : "grab" }}
@@ -157,8 +235,9 @@ function AtlasTaskNode(props: AtlasTaskNodeProps) {
 
 export function TaskGraphView(props: TaskGraphViewProps) {
   const { tasks, workers, selectedTaskId, onSelectTask, onClearSelection, onOpenNewTask, onBoardMetaChange, controlsRef } = props;
+  const storageKey = props.storageKey ?? DEFAULT_STORAGE_KEY;
   const [view, setView] = useState({ panX: 48, panY: 48, scale: 1 });
-  const [offsets, setOffsetsState] = useState<Views>({});
+  const [offsets, setOffsetsState] = useState<Views>(() => readStoredOffsets(storageKey));
   const [restoreSnapshot, setRestoreSnapshot] = useState<Views | null>(null);
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null);
   const [nodeDragId, setNodeDragId] = useState<string | null>(null);
@@ -167,13 +246,24 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
-  const offsetsRef = useRef<Views>({});
+  const offsetsRef = useRef<Views>(offsets);
+  const storageKeyRef = useRef(storageKey);
   const didAutoFitRef = useRef(false);
 
   const setOffsets = useCallback((next: Views) => {
     offsetsRef.current = next;
     setOffsetsState(next);
   }, []);
+
+  // A different board (Wave 9B passes its own key) starts from that board's offsets.
+  useEffect(() => {
+    if (storageKeyRef.current === storageKey) return;
+    storageKeyRef.current = storageKey;
+    const stored = readStoredOffsets(storageKey);
+    offsetsRef.current = stored;
+    setOffsetsState(stored);
+    setRestoreSnapshot(null);
+  }, [storageKey]);
 
   const layout = useMemo(() => buildAtlasLayout(tasks), [tasks]);
   const workerById = useMemo(() => {
@@ -205,6 +295,10 @@ export function TaskGraphView(props: TaskGraphViewProps) {
 
   const edges = useMemo(() => computeAtlasEdges(tasks, positions), [tasks, positions]);
   const focusId = hoveredTaskId ?? selectedTaskId;
+  const subgraph = useMemo(
+    () => (focusId === null ? null : computeConnectedSubgraph(focusId, edges)),
+    [edges, focusId],
+  );
   const density: Density = view.scale < COMPACT_SCALE ? "compact" : "regular";
   const zoomPercent = Math.round(view.scale * 100);
 
@@ -213,14 +307,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
     if (!element || bounds === null) return;
     const width = element.clientWidth, height = element.clientHeight;
     if (width <= 0 || height <= 0) return;
-    const availW = Math.max(120, width - FIT_PAD_X * 2);
-    const availH = Math.max(120, height - FIT_PAD_TOP - FIT_PAD_BOTTOM);
-    const scale = clampScale(Math.min(availW / bounds.width, availH / bounds.height));
-    setView({
-      scale,
-      panX: FIT_PAD_X + (availW - bounds.width * scale) / 2 - bounds.minX * scale,
-      panY: FIT_PAD_TOP + (availH - bounds.height * scale) / 2 - bounds.minY * scale,
-    });
+    setView(fitAtlasFrame(width, height, bounds, FIT_OPTIONS).view);
   }, [bounds]);
 
   const focusSelected = useCallback(() => {
@@ -261,11 +348,13 @@ export function TaskGraphView(props: TaskGraphViewProps) {
     }
     setRestoreSnapshot(hasManual ? manual : null);
     setOffsets({});
+    clearStoredOffsets(storageKeyRef.current);
   }, [setOffsets]);
 
   const restore = useCallback(() => {
     if (restoreSnapshot === null) return;
     setOffsets(restoreSnapshot);
+    writeStoredOffsets(storageKeyRef.current, restoreSnapshot);
     setRestoreSnapshot(null);
   }, [restoreSnapshot, setOffsets]);
 
@@ -306,7 +395,12 @@ export function TaskGraphView(props: TaskGraphViewProps) {
         setView((previous) => ({ ...previous, panX: previous.panX - delta }));
         return;
       }
-      setView((previous) => ({ ...previous, panY: previous.panY - event.deltaY }));
+      // Trackpads report both axes at once: glide on both so diagonal pans feel native.
+      setView((previous) => ({
+        ...previous,
+        panX: previous.panX - event.deltaX,
+        panY: previous.panY - event.deltaY,
+      }));
     };
     element.addEventListener("wheel", onWheel, { passive: false });
     return () => element.removeEventListener("wheel", onWheel);
@@ -323,8 +417,17 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   useEffect(() => {
     if (didAutoFitRef.current || bounds === null || viewport.width <= 0 || viewport.height <= 0) return;
     didAutoFitRef.current = true;
-    fit();
-  }, [bounds, fit, viewport.height, viewport.width]);
+    const { view: fitted, zoomToFit } = fitAtlasFrame(
+      viewport.width, viewport.height, bounds, FIT_OPTIONS,
+    );
+    if (zoomToFit >= COMFORTABLE_MIN_SCALE) {
+      setView(fitted);
+      return;
+    }
+    // Too much canvas to read at full fit: land on a crisp, readable top-left
+    // origin instead of ants, and leave the rest one `Fit`/`F` away.
+    setView(comfortableAtlasFrame(bounds, zoomToFit, COMFORT_OPTIONS));
+  }, [bounds, viewport.height, viewport.width]);
 
   useEffect(() => {
     onBoardMetaChange?.({ zoomPercent, relationCount: edges.length, canRestore: restoreSnapshot !== null });
@@ -412,10 +515,11 @@ export function TaskGraphView(props: TaskGraphViewProps) {
     const base = layout.positions.get(drag.taskId);
     const offset = offsetsRef.current[drag.taskId];
     if (!base || !offset) return;
-    setOffsets({
-      ...offsetsRef.current,
-      [drag.taskId]: { x: snap(base.x + offset.x) - base.x, y: snap(base.y + offset.y) - base.y },
-    });
+    const settled = { x: snap(base.x + offset.x) - base.x, y: snap(base.y + offset.y) - base.y };
+    const next = { ...offsetsRef.current, [drag.taskId]: settled };
+    setOffsets(next);
+    // Spatial memory is written once, at drag end — never on mount or pan.
+    writeStoredOffsets(storageKeyRef.current, next);
   };
 
   const minimapScale = bounds === null ? 1 : Math.min(MINIMAP_WIDTH / bounds.width, MINIMAP_HEIGHT / bounds.height, 1);
@@ -481,28 +585,42 @@ export function TaskGraphView(props: TaskGraphViewProps) {
                 </marker>
               </defs>
               {edges.map((edge) => {
-                const highlighted = focusId !== null && (edge.sourceId === focusId || edge.targetId === focusId);
+                const highlighted = subgraph !== null && subgraph.edgeKeys.has(edge.key);
+                const dimmed = subgraph !== null && !highlighted;
                 const solid = edge.kind === "parent";
                 const marker = solid
                   ? highlighted ? "atlas-arrow-solid-accent" : "atlas-arrow-solid"
                   : highlighted ? "atlas-arrow-open-accent" : "atlas-arrow-open";
+                const pillText = edge.kind === "dependency" ? "dep" : edge.kind === "source" ? "retry" : null;
+                const pillWidth = pillText === null ? 0 : (pillText.length * 5.6 + 12);
                 return (
                   <g key={edge.key}>
                     <path
                       className="atlas-edge" data-kind={edge.kind} d={edge.path} fill="none"
                       data-highlighted={highlighted ? "true" : undefined}
-                      data-dimmed={focusId !== null && !highlighted ? "true" : undefined}
+                      data-dimmed={dimmed ? "true" : undefined}
                       stroke={highlighted ? "var(--accent)" : "var(--text-muted)"}
                       strokeWidth={solid ? 1.4 : edge.kind === "dependency" ? 1.25 : 1.1}
                       strokeDasharray={edge.kind === "parent" ? undefined : edge.kind === "dependency" ? "6 4" : "2 4"}
-                      opacity={focusId !== null && !highlighted ? 0.25 : edge.kind === "source" ? 0.62 : 0.9}
+                      opacity={dimmed ? 0.25 : edge.kind === "source" ? 0.62 : 0.9}
                       markerEnd={`url(#${marker})`}
                     />
-                    {highlighted && edge.kind !== "parent" ? (
-                      <g className="atlas-edge-label">
-                        <text x={edge.labelX} y={edge.labelY} textAnchor="middle" dominantBaseline="middle" fill="var(--text-secondary)">
-                          {edge.kind === "dependency" ? "dep" : "retry"}
+                    {highlighted && pillText !== null ? (
+                      <g className="atlas-edge-label" data-highlighted="true">
+                        <rect
+                          className="atlas-edge-pill" x={edge.labelX - pillWidth / 2} y={edge.labelY - 7}
+                          width={pillWidth} height={14} rx={7} ry={7}
+                          fill="var(--bg-canvas)" stroke="var(--border-subtle)" strokeWidth={1}
+                        />
+                        <text x={edge.labelX} y={edge.labelY} textAnchor="middle" dominantBaseline="middle">
+                          {pillText}
                         </text>
+                      </g>
+                    ) : null}
+                    {highlighted ? (
+                      <g className="atlas-port" aria-hidden="true">
+                        <circle className="atlas-port-dot" cx={edge.sourceX} cy={edge.sourceY} r={3.5} fill="var(--accent)" />
+                        <circle className="atlas-port-dot" cx={edge.targetX} cy={edge.targetY} r={3.5} fill="var(--accent)" />
                       </g>
                     ) : null}
                   </g>
@@ -530,6 +648,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
                   key={node.task.id} task={node.task} x={position.x} y={position.y}
                   selected={node.task.id === selectedTaskId} hovered={node.task.id === hoveredTaskId}
                   dragging={node.task.id === nodeDragId} density={density}
+                  dimmed={subgraph !== null && !subgraph.nodeIds.has(node.task.id)}
                   worker={delivery ? workerById.get(delivery.workerId) : undefined}
                   onHover={setHoveredTaskId} onSelect={onSelectTask}
                 />
@@ -601,7 +720,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
             </button>
           </div>
 
-          <div className="atlas-hint">Drag empty space to pan · Drag cards to move · ⌘/Ctrl + scroll to zoom</div>
+          <div className="atlas-hint">Drag empty space or scroll to pan · Drag cards to move · ⌘/Ctrl + scroll to zoom · F fits all</div>
         </>
       )}
     </section>

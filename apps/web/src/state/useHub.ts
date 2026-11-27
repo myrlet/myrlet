@@ -82,12 +82,6 @@ export interface UseHubResult {
   readonly lastSyncedAtMs: number | null;
   refresh: () => Promise<void>;
 
-  /* Live SSE event log (newest first, capped) */
-  readonly events: readonly HubEventEnvelope[];
-  readonly eventsPaused: boolean;
-  toggleEventsPaused: () => void;
-  clearEvents: () => void;
-
   /* Selected Task detail */
   readonly selectedTaskId: string | null;
   readonly selectedTask: TaskRecord | null;
@@ -115,14 +109,11 @@ const THEME_STORAGE_KEY = "myrlet.theme";
 const REFRESH_DEBOUNCE_MS = 150;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 8_000;
-/** Live event ring buffer bound; older hints are dropped, never rewritten. */
-const MAX_LIVE_EVENTS = 500;
 
 const THEME_IDS: readonly Theme[] = THEMES.map((theme) => theme.id);
 
 const EMPTY_TASKS: readonly SnapshotTaskSummary[] = [];
 const EMPTY_WORKERS: readonly WorkerRecord[] = [];
-const EMPTY_EVENTS: readonly HubEventEnvelope[] = [];
 
 function isTheme(value: unknown): value is Theme {
   return typeof value === "string" && (THEME_IDS as readonly string[]).includes(value);
@@ -256,9 +247,6 @@ export function useHub(): UseHubResult {
   const [eventCursor, setEventCursor] = useState(0);
   const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
 
-  const [events, setEvents] = useState<readonly HubEventEnvelope[]>(EMPTY_EVENTS);
-  const [eventsPaused, setEventsPaused] = useState(false);
-
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<TaskRecord | null>(null);
   const [selectedTree, setSelectedTree] = useState<TaskTreeResponse | null>(null);
@@ -271,8 +259,6 @@ export function useHub(): UseHubResult {
   const cursorRef = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
   const selectTokenRef = useRef(0);
-  /** Read by the SSE handler; a ref keeps the callback identity stable. */
-  const eventsPausedRef = useRef(false);
 
   /* Theme: persisted in localStorage only and applied to <html data-theme>. */
   useEffect(() => {
@@ -296,18 +282,6 @@ export function useHub(): UseHubResult {
     });
   }, []);
 
-  const toggleEventsPaused = useCallback(() => {
-    setEventsPaused((current) => {
-      const next = !current;
-      eventsPausedRef.current = next;
-      return next;
-    });
-  }, []);
-
-  const clearEvents = useCallback(() => {
-    setEvents(EMPTY_EVENTS);
-  }, []);
-
   const getClient = useCallback((): HubClient => {
     const client = clientRef.current;
     if (!client) {
@@ -323,9 +297,6 @@ export function useHub(): UseHubResult {
     setSnapshot(null);
     setEventCursor(0);
     setLastSyncedAtMs(null);
-    setEvents(EMPTY_EVENTS);
-    setEventsPaused(false);
-    eventsPausedRef.current = false;
     setSelectedTaskId(null);
     setSelectedTask(null);
     setSelectedTree(null);
@@ -448,15 +419,8 @@ export function useHub(): UseHubResult {
         setEventCursor(envelope.seq);
       }
 
-      // The visible log is pausable; cursor tracking and the Snapshot refresh
-      // below always run so the session never silently falls behind.
-      if (!eventsPausedRef.current) {
-        setEvents((current) => {
-          const next = [envelope, ...current];
-          return next.length > MAX_LIVE_EVENTS ? next.slice(0, MAX_LIVE_EVENTS) : next;
-        });
-      }
-
+      // The frame is an invalidation hint: cursor tracking and the debounced
+      // Snapshot refresh below are the whole contract, no event log is kept.
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
       }
@@ -791,11 +755,6 @@ export function useHub(): UseHubResult {
     eventCursor,
     lastSyncedAtMs,
     refresh: refreshAll,
-
-    events,
-    eventsPaused,
-    toggleEventsPaused,
-    clearEvents,
 
     selectedTaskId,
     selectedTask,

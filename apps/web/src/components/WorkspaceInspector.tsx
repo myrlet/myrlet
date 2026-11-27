@@ -1,10 +1,11 @@
 /**
  * Workspace Inspector: the right-hand panel shown when no Task is selected.
  *
- * It is a factual overview only — queued/dispatched Tasks that can be opened,
- * Registered/Online/Offline Worker counts plus active Delivery counts, and a
- * workspace summary of Task trees, Tasks, and Categories. No render claims a
- * success verdict, health score, or progress percentage.
+ * It is a lean attention + Worker rail only — queued/dispatched Tasks that can
+ * be opened, Registered/Online/Offline Worker counts plus active Delivery
+ * counts, and a Manage shortcut into the Workers view. Snapshot totals live in
+ * the status bar, so they are not repeated here. No render claims a success
+ * verdict, health score, or progress percentage.
  */
 
 import { ArrowUpRight, Server, X } from "lucide-react";
@@ -66,11 +67,6 @@ export function WorkspaceInspector(props: WorkspaceInspectorProps) {
     (total, worker) => total + worker.activeDeliveries,
     0,
   );
-
-  const treeCount = new Set(tasks.map((task) => task.rootTaskId)).size;
-  const categoryCount = new Set(
-    tasks.map((task) => task.category).filter((category) => category !== ""),
-  ).size;
 
   return (
     <aside
@@ -136,11 +132,11 @@ export function WorkspaceInspector(props: WorkspaceInspectorProps) {
               type="button"
               className="button button-sm button-ghost"
               onClick={onOpenWorkers}
-              aria-label="Open Workers"
-              title="Open Workers"
+              aria-label="Manage Workers"
+              title="Manage Workers"
             >
               <Server size={12} aria-hidden="true" />
-              <span>Open</span>
+              <span>Manage</span>
             </button>
           </div>
 
@@ -218,33 +214,6 @@ export function WorkspaceInspector(props: WorkspaceInspectorProps) {
           )}
         </section>
       </div>
-
-      <footer className="inspector-summary" aria-label="Workspace summary">
-        <div
-          className="stat-grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-            gap: "1px",
-          }}
-        >
-          <StatCell
-            label="Task trees"
-            value={formatCount(treeCount)}
-            hint={`${treeCount} Task trees in the loaded snapshot`}
-          />
-          <StatCell
-            label="Tasks"
-            value={formatCount(tasks.length)}
-            hint={`${tasks.length} Tasks in the loaded snapshot`}
-          />
-          <StatCell
-            label="Categories"
-            value={formatCount(categoryCount)}
-            hint={`${categoryCount} distinct non-empty Categories`}
-          />
-        </div>
-      </footer>
     </aside>
   );
 }
