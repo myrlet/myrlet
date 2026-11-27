@@ -378,13 +378,16 @@ async fn a_harness_can_call_done_and_clear_its_result_after_finish() {
     });
 
     let task = cli.submit("done-1", "Done via CLI", "Write the result", "exec-done");
+    // `done` syncs the Result independently of Finish, so the Result can arrive while
+    // the Task is still `dispatched`; wait for the Worker-observed exit separately.
     poll("the harness result to reach the Hub", || {
-        (cli.run(&["--json", "tasks", "show", &task])["resultMarkdown"]
-            == "# Harness result\n\n- done via CLI\n")
-            .then_some(())
+        let shown = cli.run(&["--json", "tasks", "show", &task]);
+        (shown["resultMarkdown"] == "# Harness result\n\n- done via CLI\n").then_some(())
     });
-    let shown = cli.run(&["--json", "tasks", "show", &task]);
-    assert_eq!(status(&shown), "finished", "worker exit still finishes");
+    let shown = poll("worker exit to finish the Task", || {
+        let shown = cli.run(&["--json", "tasks", "show", &task]);
+        (status(&shown) == "finished").then_some(shown)
+    });
 
     // The Harness deleted its file; a later sync after Finish clears the Hub copy.
     let delivery_id = shown["currentDelivery"]["id"].as_str().expect("delivery");
