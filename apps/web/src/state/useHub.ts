@@ -85,9 +85,11 @@ export interface UseHubResult {
   selectTask: (taskId: string | null) => Promise<void>;
 
   /* Worker commands */
+  readonly enrollmentCode: CreateEnrollmentCodeResponse | null;
+  readonly issuingCode: boolean;
   createEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
-  ) => Promise<CreateEnrollmentCodeResponse>;
+  ) => Promise<void>;
   rotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
   revokeWorker: (workerId: string) => Promise<void>;
 }
@@ -232,6 +234,9 @@ function describeConnectionError(error: unknown): string {
  */
 export function useHub(): UseHubResult {
   const [theme, setThemeState] = useState<Theme>(readStoredTheme);
+  const [enrollmentCode, setEnrollmentCode] = useState<CreateEnrollmentCodeResponse | null>(null);
+  const [issuingCode, setIssuingCode] = useState(false);
+  const issueOwner = useRef<HubClient | null>(null);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(readSystemTheme);
   const [connection, setConnection] = useState<ConnectionStatus>("disconnected");
   const [baseUrl, setBaseUrl] = useState<string>(defaultBaseUrl);
@@ -303,6 +308,9 @@ export function useHub(): UseHubResult {
   }, []);
 
   const resetViewState = useCallback(() => {
+    issueOwner.current = null;
+    setIssuingCode(false);
+    setEnrollmentCode(null);
     cursorRef.current = 0;
     selectedIdRef.current = null;
     selectTokenRef.current += 1;
@@ -668,22 +676,30 @@ export function useHub(): UseHubResult {
     [getClient, handleAuthFailure, refreshAll],
   );
 
-  const createEnrollmentCode = useCallback(
-    async (
-      request: CreateEnrollmentCodeRequest,
-    ): Promise<CreateEnrollmentCodeResponse> => {
-      const client = getClient();
-      try {
-        return await client.createEnrollmentCode(request);
-      } catch (issueError) {
-        if (issueError instanceof HubApiError && issueError.status === 401) {
-          handleAuthFailure();
-        }
-        throw issueError;
+  useEffect(() => {
+    if (!enrollmentCode) return;
+    const timer = window.setTimeout(() => setEnrollmentCode(null), Math.max(0, enrollmentCode.expiresAtMs - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [enrollmentCode]);
+
+  const createEnrollmentCode = useCallback(async (request: CreateEnrollmentCodeRequest) => {
+    const client = getClient();
+    if (issueOwner.current === client || (enrollmentCode && enrollmentCode.expiresAtMs > Date.now())) return;
+    issueOwner.current = client;
+    setIssuingCode(true);
+    try {
+      const response = await client.createEnrollmentCode(request);
+      if (clientRef.current === client) setEnrollmentCode(response);
+    } catch (error) {
+      if (clientRef.current === client && error instanceof HubApiError && error.status === 401) handleAuthFailure();
+      throw error;
+    } finally {
+      if (issueOwner.current === client) {
+        issueOwner.current = null;
+        setIssuingCode(false);
       }
-    },
-    [getClient, handleAuthFailure],
-  );
+    }
+  }, [getClient, handleAuthFailure, enrollmentCode]);
 
   const rotateWorker = useCallback(
     (workerId: string) => mutate((client) => client.rotateWorker(workerId)),
@@ -745,6 +761,8 @@ export function useHub(): UseHubResult {
     detailError,
     selectTask,
 
+    enrollmentCode,
+    issuingCode,
     createEnrollmentCode,
     rotateWorker,
     revokeWorker,

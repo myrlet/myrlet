@@ -5,7 +5,9 @@
  * Myrlet exposes one read-only workspace. Workers & Pairing slides over it as a
  * drawer, and appearance, shortcuts, and disconnect live in a compact settings
  * popover. Every number is a plain Hub fact (online Workers, SSE cursor) —
- * nothing infers a verdict, health score, or progress.
+ * nothing infers a verdict, health score, or progress. On a narrow screen the
+ * brand wordmark and the connection wording drop away (each control keeps an
+ * explicit accessible name), so the mode switch never collides with status.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -24,7 +26,7 @@ import { THEMES } from "../state/useHub";
 import type { ConnectionStatus, Theme } from "../state/useHub";
 import { BrandMark } from "./BrandMark";
 
-/** The two presentations of the single workspace. `board` is the home. */
+/** The two presentations of the single workspace. `list` is the home. */
 export type WorkspaceMode = "board" | "list";
 
 export interface TopBarProps {
@@ -136,10 +138,11 @@ export function TopBar(props: TopBarProps) {
           className="connection-pill"
           data-state={connection}
           title={`${hostLabel} · SSE cursor #${eventCursor} — click to refresh`}
+          aria-label={`${CONNECTION_LABELS[connection]} — ${hostLabel}. Refresh the Snapshot.`}
           onClick={onRefresh}
         >
           <span className="connection-dot" data-state={connectionDot} aria-hidden="true" />
-          {CONNECTION_LABELS[connection]}
+          <span className="connection-text">{CONNECTION_LABELS[connection]}</span>
         </button>
       </div>
 
@@ -174,6 +177,7 @@ export function TopBar(props: TopBarProps) {
           className="app-bar-workers-btn"
           data-open={workersOpen}
           aria-expanded={workersOpen}
+          aria-label={`Workers ${onlineWorkerCount}/${workerCount}`}
           title={`Workers — ${onlineWorkerCount} of ${workerCount} online. Open Workers & Pairing.`}
           onClick={onToggleWorkers}
         >

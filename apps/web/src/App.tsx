@@ -2,12 +2,12 @@
  * Myrlet Web UI root — the Work Atlas console.
  *
  * Renders the Auth gate until a Hub session exists, then one 52px top app bar,
- * the full-bleed Board (default) or List, the collapsible right Inspector, and
- * the 26px status bar. Workers & Pairing is a slide-over drawer rather than a
- * separate page. The Task surface is strictly read-only: creation, import,
- * dispatch, cancel, finish, subtask, and retry belong to the CLI, never here.
- * All non-session state lives in this component; the bearer token stays inside
- * `useHub`.
+ * the relationship Board (default) or the dense List, the collapsible
+ * right Inspector, and the compact status bar. Workers & Pairing is a slide-over
+ * drawer rather than a separate page. The Task surface is strictly read-only:
+ * creation, import, dispatch, cancel, finish, subtask, and retry belong to the
+ * CLI, never here. All non-session state lives in this component; the bearer
+ * token stays inside `useHub`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -15,7 +15,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { X } from "lucide-react";
+import { Check, ChevronDown, Filter, X } from "lucide-react";
 
 import type { TaskStatus } from "./api/types";
 import { AuthGate } from "./components/AuthGate";
@@ -47,23 +47,28 @@ const INITIAL_ATLAS_META: AtlasBoardMeta = {
 export default function App() {
   const hub = useHub();
 
+  /* The Board opens first; List provides a compact task outline. */
   const [mode, setMode] = useState<WorkspaceMode>("board");
-  /* Choice A — full-bleed canvas first: the Inspector only opens on demand. */
+  /* The Inspector only opens on demand, so the workspace starts full-width. */
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [workersOpen, setWorkersOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
-  /** The only filter: one Task status, toggled from the status bar counters. */
+  /** The only filter: one Task status, chosen from the status bar. */
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [atlasMeta, setAtlasMeta] = useState<AtlasBoardMeta>(INITIAL_ATLAS_META);
   const atlasRef = useRef<TaskGraphControls | null>(null);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [narrowInspector, setNarrowInspector] = useState(false);
-  const [workspaceInert, setWorkspaceInert] = useState(false);
+  /* Phone layout: the five status counters collapse into one filter menu. */
+  const [compactStatusBar, setCompactStatusBar] = useState(false);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const inspectorRef = useRef<HTMLDivElement | null>(null);
   const inspectorReturnFocusRef = useRef<HTMLElement | null>(null);
+  const statusMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
   const toastIdRef = useRef(0);
@@ -277,7 +282,18 @@ export default function App() {
     [rows, hub.selectedTaskId, selectTaskAndReveal],
   );
 
-  const modalOpen = paletteOpen || shortcutsOpen || workersOpen;
+  const modalOpen = paletteOpen || shortcutsOpen || workersOpen || statusMenuOpen;
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia("(max-width: 820px)");
+    const sync = (): void => setCompactStatusBar(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") {
@@ -291,25 +307,62 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!narrowInspector || !inspectorOpen) {
-      setWorkspaceInert(false);
+    const workspace = workspaceRef.current;
+    if (!workspace) {
       return;
     }
-    const active = document.activeElement;
-    inspectorReturnFocusRef.current =
-      active instanceof HTMLElement && active !== document.body ? active : null;
-    setWorkspaceInert(true);
-    const frame = window.requestAnimationFrame(() => inspectorRef.current?.focus());
-    return () => {
-      window.cancelAnimationFrame(frame);
-      setWorkspaceInert(false);
-      const target = inspectorReturnFocusRef.current;
-      inspectorReturnFocusRef.current = null;
-      if (target?.isConnected) {
-        target.focus();
+    if (narrowInspector && inspectorOpen) {
+      // Record the real opener (row, Board card, toolbar button) once, before
+      // the background goes inert and focus moves into the sheet.
+      if (inspectorReturnFocusRef.current === null) {
+        const opener = document.activeElement;
+        if (
+          opener instanceof HTMLElement &&
+          opener !== document.body &&
+          !inspectorRef.current?.contains(opener)
+        ) {
+          inspectorReturnFocusRef.current = opener;
+        }
       }
-    };
+      workspace.setAttribute("inert", "");
+      inspectorRef.current?.focus();
+      return () => workspace.removeAttribute("inert");
+    }
+    if (inspectorOpen) {
+      // Still open, just wide: keep the opener without stealing focus back.
+      return;
+    }
+    // Closed: the sheet and its inert background are already unmounted, so the
+    // real opener can take focus back.
+    const target = inspectorReturnFocusRef.current;
+    inspectorReturnFocusRef.current = null;
+    if (target?.isConnected) {
+      target.focus();
+    }
   }, [inspectorOpen, narrowInspector]);
+
+  useEffect(() => {
+    if (!statusMenuOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent): void => {
+      const target = event.target;
+      if (target instanceof Node && statusMenuRef.current?.contains(target)) {
+        return;
+      }
+      setStatusMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [statusMenuOpen]);
+
+  /** Close the phone status menu and put focus back on its trigger. */
+  const closeStatusMenu = useCallback(() => {
+    setStatusMenuOpen(false);
+    statusMenuRef.current
+      ?.querySelector<HTMLButtonElement>(".status-filter-trigger")
+      ?.focus();
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -340,6 +393,11 @@ export default function App() {
         if (workersOpen) {
           event.preventDefault();
           setWorkersOpen(false);
+          return;
+        }
+        if (statusMenuOpen) {
+          event.preventDefault();
+          closeStatusMenu();
           return;
         }
         // Filter is workspace state, below every overlay but above the
@@ -417,6 +475,7 @@ export default function App() {
   }, [
     clearFilter,
     clearSelection,
+    closeStatusMenu,
     hub.selectedTaskId,
     inspectorOpen,
     modalOpen,
@@ -425,6 +484,7 @@ export default function App() {
     paletteOpen,
     shortcutsOpen,
     statusFilter,
+    statusMenuOpen,
     workersOpen,
   ]);
 
@@ -507,7 +567,7 @@ export default function App() {
       />
 
       <div className="workspace-split">
-        <div className="view-body" data-view={mode} inert={workspaceInert}>
+        <div className="view-body" data-view={mode} ref={workspaceRef}>
           {boardMode ? (
             <TaskGraphView
               tasks={visibleTasks}
@@ -540,6 +600,7 @@ export default function App() {
               onCopyId={(taskId: string) => copyText("task id", taskId)}
               hasActiveFilter={statusFilter !== null}
               onClearFilters={clearFilter}
+              compact={compactStatusBar}
             />
           )}
         </div>
@@ -558,26 +619,26 @@ export default function App() {
               onPointerDown={beginResize}
               onKeyDown={resizeKeyDown}
             />
+            {/* Narrow screens: a sibling scrim behind the panel, never a child
+                that could swallow the panel's own close button. Pointer-only;
+                keyboard users close with the panel's close button or Escape. */}
+            <button
+              type="button"
+              className="inspector-scrim"
+              tabIndex={-1}
+              aria-hidden="true"
+              onClick={
+                hub.selectedTaskId !== null
+                  ? clearSelection
+                  : () => setInspectorOpen(false)
+              }
+            />
             <div
               ref={inspectorRef}
               className="inspector-slot"
               style={{ width: `${inspectorWidth}px` }}
               tabIndex={-1}
             >
-              <button
-                type="button"
-                className="inspector-scrim"
-                aria-label={
-                  hub.selectedTaskId !== null
-                    ? "Close task detail"
-                    : "Close workspace inspector"
-                }
-                onClick={
-                  hub.selectedTaskId !== null
-                    ? clearSelection
-                    : () => setInspectorOpen(false)
-                }
-              />
               {hub.selectedTaskId !== null ? (
                 <TaskDetailPanel
                   task={hub.selectedTask}
@@ -604,21 +665,93 @@ export default function App() {
 
       <footer className="status-bar">
         <div className="status-bar-left">
-          {TASK_STATUSES.map((status) => (
-            <button
-              key={status}
-              type="button"
-              className="status-counter"
-              data-tone={status}
-              data-active={statusFilter === status}
-              aria-pressed={statusFilter === status}
-              onClick={() => filterByStatus(status)}
-            >
-              <span className="state-dot" data-state={status} aria-hidden="true" />
-              <span>{TASK_STATUS_META[status].label}</span>
-              <span className="tabular">{statusCounts[status]}</span>
-            </button>
-          ))}
+          {compactStatusBar ? (
+            <div className="status-filter" ref={statusMenuRef}>
+              <button
+                type="button"
+                className="status-filter-trigger"
+                data-active={statusFilter !== null}
+                aria-haspopup="menu"
+                aria-expanded={statusMenuOpen}
+                aria-label={
+                  activeStatusLabel === null
+                    ? "Filter by status — all statuses"
+                    : `Filter by status — ${activeStatusLabel}`
+                }
+                onClick={() => setStatusMenuOpen((current) => !current)}
+              >
+                <Filter size={12} aria-hidden="true" />
+                <span className="status-filter-label">
+                  {activeStatusLabel ?? "All statuses"}
+                </span>
+                <span className="status-filter-count tabular">
+                  {statusFilter === null ? totalTasks : statusCounts[statusFilter]}
+                </span>
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+              {statusMenuOpen ? (
+                <div className="status-filter-menu" role="menu" aria-label="Filter by status">
+                  <button
+                    type="button"
+                    className="status-filter-option"
+                    role="menuitemradio"
+                    aria-checked={statusFilter === null}
+                    data-active={statusFilter === null}
+                    onClick={() => {
+                      setStatusFilter(null);
+                      closeStatusMenu();
+                    }}
+                  >
+                    <span className="status-filter-check" aria-hidden="true">
+                      {statusFilter === null ? <Check size={12} /> : null}
+                    </span>
+                    <span aria-hidden="true" />
+                    <span className="status-filter-option-label">All statuses</span>
+                    <span className="tabular muted">{totalTasks}</span>
+                  </button>
+                  {TASK_STATUSES.map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      className="status-filter-option"
+                      role="menuitemradio"
+                      aria-checked={statusFilter === status}
+                      data-active={statusFilter === status}
+                      onClick={() => {
+                        setStatusFilter(status);
+                        closeStatusMenu();
+                      }}
+                    >
+                      <span className="status-filter-check" aria-hidden="true">
+                        {statusFilter === status ? <Check size={12} /> : null}
+                      </span>
+                      <span className="state-dot" data-state={status} aria-hidden="true" />
+                      <span className="status-filter-option-label">
+                        {TASK_STATUS_META[status].label}
+                      </span>
+                      <span className="tabular muted">{statusCounts[status]}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            TASK_STATUSES.map((status) => (
+              <button
+                key={status}
+                type="button"
+                className="status-counter"
+                data-tone={status}
+                data-active={statusFilter === status}
+                aria-pressed={statusFilter === status}
+                onClick={() => filterByStatus(status)}
+              >
+                <span className="state-dot" data-state={status} aria-hidden="true" />
+                <span>{TASK_STATUS_META[status].label}</span>
+                <span className="tabular">{statusCounts[status]}</span>
+              </button>
+            ))
+          )}
         </div>
         <div className="status-bar-right">
           <span className="mono" title="Tasks and relationships in the current Snapshot">
@@ -671,6 +804,8 @@ export default function App() {
             </header>
             <div className="workers-drawer-body">
               <WorkersView
+                issued={hub.enrollmentCode}
+                busy={hub.issuingCode}
                 baseUrl={hub.session.baseUrl}
                 workers={hub.workers}
                 onCreateEnrollmentCode={hub.createEnrollmentCode}

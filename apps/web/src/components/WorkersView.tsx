@@ -86,17 +86,18 @@ function workerMatchesQuery(worker: WorkerRecord, query: string): boolean {
 
 interface PairingCardProps {
   readonly baseUrl: string;
+  readonly issued: CreateEnrollmentCodeResponse | null;
+  readonly busy: boolean;
   readonly onCreateEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
-  ) => Promise<CreateEnrollmentCodeResponse>;
+  ) => Promise<void>;
   readonly onCopyText: (label: string, text: string) => void;
 }
 
-function PairingCard({ baseUrl, onCreateEnrollmentCode, onCopyText }: PairingCardProps) {
+function PairingCard({ baseUrl, issued, busy, onCreateEnrollmentCode, onCopyText }: PairingCardProps) {
   const [ttlSeconds, setTtlSeconds] = useState(String(DEFAULT_TTL_SECONDS));
   const [suggestedWorkerId, setSuggestedWorkerId] = useState("");
-  const [issued, setIssued] = useState<CreateEnrollmentCodeResponse | null>(null);
-  const [busy, setBusy] = useState(false);
+  const locked = busy || issued !== null;
   const [error, setError] = useState<string | null>(null);
 
   const generate = useCallback(async (): Promise<void> => {
@@ -106,21 +107,17 @@ function PairingCard({ baseUrl, onCreateEnrollmentCode, onCopyText }: PairingCar
       return;
     }
     const suggested = suggestedWorkerId.trim();
-    setBusy(true);
+    if (locked) return;
     setError(null);
-    setIssued(null);
     try {
-      const response = await onCreateEnrollmentCode({
+      await onCreateEnrollmentCode({
         ttlSeconds: parsedTtl,
         suggestedWorkerId: suggested === "" ? null : suggested,
       });
-      setIssued(response);
     } catch (issueError) {
-      setError(describeError(issueError));
-    } finally {
-      setBusy(false);
+      setError(issueError instanceof HubApiError ? `HTTP ${issueError.status}: ${issueError.message}` : describeError(issueError));
     }
-  }, [onCreateEnrollmentCode, suggestedWorkerId, ttlSeconds]);
+  }, [locked, onCreateEnrollmentCode, suggestedWorkerId, ttlSeconds]);
 
   const pairCommand = issued ? buildPairCommand(baseUrl, issued.enrollmentCode) : "";
 
@@ -144,7 +141,7 @@ function PairingCard({ baseUrl, onCreateEnrollmentCode, onCopyText }: PairingCar
             className="input input-mono"
             inputMode="numeric"
             value={ttlSeconds}
-            disabled={busy}
+            disabled={locked}
             onChange={(event) => setTtlSeconds(event.target.value)}
           />
         </div>
@@ -157,7 +154,7 @@ function PairingCard({ baseUrl, onCreateEnrollmentCode, onCopyText }: PairingCar
             className="input input-mono"
             placeholder="wkr_…"
             value={suggestedWorkerId}
-            disabled={busy}
+            disabled={locked}
             onChange={(event) => setSuggestedWorkerId(event.target.value)}
           />
         </div>
@@ -166,12 +163,12 @@ function PairingCard({ baseUrl, onCreateEnrollmentCode, onCopyText }: PairingCar
             type="button"
             className="button button-primary"
             aria-busy={busy ? "true" : undefined}
-            disabled={busy}
+            disabled={locked}
             onClick={() => {
               void generate();
             }}
           >
-            {busy ? "Generating…" : "Generate Pairing Code"}
+            {busy ? "Generating…" : issued ? "Code issued" : "Generate Pairing Code"}
           </button>
         </div>
       </div>
@@ -526,9 +523,11 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
 export interface WorkersViewProps {
   readonly baseUrl: string;
   readonly workers: readonly WorkerRecord[];
+  readonly issued: CreateEnrollmentCodeResponse | null;
+  readonly busy: boolean;
   readonly onCreateEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
-  ) => Promise<CreateEnrollmentCodeResponse>;
+  ) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
   readonly onRevokeWorker: (workerId: string) => Promise<void>;
   readonly onCopyText: (label: string, text: string) => void;
@@ -561,6 +560,8 @@ export function WorkersView(props: WorkersViewProps) {
     <section className="workers-view" aria-label="Workers and pairing">
       <div className="workers-scroll">
         <PairingCard
+          issued={props.issued}
+          busy={props.busy}
           baseUrl={baseUrl}
           onCreateEnrollmentCode={onCreateEnrollmentCode}
           onCopyText={onCopyText}
