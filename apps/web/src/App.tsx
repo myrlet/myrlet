@@ -1,17 +1,37 @@
 /**
- * Myrlet Web UI root.
+ * Myrlet Web UI root — the Work Atlas console.
  *
- * Renders the Auth gate until a Hub session exists, then the header, the Task
- * tree, the Task detail pane, and the explicit action dialogs. All state that
- * is not session-owned lives here; credentials stay inside `useHub`.
+ * Renders the Auth gate until a Hub session exists, then the 52px top app bar,
+ * the 48px Board/List toolbar, the full-width Board (default) or List view, the
+ * resizable right Inspector, and the 26px status bar. All non-session state
+ * lives here; the bearer token stays inside `useHub`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  ChevronsUpDown,
+  Crosshair,
+  LayoutGrid,
+  ListTree,
+  Maximize2,
+  Network,
+  PanelRight,
+  RotateCcw,
+  Search,
+} from "lucide-react";
 
-import type { TaskRecord } from "./api/types";
+import type { TaskRecord, TaskStatus } from "./api/types";
 import { AuthGate } from "./components/AuthGate";
-import { HeaderBar } from "./components/HeaderBar";
+import { CommandPalette, ShortcutsModal, ToastStack } from "./components/CommandPalette";
+import type { ToastItem } from "./components/CommandPalette";
+import { EventsView } from "./components/EventsView";
 import { TaskDetailPanel } from "./components/TaskDetailPanel";
+import { TaskGraphView } from "./components/TaskGraphView";
+import type { WorkAtlasHandle, WorkAtlasMeta } from "./components/TaskGraphView";
 import {
   CancelDialog,
   DispatchDialog,
@@ -20,44 +40,79 @@ import {
   NewTaskDialog,
 } from "./components/TaskModals";
 import { TaskTreeTable } from "./components/TaskTreeTable";
-import { WorkersModal } from "./components/WorkersModal";
-import { buildTaskTreeRows, taskParentId } from "./format";
+import { TopBar } from "./components/TopBar";
+import type { WorkspaceView } from "./components/TopBar";
+import { WorkersView } from "./components/WorkersView";
+import { WorkspaceInspector } from "./components/WorkspaceInspector";
+import {
+  TASK_STATUSES,
+  TASK_STATUS_META,
+  buildTaskTreeRows,
+  canDispatchTask,
+} from "./format";
 import type { TaskFilter } from "./format";
 import { useHub } from "./state/useHub";
 
 const EMPTY_FILTER: TaskFilter = {};
+const INSPECTOR_MIN_WIDTH = 320;
+const INSPECTOR_MAX_WIDTH = 540;
+const DEFAULT_INSPECTOR_WIDTH = 414;
+const TOAST_TIMEOUT_MS = 3_800;
+
+const INITIAL_ATLAS_META: WorkAtlasMeta = {
+  zoomPercent: 100,
+  relationCount: 0,
+  canRestore: false,
+};
 
 function isFilterActive(filter: TaskFilter): boolean {
   const query = (filter.query ?? "").trim();
   const status = filter.status;
   const workerId = filter.workerId;
-  const executorId = filter.executorId;
   return (
     query !== "" ||
     (status !== undefined && status !== null && status !== "all") ||
-    (workerId !== undefined && workerId !== null && workerId !== "all") ||
-    (executorId !== undefined && executorId !== null && executorId !== "all")
+    (workerId !== undefined && workerId !== null && workerId !== "all")
   );
 }
 
+interface NewTaskRequest {
+  readonly open: boolean;
+  readonly sourceTask: TaskRecord | null;
+  readonly parentTaskId: string | null;
+}
+
+const CLOSED_NEW_TASK: NewTaskRequest = { open: false, sourceTask: null, parentTaskId: null };
+
 export default function App() {
   const hub = useHub();
+
+  const [activeView, setActiveView] = useState<WorkspaceView>("board");
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorWidth, setInspectorWidth] = useState(DEFAULT_INSPECTOR_WIDTH);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [filter, setFilter] = useState<TaskFilter>(EMPTY_FILTER);
-  const [workersOpen, setWorkersOpen] = useState(false);
+  const [atlasMeta, setAtlasMeta] = useState<WorkAtlasMeta>(INITIAL_ATLAS_META);
+  const atlasRef = useRef<WorkAtlasHandle | null>(null);
+
+  const [newTask, setNewTask] = useState<NewTaskRequest>(CLOSED_NEW_TASK);
   const [importOpen, setImportOpen] = useState(false);
-  const [newTask, setNewTask] = useState<{ open: boolean; sourceTask: TaskRecord | null }>({
-    open: false,
-    sourceTask: null,
-  });
   const [dispatchTarget, setDispatchTarget] = useState<TaskRecord | null>(null);
   const [cancelTarget, setCancelTarget] = useState<TaskRecord | null>(null);
   const [finishTarget, setFinishTarget] = useState<TaskRecord | null>(null);
 
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
+  const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
+  const toastIdRef = useRef(0);
+  const toastTimersRef = useRef<number[]>([]);
+  const pendingDispatchRef = useRef<string | null>(null);
+
   const tasks = hub.tasks;
   const expandInitialized = useRef(false);
 
-  // First load: open every root Task that has children so the tree is readable
+  // First load: open every root Task that has children so the List is readable
   // without clicking. Later snapshots never override the operator's choices.
   useEffect(() => {
     if (expandInitialized.current || tasks.length === 0) {
@@ -66,14 +121,13 @@ export default function App() {
     expandInitialized.current = true;
     const parents = new Set<string>();
     for (const task of tasks) {
-      const parentId = taskParentId(task);
-      if (parentId !== null) {
-        parents.add(parentId);
+      if (task.parentTaskId !== null) {
+        parents.add(task.parentTaskId);
       }
     }
     const next = new Set<string>();
     for (const task of tasks) {
-      if (taskParentId(task) === null && parents.has(task.id)) {
+      if (task.parentTaskId === null && parents.has(task.id)) {
         next.add(task.id);
       }
     }
@@ -87,6 +141,67 @@ export default function App() {
     [tasks, expanded, filter],
   );
 
+  const parentIds = useMemo(() => {
+    const parents = new Set<string>();
+    for (const task of tasks) {
+      if (task.parentTaskId !== null) {
+        parents.add(task.parentTaskId);
+      }
+    }
+    return parents;
+  }, [tasks]);
+
+  const allExpanded =
+    parentIds.size > 0 && Array.from(parentIds).every((taskId) => expanded.has(taskId));
+
+  const statusCounts = useMemo<Record<TaskStatus, number>>(() => {
+    const counts: Record<TaskStatus, number> = {
+      held: 0,
+      queued: 0,
+      dispatched: 0,
+      finished: 0,
+      cancelled: 0,
+    };
+    for (const task of tasks) {
+      counts[task.status] += 1;
+    }
+    return counts;
+  }, [tasks]);
+
+  // The Board takes Tasks directly, so shared status/worker filters are applied
+  // here to keep Board and List honest about what is being shown.
+  const visibleTasks = useMemo(() => {
+    const query = (filter.query ?? "").trim().toLowerCase();
+    const status =
+      filter.status !== undefined && filter.status !== null && filter.status !== "all"
+        ? filter.status
+        : null;
+    const workerId =
+      filter.workerId !== undefined && filter.workerId !== null && filter.workerId !== "all"
+        ? filter.workerId
+        : null;
+    if (query === "" && status === null && workerId === null) {
+      return tasks;
+    }
+    return tasks.filter((task) => {
+      if (status !== null && task.status !== status) {
+        return false;
+      }
+      if (workerId !== null && task.currentDelivery?.workerId !== workerId) {
+        return false;
+      }
+      if (query !== "") {
+        const haystack =
+          `${task.id} ${task.title} ${task.category} ${task.currentDelivery?.workerId ?? ""}`
+            .toLowerCase();
+        if (!haystack.includes(query)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [tasks, filter]);
+
   const toggleExpand = useCallback((taskId: string) => {
     setExpanded((current) => {
       const next = new Set(current);
@@ -99,77 +214,152 @@ export default function App() {
     });
   }, []);
 
+  const toggleExpandAll = useCallback(() => {
+    setExpanded((current) => {
+      const everyOpen =
+        parentIds.size > 0 && Array.from(parentIds).every((taskId) => current.has(taskId));
+      return everyOpen ? new Set<string>() : new Set(parentIds);
+    });
+  }, [parentIds]);
+
+  const resetFilter = useCallback(() => {
+    setFilter(EMPTY_FILTER);
+  }, []);
+
+  /* ------------------------------ Toasts ------------------------------ */
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  const pushToast = useCallback((message: string, tone: "neutral" | "error" = "neutral") => {
+    toastIdRef.current += 1;
+    const id = `toast-${toastIdRef.current}`;
+    setToasts((current) => [...current, { id, message, tone }]);
+    const timer = window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+      toastTimersRef.current = toastTimersRef.current.filter((handle) => handle !== timer);
+    }, TOAST_TIMEOUT_MS);
+    toastTimersRef.current.push(timer);
+  }, []);
+
+  useEffect(
+    () => () => {
+      for (const timer of toastTimersRef.current) {
+        window.clearTimeout(timer);
+      }
+      toastTimersRef.current = [];
+    },
+    [],
+  );
+
+  const copyText = useCallback(
+    (label: string, text: string) => {
+      const clipboard: Clipboard | undefined =
+        typeof navigator === "undefined" ? undefined : navigator.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== "function") {
+        pushToast(`Could not copy ${label}`, "error");
+        return;
+      }
+      void clipboard.writeText(text).then(
+        () => pushToast(`Copied ${label}`),
+        () => pushToast(`Could not copy ${label}`, "error"),
+      );
+    },
+    [pushToast],
+  );
+
+  /* ------------------------------ Dialogs ----------------------------- */
+
   const closeAllModals = useCallback(() => {
-    setWorkersOpen(false);
     setImportOpen(false);
-    setNewTask({ open: false, sourceTask: null });
+    setNewTask(CLOSED_NEW_TASK);
     setDispatchTarget(null);
     setCancelTarget(null);
     setFinishTarget(null);
+    setShortcutsOpen(false);
+    setPaletteOpen(false);
   }, []);
 
-  // One global Escape handler closes whichever modal is open. Dialogs also
-  // handle Escape themselves; both paths converge on the same closed state.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") {
+  const openNewTask = useCallback(() => {
+    setNewTask({ open: true, sourceTask: null, parentTaskId: null });
+  }, []);
+
+  const openSubtask = useCallback((taskId: string) => {
+    setNewTask({ open: true, sourceTask: null, parentTaskId: taskId });
+  }, []);
+
+  const openCopyRetry = useCallback((task: TaskRecord) => {
+    setNewTask({ open: true, sourceTask: task, parentTaskId: null });
+  }, []);
+
+  /**
+   * Row-level `Dispatch` must open the dialog with a full `TaskRecord`. Ask the
+   * Hub for the detail, then let the effect below open the dialog the moment the
+   * matching record lands — no guessed Task, no race.
+   */
+  const requestQuickDispatch = useCallback(
+    (taskId: string) => {
+      if (hub.selectedTask !== null && hub.selectedTask.id === taskId) {
+        setDispatchTarget(hub.selectedTask);
         return;
       }
-      if (
-        dispatchTarget !== null ||
-        cancelTarget !== null ||
-        finishTarget !== null ||
-        newTask.open ||
-        importOpen ||
-        workersOpen
-      ) {
-        closeAllModals();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [cancelTarget, closeAllModals, dispatchTarget, finishTarget, importOpen, newTask.open, workersOpen]);
-
-  const openDispatch = useCallback(
-    (task?: TaskRecord) => {
-      setDispatchTarget(task ?? hub.selectedTask);
+      pendingDispatchRef.current = taskId;
+      void hub.selectTask(taskId);
     },
-    [hub.selectedTask],
+    [hub.selectedTask, hub.selectTask],
   );
 
-  const openCancel = useCallback(
-    (task?: TaskRecord) => {
-      setCancelTarget(task ?? hub.selectedTask);
+  useEffect(() => {
+    const pendingId = pendingDispatchRef.current;
+    if (pendingId === null) {
+      return;
+    }
+    if (hub.selectedTask !== null && hub.selectedTask.id === pendingId) {
+      pendingDispatchRef.current = null;
+      setDispatchTarget(hub.selectedTask);
+      return;
+    }
+    if (hub.selectedTaskId !== pendingId) {
+      pendingDispatchRef.current = null;
+    }
+  }, [hub.selectedTask, hub.selectedTaskId]);
+
+  /** Reveal a Task in the current Board/List workspace with the Inspector open. */
+  const revealTask = useCallback(
+    (taskId: string) => {
+      setActiveView((current) => (current === "list" ? "list" : "board"));
+      setInspectorOpen(true);
+      void hub.selectTask(taskId);
     },
-    [hub.selectedTask],
+    [hub.selectTask],
   );
 
-  const openFinish = useCallback(
-    (task?: TaskRecord) => {
-      setFinishTarget(task ?? hub.selectedTask);
-    },
-    [hub.selectedTask],
-  );
+  const dispatchSelected = useCallback(() => {
+    const task = hub.selectedTask;
+    if (task !== null && canDispatchTask(task)) {
+      setDispatchTarget(task);
+      return;
+    }
+    pushToast("Select a dispatchable Task first", "error");
+  }, [hub.selectedTask, pushToast]);
 
-  const openCopyRetry = useCallback(
-    (task?: TaskRecord) => {
-      setNewTask({ open: true, sourceTask: task ?? hub.selectedTask });
-    },
-    [hub.selectedTask],
-  );
+  /* ----------------------------- Commands ----------------------------- */
 
   const createTask = useCallback(
     async (definition: Parameters<typeof hub.createTask>[0]): Promise<void> => {
       await hub.createTask(definition);
+      pushToast("Task created");
     },
-    [hub],
+    [hub.createTask, pushToast],
   );
 
   const importBundle = useCallback(
     async (request: Parameters<typeof hub.importBundle>[0]): Promise<void> => {
       await hub.importBundle(request);
+      pushToast("Bundle imported");
     },
-    [hub],
+    [hub.importBundle, pushToast],
   );
 
   const dispatchTask = useCallback(
@@ -178,30 +368,240 @@ export default function App() {
       request: Parameters<typeof hub.dispatchTask>[1],
     ): Promise<void> => {
       await hub.dispatchTask(taskId, request);
+      pushToast("Dispatched");
     },
-    [hub],
+    [hub.dispatchTask, pushToast],
   );
 
   const cancelTask = useCallback(
     async (taskId: string, request: Parameters<typeof hub.cancelTask>[1]): Promise<void> => {
       await hub.cancelTask(taskId, request);
+      pushToast("Cancelled");
     },
-    [hub],
+    [hub.cancelTask, pushToast],
   );
 
   const finishTask = useCallback(
     async (taskId: string, request: Parameters<typeof hub.finishTask>[1]): Promise<void> => {
       await hub.finishTask(taskId, request);
+      pushToast("Parent finished");
     },
-    [hub],
+    [hub.finishTask, pushToast],
+  );
+
+  const rotateWorker = useCallback(
+    async (workerId: string) => {
+      const response = await hub.rotateWorker(workerId);
+      pushToast("Credential rotated");
+      return response;
+    },
+    [hub.rotateWorker, pushToast],
+  );
+
+  const revokeWorker = useCallback(
+    async (workerId: string): Promise<void> => {
+      await hub.revokeWorker(workerId);
+      pushToast("Worker revoked");
+    },
+    [hub.revokeWorker, pushToast],
   );
 
   const refresh = useCallback(() => {
     void hub.refresh();
-  }, [hub]);
+  }, [hub.refresh]);
 
-  const resetFilter = useCallback(() => {
-    setFilter(EMPTY_FILTER);
+  /* ----------------------------- Keyboard ----------------------------- */
+
+  const moveSelection = useCallback(
+    (direction: 1 | -1) => {
+      if (rows.length === 0) {
+        return;
+      }
+      const currentIndex = rows.findIndex((row) => row.id === hub.selectedTaskId);
+      const nextIndex =
+        currentIndex === -1
+          ? direction === 1
+            ? 0
+            : rows.length - 1
+          : Math.min(rows.length - 1, Math.max(0, currentIndex + direction));
+      const row = rows[nextIndex];
+      if (row !== undefined && row.id !== hub.selectedTaskId) {
+        void hub.selectTask(row.id);
+      }
+    },
+    [rows, hub.selectedTaskId, hub.selectTask],
+  );
+
+  const modalOpen =
+    paletteOpen ||
+    shortcutsOpen ||
+    importOpen ||
+    newTask.open ||
+    dispatchTarget !== null ||
+    cancelTarget !== null ||
+    finishTarget !== null;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && (event.key === "k" || event.key === "K")) {
+        event.preventDefault();
+        setPaletteOpen((current) => !current);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (paletteOpen) {
+          event.preventDefault();
+          setPaletteOpen(false);
+          return;
+        }
+        if (shortcutsOpen) {
+          event.preventDefault();
+          setShortcutsOpen(false);
+          return;
+        }
+        if (
+          importOpen ||
+          newTask.open ||
+          dispatchTarget !== null ||
+          cancelTarget !== null ||
+          finishTarget !== null
+        ) {
+          event.preventDefault();
+          closeAllModals();
+          return;
+        }
+        if (hub.selectedTaskId !== null) {
+          void hub.selectTask(null);
+        }
+        return;
+      }
+
+      const target = event.target;
+      const inField =
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (inField) {
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      if (modalOpen) {
+        return;
+      }
+
+      switch (event.key) {
+        case "?":
+          event.preventDefault();
+          setShortcutsOpen(true);
+          break;
+        case "n":
+          event.preventDefault();
+          openNewTask();
+          break;
+        case "d":
+          event.preventDefault();
+          dispatchSelected();
+          break;
+        case "i":
+          if (activeView === "board" || activeView === "list") {
+            event.preventDefault();
+            setInspectorOpen((current) => !current);
+          }
+          break;
+        case "f":
+          if (activeView === "board") {
+            event.preventDefault();
+            atlasRef.current?.fit();
+          }
+          break;
+        case "F":
+          if (activeView === "board" && hub.selectedTaskId !== null) {
+            event.preventDefault();
+            atlasRef.current?.focusSelected();
+          }
+          break;
+        case "/": {
+          const search = document.querySelector<HTMLInputElement>("[data-view-search]");
+          if (search) {
+            event.preventDefault();
+            search.focus();
+          }
+          break;
+        }
+        case "j":
+        case "ArrowDown":
+          if (activeView === "list") {
+            event.preventDefault();
+            moveSelection(1);
+          }
+          break;
+        case "k":
+        case "ArrowUp":
+          if (activeView === "list") {
+            event.preventDefault();
+            moveSelection(-1);
+          }
+          break;
+        default:
+          break;
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [
+    activeView,
+    cancelTarget,
+    closeAllModals,
+    dispatchSelected,
+    dispatchTarget,
+    finishTarget,
+    hub.selectTask,
+    hub.selectedTaskId,
+    importOpen,
+    modalOpen,
+    moveSelection,
+    newTask.open,
+    openNewTask,
+    paletteOpen,
+    shortcutsOpen,
+  ]);
+
+  /* ----------------------------- Inspector ---------------------------- */
+
+  const beginResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = inspectorWidth;
+      const onMove = (moveEvent: PointerEvent): void => {
+        const next = startWidth + (startX - moveEvent.clientX);
+        setInspectorWidth(
+          Math.min(INSPECTOR_MAX_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, next)),
+        );
+      };
+      const onUp = (): void => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [inspectorWidth],
+  );
+
+  const resizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setInspectorWidth((current) => Math.min(INSPECTOR_MAX_WIDTH, current + 16));
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setInspectorWidth((current) => Math.max(INSPECTOR_MIN_WIDTH, current - 16));
+    }
   }, []);
 
   if (!hub.session) {
@@ -211,7 +611,7 @@ export default function App() {
         connecting={hub.connection === "connecting"}
         error={hub.error}
         theme={hub.theme}
-        onToggleTheme={hub.toggleTheme}
+        onChangeTheme={hub.setTheme}
         onConnect={hub.connect}
       />
     );
@@ -222,77 +622,430 @@ export default function App() {
   ).length;
   const totalTasks = hub.snapshot?.totalTasks ?? tasks.length;
   const tasksTruncated = hub.snapshot?.tasksTruncated ?? false;
+  const activeStatus: TaskStatus | null =
+    filter.status !== undefined && filter.status !== null && filter.status !== "all"
+      ? filter.status
+      : null;
+  const activeWorkerId =
+    filter.workerId !== undefined && filter.workerId !== null && filter.workerId !== "all"
+      ? filter.workerId
+      : "all";
+  const boardMode = activeView === "board";
+  const toolbarVisible = boardMode || activeView === "list";
+  const inspectorVisible = toolbarVisible && inspectorOpen;
+  const streamText = hub.eventsPaused
+    ? "Paused · Event log frozen"
+    : hub.connection === "connected"
+      ? "Live · Event stream connected"
+      : hub.connection === "reconnecting"
+        ? "Reconnecting · Event stream interrupted"
+        : hub.connection === "connecting"
+          ? "Connecting · Event stream pending"
+          : "Disconnected · Event stream stopped";
+  const streamDot =
+    hub.connection === "connected" && !hub.eventsPaused ? "online" : "offline";
+
+  const filterByStatus = (status: TaskStatus): void => {
+    if (!toolbarVisible) {
+      setActiveView("board");
+    }
+    setFilter((current) => ({ ...current, status: activeStatus === status ? "all" : status }));
+  };
+
+  const openPalette = (): void => setPaletteOpen(true);
 
   return (
-    <div className="app-shell">
-      <HeaderBar
+    <div className="app-frame">
+      <TopBar
+        activeView={activeView}
+        onSelectView={setActiveView}
         baseUrl={hub.session.baseUrl}
         connection={hub.connection}
-        eventCursor={hub.eventCursor}
-        workerCount={hub.workers.length}
+        taskCount={tasks.length}
         onlineWorkerCount={onlineWorkerCount}
-        filter={filter}
-        onFilterChange={setFilter}
-        workers={hub.workers}
+        workerCount={hub.workers.length}
+        eventCursor={hub.eventCursor}
         theme={hub.theme}
-        onToggleTheme={hub.toggleTheme}
-        onRefresh={refresh}
-        onOpenWorkers={() => setWorkersOpen(true)}
-        onOpenImport={() => setImportOpen(true)}
-        onOpenNewTask={() => setNewTask({ open: true, sourceTask: null })}
+        onChangeTheme={hub.setTheme}
+        onImport={() => setImportOpen(true)}
+        onNewTask={openNewTask}
         onDisconnect={hub.disconnect}
       />
 
-      <main className="workspace">
-        <TaskTreeTable
-          rows={rows}
-          totalTasks={totalTasks}
-          loadedCount={tasks.length}
-          tasksTruncated={tasksTruncated}
-          selectedTaskId={hub.selectedTaskId}
-          onSelectTask={(taskId: string) => {
-            void hub.selectTask(taskId);
-          }}
-          onToggleExpand={toggleExpand}
-          onOpenNewTask={() => setNewTask({ open: true, sourceTask: null })}
-          hasActiveFilter={isFilterActive(filter)}
-          onClearFilters={resetFilter}
-        />
+      {toolbarVisible ? (
+        <div className="board-toolbar" role="toolbar" aria-label="Board toolbar">
+          <div className="toolbar-left">
+            <div className="toolbar-search-wrap">
+              <Search size={13} aria-hidden="true" />
+              <input
+                className="input toolbar-search"
+                type="search"
+                data-view-search
+                aria-label="Find a task, ID, or worker"
+                placeholder="Find a task, ID, or worker…"
+                value={filter.query ?? ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setFilter((current) => ({ ...current, query: value }));
+                }}
+              />
+              <kbd
+                className="toolbar-kbd"
+                role="button"
+                tabIndex={0}
+                title="Open the Command Palette"
+                onClick={openPalette}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openPalette();
+                  }
+                }}
+              >
+                ⌘K
+              </kbd>
+            </div>
 
-        {hub.selectedTaskId !== null ? (
-          <>
+            <select
+              className="select toolbar-select"
+              aria-label="Filter by status"
+              value={activeStatus ?? "all"}
+              onChange={(event) => {
+                const value = event.target.value;
+                setFilter((current) => ({
+                  ...current,
+                  status: value === "all" ? "all" : (value as TaskStatus),
+                }));
+              }}
+            >
+              <option value="all">All statuses ({tasks.length})</option>
+              {TASK_STATUSES.map((status) => (
+                <option key={status} value={status}>
+                  {TASK_STATUS_META[status].label} ({statusCounts[status]})
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="select toolbar-select"
+              aria-label="Filter by worker"
+              value={activeWorkerId}
+              onChange={(event) => {
+                const value = event.target.value;
+                setFilter((current) => ({
+                  ...current,
+                  workerId: value === "all" ? "all" : value,
+                }));
+              }}
+            >
+              <option value="all">All workers</option>
+              {hub.workers.map((worker) => (
+                <option key={worker.workerId} value={worker.workerId}>
+                  {worker.workerId}
+                  {worker.revoked ? " (revoked)" : worker.online ? "" : " (offline)"}
+                </option>
+              ))}
+            </select>
+
+            {isFilterActive(filter) ? (
+              <button type="button" className="button button-sm button-ghost" onClick={resetFilter}>
+                Clear filters
+              </button>
+            ) : null}
+          </div>
+
+          <div className="mode-switch" role="group" aria-label="Workspace mode">
             <button
               type="button"
-              className="detail-scrim"
-              aria-label="Close task detail"
-              onClick={() => {
-                void hub.selectTask(null);
-              }}
-            />
-            <TaskDetailPanel
-              task={hub.selectedTask}
-              tree={hub.selectedTree}
-              loading={hub.detailLoading}
-              error={hub.detailError}
-              onClose={() => {
-                void hub.selectTask(null);
-              }}
+              className="mode-switch-btn"
+              data-active={boardMode}
+              aria-pressed={boardMode}
+              onClick={() => setActiveView("board")}
+            >
+              <Network size={13} aria-hidden="true" />
+              <span>Board</span>
+            </button>
+            <button
+              type="button"
+              className="mode-switch-btn"
+              data-active={activeView === "list"}
+              aria-pressed={activeView === "list"}
+              onClick={() => setActiveView("list")}
+            >
+              <ListTree size={13} aria-hidden="true" />
+              <span>List</span>
+            </button>
+          </div>
+
+          <div className="toolbar-tools">
+            {boardMode ? (
+              <>
+                <button
+                  type="button"
+                  className="button button-sm"
+                  title="Fit all groups (F)"
+                  onClick={() => atlasRef.current?.fit()}
+                >
+                  <Maximize2 size={12} aria-hidden="true" />
+                  <span>Fit</span>
+                </button>
+                <button
+                  type="button"
+                  className="button button-sm"
+                  title="Center selected Task (Shift+F)"
+                  disabled={hub.selectedTaskId === null}
+                  onClick={() => atlasRef.current?.focusSelected()}
+                >
+                  <Crosshair size={12} aria-hidden="true" />
+                  <span>Focus</span>
+                </button>
+                <button
+                  type="button"
+                  className="button button-sm"
+                  title="Restore the previous layout"
+                  disabled={!atlasMeta.canRestore}
+                  onClick={() => atlasRef.current?.restore()}
+                >
+                  <RotateCcw size={12} aria-hidden="true" />
+                  <span>Restore</span>
+                </button>
+                <button
+                  type="button"
+                  className="button button-sm button-accent"
+                  title="Arrange the Board layout"
+                  onClick={() => atlasRef.current?.arrange()}
+                >
+                  <LayoutGrid size={12} aria-hidden="true" />
+                  <span>Arrange</span>
+                </button>
+              </>
+            ) : (
+              <button type="button" className="button button-sm" onClick={toggleExpandAll}>
+                <ChevronsUpDown size={12} aria-hidden="true" />
+                <span>{allExpanded ? "Collapse all" : "Expand all"}</span>
+              </button>
+            )}
+            <span className="toolbar-divider" aria-hidden="true" />
+            <button
+              type="button"
+              className="button button-sm"
+              data-active={inspectorOpen}
+              aria-pressed={inspectorOpen}
+              title="Toggle Inspector (i)"
+              onClick={() => setInspectorOpen((current) => !current)}
+            >
+              <PanelRight size={12} aria-hidden="true" />
+              <span>Inspector</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {activeView === "workers" || activeView === "events" ? (
+        <div className="subview-bar" data-view={activeView}>
+          <h1 className="subview-title">{activeView === "workers" ? "Workers" : "Events"}</h1>
+          {activeView === "workers" ? (
+            <span className="subview-meta">
+              {onlineWorkerCount} of {hub.workers.length} online
+            </span>
+          ) : (
+            <>
+              <span
+                className="connection-pill"
+                data-state={hub.eventsPaused ? "offline" : hub.connection}
+              >
+                <span className="connection-dot" aria-hidden="true" />
+                {hub.eventsPaused ? "Paused" : "Live"}
+              </span>
+              <span className="mono subview-meta">#{hub.eventCursor}</span>
+            </>
+          )}
+          <span className="view-header-spacer" />
+          <button type="button" className="button button-sm" onClick={refresh}>
+            Refresh
+          </button>
+          <button type="button" className="button button-sm" onClick={() => setActiveView("board")}>
+            ← Back to Board
+          </button>
+        </div>
+      ) : null}
+
+      <div className="workspace-split">
+        <div className="view-body" data-view={activeView}>
+          {boardMode ? (
+            <TaskGraphView
+              tasks={visibleTasks}
+              workers={hub.workers}
+              selectedTaskId={hub.selectedTaskId}
               onSelectTask={(taskId: string) => {
                 void hub.selectTask(taskId);
               }}
-              onDispatch={openDispatch}
-              onCancel={openCancel}
-              onFinish={openFinish}
-              onCopyRetry={openCopyRetry}
+              onClearSelection={() => {
+                void hub.selectTask(null);
+              }}
+              onOpenNewTask={openNewTask}
+              onBoardMetaChange={setAtlasMeta}
+              controlsRef={atlasRef}
             />
+          ) : null}
+
+          {activeView === "list" ? (
+            <TaskTreeTable
+              rows={rows}
+              totalTasks={totalTasks}
+              loadedCount={tasks.length}
+              tasksTruncated={tasksTruncated}
+              selectedTaskId={hub.selectedTaskId}
+              onSelectTask={(taskId: string) => {
+                void hub.selectTask(taskId);
+              }}
+              onToggleExpand={toggleExpand}
+              onQuickDispatch={requestQuickDispatch}
+              onQuickAddSubtask={openSubtask}
+              onCopyId={(taskId: string) => copyText("task id", taskId)}
+              onOpenNewTask={openNewTask}
+              hasActiveFilter={isFilterActive(filter)}
+              onClearFilters={resetFilter}
+            />
+          ) : null}
+
+          {activeView === "workers" ? (
+            <WorkersView
+              baseUrl={hub.session.baseUrl}
+              workers={hub.workers}
+              onCreateEnrollmentCode={hub.createEnrollmentCode}
+              onRotateWorker={rotateWorker}
+              onRevokeWorker={revokeWorker}
+              onCopyText={copyText}
+            />
+          ) : null}
+
+          {activeView === "events" ? (
+            <EventsView
+              events={hub.events}
+              eventCursor={hub.eventCursor}
+              connection={hub.connection}
+              paused={hub.eventsPaused}
+              onTogglePaused={hub.toggleEventsPaused}
+              onClear={hub.clearEvents}
+              onOpenTask={revealTask}
+              onCopyText={copyText}
+            />
+          ) : null}
+        </div>
+
+        {inspectorVisible ? (
+          <>
+            <div
+              className="resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize inspector"
+              aria-valuemin={INSPECTOR_MIN_WIDTH}
+              aria-valuemax={INSPECTOR_MAX_WIDTH}
+              aria-valuenow={Math.round(inspectorWidth)}
+              tabIndex={0}
+              onPointerDown={beginResize}
+              onKeyDown={resizeKeyDown}
+            />
+            <div className="inspector-slot" style={{ width: `${inspectorWidth}px` }}>
+              {hub.selectedTaskId !== null ? (
+                <>
+                  <button
+                    type="button"
+                    className="detail-scrim"
+                    aria-label="Close task detail"
+                    onClick={() => {
+                      void hub.selectTask(null);
+                    }}
+                  />
+                  <TaskDetailPanel
+                    task={hub.selectedTask}
+                    tree={hub.selectedTree}
+                    loading={hub.detailLoading}
+                    error={hub.detailError}
+                    onClose={() => {
+                      void hub.selectTask(null);
+                    }}
+                    onSelectTask={(taskId: string) => {
+                      void hub.selectTask(taskId);
+                    }}
+                    onDispatch={(task: TaskRecord) => setDispatchTarget(task)}
+                    onAddSubtask={openSubtask}
+                    onCancel={(task: TaskRecord) => setCancelTarget(task)}
+                    onFinish={(task: TaskRecord) => setFinishTarget(task)}
+                    onCopyRetry={openCopyRetry}
+                    onCopyText={copyText}
+                  />
+                </>
+              ) : (
+                <WorkspaceInspector
+                  tasks={tasks}
+                  workers={hub.workers}
+                  onSelectTask={(taskId: string) => {
+                    void hub.selectTask(taskId);
+                  }}
+                  onOpenWorkers={() => setActiveView("workers")}
+                  onClose={() => setInspectorOpen(false)}
+                />
+              )}
+            </div>
           </>
         ) : null}
-      </main>
+      </div>
+
+      <footer className="status-bar">
+        <div className="status-bar-left">
+          <span className="status-live" title={streamText}>
+            <span className="connection-dot" data-state={streamDot} aria-hidden="true" />
+            <span className="status-live-text">{streamText}</span>
+          </span>
+          {TASK_STATUSES.map((status) => (
+            <button
+              key={status}
+              type="button"
+              className="status-counter"
+              data-tone={status}
+              data-active={activeStatus === status}
+              aria-pressed={activeStatus === status}
+              onClick={() => filterByStatus(status)}
+            >
+              <span className="state-dot" data-state={status} aria-hidden="true" />
+              <span>{TASK_STATUS_META[status].label}</span>
+              <span className="tabular">{statusCounts[status]}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            className="status-counter"
+            onClick={() => setActiveView("workers")}
+          >
+            <span>Workers</span>
+            <span className="tabular">
+              {onlineWorkerCount}/{hub.workers.length}
+            </span>
+          </button>
+        </div>
+        <div className="status-bar-right">
+          <span className="mono" title="Tasks and relationships in the current Snapshot">
+            {tasks.length} tasks · {atlasMeta.relationCount} relationships · cursor #{hub.eventCursor}
+          </span>
+          {boardMode ? (
+            <span className="mono" title="Board zoom">
+              {atlasMeta.zoomPercent}%
+            </span>
+          ) : null}
+          <span className="mono status-hints" aria-hidden="true">
+            ⌘K · I · F · ?
+          </span>
+        </div>
+      </footer>
 
       <NewTaskDialog
         open={newTask.open}
         sourceTask={newTask.sourceTask}
-        onClose={() => setNewTask({ open: false, sourceTask: null })}
+        defaultParentTaskId={newTask.parentTaskId}
+        onClose={() => setNewTask(CLOSED_NEW_TASK)}
         onSubmit={createTask}
       />
 
@@ -321,15 +1074,25 @@ export default function App() {
         onSubmit={finishTask}
       />
 
-      <WorkersModal
-        open={workersOpen}
-        baseUrl={hub.session.baseUrl}
-        workers={hub.workers}
-        onClose={() => setWorkersOpen(false)}
-        onCreateEnrollmentCode={hub.createEnrollmentCode}
-        onRotateWorker={hub.rotateWorker}
-        onRevokeWorker={hub.revokeWorker}
+      <CommandPalette
+        open={paletteOpen}
+        tasks={tasks}
+        selectedTask={hub.selectedTask}
+        theme={hub.theme}
+        onClose={() => setPaletteOpen(false)}
+        onSelectTask={revealTask}
+        onSelectView={setActiveView}
+        onNewTask={openNewTask}
+        onImportBundle={() => setImportOpen(true)}
+        onDispatchSelected={dispatchSelected}
+        onFitBoard={() => atlasRef.current?.fit()}
+        onArrangeBoard={() => atlasRef.current?.arrange()}
+        onChangeTheme={hub.setTheme}
       />
+
+      <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

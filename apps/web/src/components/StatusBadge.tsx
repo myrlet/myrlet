@@ -1,10 +1,11 @@
 /**
- * Status pills for Task state and Worker connectivity.
+ * Status badges for Task state and Worker connectivity.
  *
- * Every badge pairs its semantic colour with an explicit text label and a
- * shape glyph, so state never depends on colour alone. `finished` renders the
- * neutral square + "Handling ended" wording from `TASK_STATUS_META` — never a
- * green checkmark or a success verdict.
+ * Every badge is a borderless geometric glyph paired with an explicit text
+ * label, so state never depends on colour alone. `finished` renders the neutral
+ * square + "Handling ended" wording from `TASK_STATUS_META` — never a green
+ * checkmark or a success verdict. `compact` renders only the glyph, with the
+ * honest label exposed to assistive technology.
  */
 
 import type { TaskStatus } from "../api/types";
@@ -12,14 +13,33 @@ import { TASK_STATUS_META } from "../format";
 
 export interface TaskStatusBadgeProps {
   status: TaskStatus;
-  /** Render the honest one-line meaning next to the pill as well as in `title`. */
-  showDescription?: boolean;
+  /** Render the geometric glyph only; the label stays available via `aria-label`. */
+  compact?: boolean;
 }
 
-export function TaskStatusBadge({ status, showDescription = false }: TaskStatusBadgeProps) {
+export function TaskStatusBadge({ status, compact = false }: TaskStatusBadgeProps) {
   const meta = TASK_STATUS_META[status];
 
-  const badge = (
+  if (compact) {
+    return (
+      <span
+        className="status-badge"
+        data-tone={meta.tone}
+        data-shape={meta.shape}
+        data-terminal={meta.terminal}
+        data-compact="true"
+        role="img"
+        aria-label={meta.label}
+        title={`${meta.label} — ${meta.description}`}
+      >
+        <span className="status-glyph" aria-hidden="true">
+          {meta.glyph}
+        </span>
+      </span>
+    );
+  }
+
+  return (
     <span
       className="status-badge"
       data-tone={meta.tone}
@@ -33,17 +53,6 @@ export function TaskStatusBadge({ status, showDescription = false }: TaskStatusB
       <span className="status-label">{meta.label}</span>
     </span>
   );
-
-  if (!showDescription) {
-    return badge;
-  }
-
-  return (
-    <span className="inline">
-      {badge}
-      <span className="field-hint">{meta.description}</span>
-    </span>
-  );
 }
 
 export interface WorkerStatusBadgeProps {
@@ -52,36 +61,32 @@ export interface WorkerStatusBadgeProps {
 }
 
 /**
- * Worker connectivity pill. A revoked credential always wins over `online`:
- * a revoked Worker cannot hold an authenticated session.
+ * Worker connectivity badge: a hairline status dot plus an explicit label.
+ * A revoked credential always wins over `online` — a revoked Worker cannot
+ * hold an authenticated session.
  */
 export function WorkerStatusBadge({ online, revoked }: WorkerStatusBadgeProps) {
   const state = revoked
     ? {
         tone: "revoked",
         label: "Revoked",
-        glyph: "⊘",
         description: "Credential revoked; this Worker can no longer connect to the Hub.",
       }
     : online
       ? {
           tone: "online",
           label: "Online",
-          glyph: "●",
           description: "Connected to the Hub and authenticated.",
         }
       : {
           tone: "offline",
           label: "Offline",
-          glyph: "○",
           description: "Not currently connected to the Hub.",
         };
 
   return (
-    <span className="status-badge" data-tone={state.tone} title={state.description}>
-      <span className="status-glyph" aria-hidden="true">
-        {state.glyph}
-      </span>
+    <span className="status-badge" data-tone={state.tone} data-shape="dot" title={state.description}>
+      <span className="connection-dot" aria-hidden="true" />
       <span className="status-label">{state.label}</span>
     </span>
   );
