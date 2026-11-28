@@ -55,12 +55,12 @@ async fn a_silent_long_task_without_progress_finishes_with_its_own_result() {
         delivery["progress"].is_null(),
         "no Progress was ever written: {delivery}"
     );
-    assert_eq!(
-        field(&shown, "resultMarkdown"),
-        Some(&serde_json::json!(
-            "# Long task result\n\nNo progress was ever written.\n"
-        ))
-    );
+    // Result sync is independent of Finish; wait for the Hub copy before asserting it.
+    let expected = "# Long task result\n\nNo progress was ever written.\n";
+    poll("the task Result to sync", Duration::from_secs(20), || {
+        (field(&show(&cli, &task), "resultMarkdown") == Some(&serde_json::json!(expected)))
+            .then_some(())
+    });
     assert_eq!(
         line_count(&launches),
         1,
@@ -127,12 +127,12 @@ async fn a_task_configured_for_more_than_two_hours_is_not_timed_out_early() {
         .and_then(|task| task.get("currentDelivery"))
         .expect("current delivery");
     assert!(delivery["progress"].is_null(), "no Progress was written");
-    assert_eq!(
-        field(&shown, "resultMarkdown"),
-        Some(&serde_json::json!(
-            "# Long task result\n\nNo progress was ever written.\n"
-        ))
-    );
+    // Result sync is independent of Finish; wait for the Hub copy before asserting it.
+    let expected = "# Long task result\n\nNo progress was ever written.\n";
+    poll("the task Result to sync", Duration::from_secs(20), || {
+        (field(&show(&cli, &task), "resultMarkdown") == Some(&serde_json::json!(expected)))
+            .then_some(())
+    });
     assert_eq!(line_count(&launches), 1, "exactly one launch");
 
     shutdown(&mut worker_guard.0, "worker");
@@ -188,12 +188,12 @@ async fn a_real_duration_long_task_runs_and_finishes_once() {
         started.elapsed() >= Duration::from_secs(seconds),
         "the harness really ran for its full duration"
     );
-    assert_eq!(
-        field(&shown, "resultMarkdown"),
-        Some(&serde_json::json!(
-            "# Long task result\n\nNo progress was ever written.\n"
-        ))
-    );
+    // Result sync is independent of Finish; wait for the Hub copy before asserting it.
+    let expected = "# Long task result\n\nNo progress was ever written.\n";
+    poll("the task Result to sync", Duration::from_secs(20), || {
+        (field(&show(&cli, &task), "resultMarkdown") == Some(&serde_json::json!(expected)))
+            .then_some(())
+    });
     assert!(record(&shown)
         .and_then(|task| task.get("currentDelivery"))
         .expect("delivery")["progress"]
