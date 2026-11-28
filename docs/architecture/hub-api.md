@@ -71,7 +71,7 @@ This tier exposes the Task coordination operations already defined by the V1 Tas
 | `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code (`{ ttlSeconds, suggestedWorkerId? } -> { enrollmentCode, expiresAt }`). |
 | `POST /v1/workers/{id}/rotate` | Rotate a Worker's bearer credential (fences active WSS session and preserves its permission tier). |
 | `POST /v1/workers/{id}/revoke` | Revoke a Worker's credential and disconnect its active WSS session. |
-| `PATCH /v1/workers/{id}/permission-tier` | Set the server-controlled Worker tier to `worker` or `owner`. The `admin` tier cannot be assigned to a Worker. |
+| `PATCH /v1/workers/{id}/permission-tier` | Set `{ permissionTier: "worker" | "owner" }` and return the stored tier. Admin-only; the `admin` tier cannot be assigned to a Worker. |
 | `PATCH /v1/settings/security-trust` | Admin updates one or both boolean policies and receives the stored pair. Omitted fields retain their values. |
 | `POST /v1/workers/{id}/approve` | Approve a pending Worker. Repeating approval for an approved Worker succeeds. A revoked Worker requires a new Pair. |
 | `POST /v1/workers/{id}/config/apply` | Apply `{ revision }` and return `{ appliedRevision }`. The Hub checks and copies the latest pending report in one transaction. |
