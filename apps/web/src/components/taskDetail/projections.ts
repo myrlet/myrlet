@@ -8,17 +8,10 @@
  */
 
 import type { TaskRecord, TaskTreeResponse } from "../../api/types";
+import { indexTasks } from "../../model/taskIndex";
 
 /** Ancestry is display context; stop rather than walk an unbounded chain. */
 export const MAX_ANCESTRY_LENGTH = 12;
-
-/** Deterministic sibling order: creation time, then Task ID. */
-export function compareTasks(a: TaskRecord, b: TaskRecord): number {
-  if (a.createdAtMs !== b.createdAtMs) {
-    return a.createdAtMs - b.createdAtMs;
-  }
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
 
 /**
  * Root-to-current ancestry resolved against the bounded tree read.
@@ -74,31 +67,7 @@ export function minimumDepth(rows: readonly TaskRecord[]): number {
  * exactly once even if the read contains a parent cycle.
  */
 export function miniTreeRows(tree: TaskTreeResponse): TaskRecord[] {
-  const byId = new Map<string, TaskRecord>();
-  for (const task of tree.tasks) {
-    byId.set(task.id, task);
-  }
-  const roots: TaskRecord[] = [];
-  const childrenByParent = new Map<string, TaskRecord[]>();
-
-  for (const task of tree.tasks) {
-    const parentId = task.task.parentTaskId;
-    if (parentId === null || parentId === task.id || !byId.has(parentId)) {
-      roots.push(task);
-      continue;
-    }
-    const siblings = childrenByParent.get(parentId);
-    if (siblings) {
-      siblings.push(task);
-    } else {
-      childrenByParent.set(parentId, [task]);
-    }
-  }
-
-  roots.sort(compareTasks);
-  for (const siblings of childrenByParent.values()) {
-    siblings.sort(compareTasks);
-  }
+  const { roots, childrenByParent } = indexTasks(tree.tasks);
 
   const rows: TaskRecord[] = [];
   const visited = new Set<string>();

@@ -13,20 +13,29 @@
  * Progress or Delivery is stated explicitly instead of being guessed.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Inbox, RotateCcw } from "lucide-react";
 
 import type { SnapshotTaskSummary, TaskRecord, TaskTreeResponse } from "../api/types";
 import { ResultReader } from "./ResultReader";
 import { DetailErrorNotice } from "./taskDetail/DetailErrorNotice";
 import {
-  AncestryBreadcrumb,
   LoadedDetailHeader,
   PendingDetailHeader,
 } from "./taskDetail/DetailHeader";
-import { buildAncestry } from "./taskDetail/projections";
-import type { DetailTab } from "./taskDetail/views";
-import { DETAIL_TABS, DetailTabBody } from "./taskDetail/views";
+import { OverviewView } from "./taskDetail/OverviewView";
+import { TreeView } from "./taskDetail/TreeView";
+import { DeliveryTabView } from "./taskDetail/DeliveryTabView";
+import { JsonTabView } from "./taskDetail/JsonTabView";
+
+type DetailTab = "overview" | "tree" | "delivery" | "json";
+
+const DETAIL_TABS: readonly { id: DetailTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "tree", label: "Tree & Deps" },
+  { id: "delivery", label: "Delivery" },
+  { id: "json", label: "JSON" },
+];
 
 export interface TaskDetailPanelProps {
   readonly selectedTaskId: string | null;
@@ -105,11 +114,6 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
     setTab("overview");
   }, [selectionId]);
 
-  const ancestry = useMemo(
-    () => (task === null ? [] : buildAncestry(task, tree)),
-    [task, tree],
-  );
-
   if (selectionId === null) {
     return (
       <aside className="detail-pane" aria-label="Task detail">
@@ -166,21 +170,11 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
   return (
     <aside className="detail-pane" aria-label="Task detail">
       <LoadedDetailHeader
-        title={task.task.title}
-        status={task.status}
-        taskId={task.id}
-        version={task.version}
+        task={task}
+        tree={tree}
         loading={loading}
         copyId={() => onCopyText("Task ID", task.id)}
-        breadcrumb={
-          <AncestryBreadcrumb
-            ancestry={ancestry.map((ancestor) => ({
-              id: ancestor.id,
-              title: ancestor.task.title,
-            }))}
-            onSelectTask={onSelectTask}
-          />
-        }
+        onSelectTask={onSelectTask}
         onClose={onClose}
       />
 
@@ -219,15 +213,12 @@ export function TaskDetailPanel(props: TaskDetailPanelProps) {
           />
         )}
 
-        <DetailTabBody
-          tab={tab}
-          task={task}
-          tree={tree}
-          onSelectTask={onSelectTask}
-          onCopyText={onCopyText}
-          onOpenReader={openReader}
-          readerTriggerRef={readerTriggerRef}
-        />
+        {tab === "overview" && (
+          <OverviewView task={task} onCopyText={onCopyText} onOpenReader={openReader} readerTriggerRef={readerTriggerRef} />
+        )}
+        {tab === "tree" && <TreeView task={task} tree={tree} onSelectTask={onSelectTask} />}
+        {tab === "delivery" && <DeliveryTabView task={task} />}
+        {tab === "json" && <JsonTabView task={task} onCopyText={onCopyText} />}
       </div>
 
       {readerOpen && task.resultMarkdown !== null ? (

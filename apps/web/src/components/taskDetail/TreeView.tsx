@@ -10,7 +10,7 @@ import { useMemo } from "react";
 
 import type { TaskRecord, TaskTreeResponse } from "../../api/types";
 import { TaskStatusBadge } from "../StatusBadge";
-import { shortId } from "./formatIds";
+import { shortId } from "../../model/shortId";
 import { miniTreeRows, minimumDepth } from "./projections";
 
 export interface TreeViewProps {

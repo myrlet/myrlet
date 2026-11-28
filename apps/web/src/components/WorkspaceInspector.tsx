@@ -8,6 +8,7 @@
  * verdict, health score, or progress percentage.
  */
 
+import { shortId } from "../model/shortId";
 import { ArrowUpRight, Server, X } from "lucide-react";
 
 import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
@@ -24,10 +25,6 @@ export interface WorkspaceInspectorProps {
 }
 
 const ATTENTION_STATUSES: readonly TaskStatus[] = ["dispatched", "queued"];
-
-function shortId(id: string): string {
-  return id.length <= 12 ? id : id.slice(0, 12);
-}
 
 function workerHostLabel(worker: WorkerRecord): string {
   if (worker.inventory === null) {

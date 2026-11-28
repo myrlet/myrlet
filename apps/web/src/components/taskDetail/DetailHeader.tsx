@@ -7,12 +7,17 @@
  * the panel was handed.
  */
 
-import type { ReactNode } from "react";
+import { useMemo } from "react";
 import { Copy, X } from "lucide-react";
 
-import type { TaskStatus } from "../../api/types";
+import type { TaskRecord, TaskTreeResponse, TaskStatus } from "../../api/types";
 import { TaskStatusBadge } from "../StatusBadge";
-import { middleTruncateId, shortId } from "./formatIds";
+import { shortId } from "../../model/shortId";
+import { buildAncestry } from "./projections";
+
+function middleTruncateId(id: string): string {
+  return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-4)}` : id;
+}
 
 function CloseButton({ onClose }: { onClose: () => void }) {
   return (
@@ -29,12 +34,12 @@ function CloseButton({ onClose }: { onClose: () => void }) {
 }
 
 /** Ancestry links, current Task last. Non-link ancestors open their Task. */
-export function AncestryBreadcrumb({
+function AncestryBreadcrumb({
   ancestry,
   onSelectTask,
 }: {
   /** Root-to-current chain; one entry means a root Task. */
-  ancestry: readonly { id: string; title: string }[];
+  ancestry: readonly TaskRecord[];
   onSelectTask: (taskId: string) => void;
 }) {
   if (ancestry.length <= 1) {
@@ -48,7 +53,7 @@ export function AncestryBreadcrumb({
           <span className="detail-breadcrumb-item" key={ancestor.id}>
             {isLast ? (
               <span className="detail-breadcrumb-current truncate" title={ancestor.id}>
-                {ancestor.title || shortId(ancestor.id)}
+                {ancestor.task.title || shortId(ancestor.id)}
               </span>
             ) : (
               <>
@@ -56,9 +61,9 @@ export function AncestryBreadcrumb({
                   type="button"
                   className="detail-breadcrumb-link truncate"
                   onClick={() => onSelectTask(ancestor.id)}
-                  title={`Open ${ancestor.title} (${ancestor.id})`}
+                  title={`Open ${ancestor.task.title} (${ancestor.id})`}
                 >
-                  {ancestor.title || shortId(ancestor.id)}
+                  {ancestor.task.title || shortId(ancestor.id)}
                 </button>
                 <span className="detail-breadcrumb-sep" aria-hidden="true">
                   ›
@@ -128,34 +133,27 @@ export function PendingDetailHeader({
 }
 
 export interface LoadedDetailHeaderProps {
-  readonly title: string;
-  readonly status: TaskStatus;
-  readonly taskId: string;
-  readonly version: number;
+  readonly task: TaskRecord;
+  readonly tree: TaskTreeResponse | null;
   readonly loading: boolean;
   readonly copyId: () => void;
-  readonly breadcrumb: ReactNode;
+  readonly onSelectTask: (id: string) => void;
   readonly onClose: () => void;
 }
 
 /** Header for the authoritative Task record. */
 export function LoadedDetailHeader({
-  title,
-  status,
-  taskId,
-  version,
-  loading,
-  copyId,
-  breadcrumb,
-  onClose,
+  task, tree, loading, copyId, onSelectTask, onClose,
 }: LoadedDetailHeaderProps) {
+  const ancestry = useMemo(() => buildAncestry(task, tree), [task, tree]);
+  const { id: taskId, status, version } = task;
   return (
     <header className="detail-header">
       <div className="detail-heading">
         <nav className="detail-breadcrumb" aria-label="Task ancestry">
-          {breadcrumb}
+          <AncestryBreadcrumb ancestry={ancestry} onSelectTask={onSelectTask} />
         </nav>
-        <h2 className="detail-title">{title}</h2>
+        <h2 className="detail-title">{task.task.title}</h2>
         <div className="detail-subtitle" style={{ flexWrap: "nowrap" }}>
           <TaskStatusBadge status={status} />
           <span className="detail-id-short mono" title={taskId}>

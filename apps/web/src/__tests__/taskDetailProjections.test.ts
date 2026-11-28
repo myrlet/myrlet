@@ -6,11 +6,11 @@
 
 import { describe, expect, it } from "vitest";
 
+import { compareTasks } from "../model/taskIndex";
 import type { TaskRecord, TaskTreeResponse } from "../api/types";
 import {
   MAX_ANCESTRY_LENGTH,
   buildAncestry,
-  compareTasks,
   miniTreeRows,
   minimumDepth,
 } from "../components/taskDetail/projections";
