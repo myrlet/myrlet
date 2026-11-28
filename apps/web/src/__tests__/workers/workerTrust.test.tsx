@@ -161,7 +161,7 @@ describe("Worker trust", () => {
     await waitFor(() =>
       expect(review?.textContent ?? "").toMatch(/changed Slot mac-default/),
     );
-    fireEvent.click(within(drawer).getByRole("button", { name: /review & apply/i }));
+    // The report under review is loaded automatically, so Apply targets its exact revision.
     const apply = await within(drawer).findByRole("button", { name: /apply revision 3/i });
     fireEvent.click(apply);
     await waitFor(() => {

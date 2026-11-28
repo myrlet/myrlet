@@ -1,26 +1,29 @@
 /**
  * Local confirmation + request lifecycle for one enrolled Worker card.
  *
- * Rotate and Revoke are destructive, so each one arms an inline confirmation
- * before any Hub command runs. Apply arms only after the report under review
- * has been loaded, and then pins the exact revision the Admin saw. The hook
- * keeps that pending choice, the reviewed revision, the in-flight busy flag,
- * the honest error, and the once-shown rotated credential; the card owns only
- * presentation. A response that lands after unmount is dropped.
+ * Rotate and Revoke are destructive, so each one arms an inline confirmation before any
+ * Hub command runs. Apply is armed only after the report under review has been loaded, and
+ * it submits exactly the revision that body was reported at — the pair comes from
+ * `useWorkerConfigReview`, never from a separately-read revision. This hook keeps the
+ * pending choice, the in-flight busy flag, the honest error, and the once-shown rotated
+ * credential; the card owns only presentation. A response that lands after unmount is
+ * dropped.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { RotateWorkerResponse } from "../../api/types";
+import type { WorkerReview } from "../../state/useWorkerConfigReview";
 import { describeError } from "./workerErrors";
 
 export type PendingAction = "rotate" | "revoke" | "apply" | null;
 
 interface UseWorkerActionsOptions {
   readonly workerId: string;
-  /** Latest report revision, or `null` before the Hub accepted one. */
+  /** Latest revision the Hub accepted, used to reload the report under review. */
   readonly reportedRevision: number | null;
-  readonly onLoadReported: (workerId: string) => Promise<void>;
+  /** The report under review, bound to the revision it was reported at. */
+  readonly review: WorkerReview;
   readonly onApproveWorker: (workerId: string) => Promise<void>;
   readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
@@ -30,7 +33,7 @@ interface UseWorkerActionsOptions {
 export function useWorkerActions({
   workerId,
   reportedRevision,
-  onLoadReported,
+  review,
   onApproveWorker,
   onApplyWorkerConfig,
   onRotateWorker,
@@ -40,7 +43,6 @@ export function useWorkerActions({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rotatedCredential, setRotatedCredential] = useState<string | null>(null);
-  const [reviewedRevision, setReviewedRevision] = useState<number | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -80,7 +82,6 @@ export function useWorkerActions({
 
   const cancel = useCallback(() => {
     setPending(null);
-    setReviewedRevision(null);
   }, []);
 
   const rotate = useCallback(async (): Promise<void> => {
@@ -127,39 +128,51 @@ export function useWorkerActions({
     await run(() => onApproveWorker(workerId));
   }, [onApproveWorker, run, workerId]);
 
-  /** Load the report under review, then arm Apply for exactly that revision. */
-  const review = useCallback(async (): Promise<void> => {
-    const loaded = await run(() => onLoadReported(workerId));
-    if (loaded && mountedRef.current && reportedRevision !== null) {
-      setReviewedRevision(reportedRevision);
-      setPending("apply");
-    }
-  }, [onLoadReported, reportedRevision, run, workerId]);
-
-  const apply = useCallback(async (): Promise<void> => {
-    if (reviewedRevision === null) {
+  /**
+   * Reload the latest report, then arm Apply for exactly the revision it belongs to.
+   * A reload that fails leaves Apply unavailable; the Admin retries when the Hub is back.
+   */
+  const reviewNow = useCallback(async (): Promise<void> => {
+    if (reportedRevision === null) {
       return;
     }
-    const revision = reviewedRevision;
-    const applied = await run(() => onApplyWorkerConfig(workerId, revision));
+    setBusy(true);
+    setError(null);
+    try {
+      const loaded = await review.load(reportedRevision);
+      if (mountedRef.current && loaded !== null) {
+        setPending("apply");
+      }
+    } finally {
+      if (mountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }, [reportedRevision, review]);
+
+  const apply = useCallback(async (): Promise<void> => {
+    const pair = review.reviewed;
+    if (pair === null) {
+      return;
+    }
+    const applied = await run(() => onApplyWorkerConfig(workerId, pair.revision));
     if (applied && mountedRef.current) {
       setPending(null);
-      setReviewedRevision(null);
+      review.clear();
     }
-  }, [onApplyWorkerConfig, reviewedRevision, run, workerId]);
+  }, [onApplyWorkerConfig, review, run, workerId]);
 
   return {
     pending,
     busy,
     error,
     rotatedCredential,
-    reviewedRevision,
     request,
     cancel,
     rotate,
     revoke,
     approve,
-    review,
+    review: reviewNow,
     apply,
   };
 }

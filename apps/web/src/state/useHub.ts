@@ -18,17 +18,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { HubApiError, HubClient } from "../api/client";
 import type {
-  CreateEnrollmentCodeRequest,
-  CreateEnrollmentCodeResponse,
   GlobalSnapshot,
   HubEventEnvelope,
   SecurityTrustSettings,
   SnapshotTaskSummary,
   UpdateSecurityTrustRequest,
   WorkerRecord,
-  WorkerSchedulingConfig,
 } from "../api/types";
 import { useTaskDetail } from "./useTaskDetail";
+import { useWorkerCommands } from "./useWorkerCommands";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting";
 
@@ -92,9 +90,6 @@ function describeConnectionError(error: unknown): string {
  * once at the app root.
  */
 export function useHub() {
-  const [enrollmentCode, setEnrollmentCode] = useState<CreateEnrollmentCodeResponse | null>(null);
-  const [issuingCode, setIssuingCode] = useState(false);
-  const issueOwner = useRef<HubClient | null>(null);
   const [connection, setConnection] = useState<ConnectionStatus>("disconnected");
   const [baseUrl, setBaseUrl] = useState<string>(defaultBaseUrl);
   const [session, setSession] = useState<HubSession | null>(null);
@@ -103,11 +98,9 @@ export function useHub() {
   const [snapshot, setSnapshot] = useState<GlobalSnapshot | null>(null);
   const [eventCursor, setEventCursor] = useState(0);
   const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
-  /** Latest reported scheduling snapshot per Worker, for review before Apply. */
-  const [reportedConfigs, setReportedConfigs] = useState<
-    Readonly<Record<string, WorkerSchedulingConfig | null>>
-  >({});
   const [settings, setSettings] = useState<SecurityTrustSettings | null>(null);
+  /** Bumped whenever Worker view data must be dropped with the session. */
+  const [viewGeneration, setViewGeneration] = useState(0);
 
   const clientRef = useRef<HubClient | null>(null);
   const streamRef = useRef<AbortController | null>(null);
@@ -124,15 +117,13 @@ export function useHub() {
 
   /** Drop every non-detail fact tied to the previous Hub session. */
   const clearViewData = useCallback(() => {
-    issueOwner.current = null;
-    setIssuingCode(false);
-    setEnrollmentCode(null);
     cursorRef.current = 0;
     setSnapshot(null);
     setEventCursor(0);
     setLastSyncedAtMs(null);
-    setReportedConfigs({});
     setSettings(null);
+    // Worker commands watch this to drop a stale enrollment code and its owner.
+    setViewGeneration((generation) => generation + 1);
   }, []);
 
   /**
@@ -413,76 +404,21 @@ export function useHub() {
     [failSession, getClient, refreshAll],
   );
 
-  useEffect(() => {
-    if (!enrollmentCode) return;
-    const timer = window.setTimeout(() => setEnrollmentCode(null), Math.max(0, enrollmentCode.expiresAtMs - Date.now()));
-    return () => window.clearTimeout(timer);
-  }, [enrollmentCode]);
-
-  const createEnrollmentCode = useCallback(async (request: CreateEnrollmentCodeRequest) => {
-    const client = getClient();
-    if (issueOwner.current === client || (enrollmentCode && enrollmentCode.expiresAtMs > Date.now())) return;
-    issueOwner.current = client;
-    setIssuingCode(true);
-    try {
-      const response = await client.createEnrollmentCode(request);
-      if (clientRef.current === client) setEnrollmentCode(response);
-    } catch (error) {
-      if (clientRef.current === client && error instanceof HubApiError && error.status === 401) {
-        failSession(client);
-      }
-      throw error;
-    } finally {
-      if (issueOwner.current === client) {
-        issueOwner.current = null;
-        setIssuingCode(false);
-      }
-    }
-  }, [failSession, getClient, enrollmentCode]);
-
-  const rotateWorker = useCallback(
-    (workerId: string) => mutate((client) => client.rotateWorker(workerId)),
-    [mutate],
-  );
-
-  const revokeWorker = useCallback(
-    (workerId: string) => mutate((client) => client.revokeWorker(workerId)),
-    [mutate],
-  );
-
-  const approveWorker = useCallback(
-    (workerId: string) => mutate((client) => client.approveWorker(workerId)),
-    [mutate],
-  );
-
-  /** Apply exactly the revision the Admin reviewed, then refresh both sides. */
-  const applyWorkerConfig = useCallback(
-    (workerId: string, revision: number) =>
-      mutate((client) => client.applyWorkerConfig(workerId, revision)),
-    [mutate],
-  );
-
-  /** Read one Worker's latest reported snapshot for display before an Apply. */
-  const loadReportedConfig = useCallback(
-    async (workerId: string): Promise<void> => {
-      const client = getClient();
-      try {
-        const detail = await client.getWorker(workerId);
-        if (clientRef.current === client) {
-          setReportedConfigs((current) => ({
-            ...current,
-            [workerId]: detail.reportedConfig,
-          }));
-        }
-      } catch (loadError) {
-        if (loadError instanceof HubApiError && loadError.status === 401) {
-          failSession(client);
-        }
-        throw loadError;
-      }
-    },
-    [failSession, getClient],
-  );
+  const {
+    createEnrollmentCode,
+    rotateWorker,
+    revokeWorker,
+    approveWorker,
+    applyWorkerConfig,
+    fetchReportedConfig,
+    enrollmentCode,
+    issuingCode,
+  } = useWorkerCommands({
+    clientRef,
+    viewGeneration,
+    mutate,
+    failSession,
+  });
 
   /** Merge a Security & Trust patch; the Hub echoes the stored pair. */
   const updateSecurityTrust = useCallback(
@@ -544,8 +480,7 @@ export function useHub() {
     revokeWorker,
     approveWorker,
     applyWorkerConfig,
-    loadReportedConfig,
-    reportedConfigs,
+    fetchReportedConfig,
     settings,
     updateSecurityTrust,
   };

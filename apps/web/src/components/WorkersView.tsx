@@ -34,13 +34,13 @@ import type { WorkerFilter } from "./workers/workerFilters";
 export interface WorkersViewProps {
   readonly baseUrl: string;
   readonly workers: readonly WorkerRecord[];
-  readonly reported: Readonly<Record<string, WorkerSchedulingConfig | null>>;
+  /** Read one Worker's report under review, bound to the revision it was reported at. */
+  readonly fetchReportedConfig: (workerId: string) => Promise<WorkerSchedulingConfig | null>;
   readonly issued: CreateEnrollmentCodeResponse | null;
   readonly busy: boolean;
   readonly onCreateEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
   ) => Promise<void>;
-  readonly onLoadReported: (workerId: string) => Promise<void>;
   readonly onApproveWorker: (workerId: string) => Promise<void>;
   readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
@@ -53,9 +53,8 @@ export function WorkersView(props: WorkersViewProps) {
   const {
     baseUrl,
     workers,
-    reported,
+    fetchReportedConfig,
     onCreateEnrollmentCode,
-    onLoadReported,
     onApproveWorker,
     onApplyWorkerConfig,
     onRotateWorker,
@@ -147,8 +146,7 @@ export function WorkersView(props: WorkersViewProps) {
               <WorkerCard
                 key={worker.workerId}
                 worker={worker}
-                reported={reported[worker.workerId] ?? null}
-                onLoadReported={onLoadReported}
+                fetchReportedConfig={fetchReportedConfig}
                 onApproveWorker={onApproveWorker}
                 onApplyWorkerConfig={onApplyWorkerConfig}
                 onRotateWorker={onRotateWorker}
