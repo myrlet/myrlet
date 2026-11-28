@@ -518,18 +518,14 @@ export function TaskGraphView(props: TaskGraphViewProps) {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target;
       if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
-      if (event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        if (event.shiftKey) focusSelected();
-        else fit();
-      } else if (event.key === "0") {
+      if (event.key === "0") {
         event.preventDefault();
         zoomTo(() => 1);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [fit, focusSelected, zoomTo]);
+  }, [zoomTo]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLElement>): void => {
     if (event.button !== 0) return;

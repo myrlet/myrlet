@@ -16,7 +16,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
-import { HubClient } from "../api/client";
+import { HubApiError, HubClient } from "../api/client";
 import type {
   GlobalSnapshot,
   HubEventEnvelope,
@@ -575,6 +575,48 @@ describe("App workspace flow", () => {
     expect(window.localStorage.getItem("myrlet.theme")).toBeNull();
   });
 
+  it("leaves workspace shortcuts inactive on the auth gate", async () => {
+    render(<App />);
+    expect(fireEvent.keyDown(findTokenInput(), { key: "k", ctrlKey: true })).toBe(true);
+    fireEvent.change(findTokenInput(), { target: { value: "test-token" } });
+    submitAuthGate();
+    await screen.findByRole("toolbar", { name: /board controls/i });
+    expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull();
+  });
+
+  it.each(["disconnect", "auth loss"])("starts a fresh workspace after %s", async (reason) => {
+    const snapshot = buildSnapshot();
+    snapshot.tasks.push(taskSummary({
+      id: "child", parentTaskId: "t1", rootTaskId: "t1", depth: 2, title: "Child task",
+    }));
+    const getSnapshot = vi.spyOn(HubClient.prototype, "getSnapshot").mockResolvedValue({
+      ...snapshot, totalTasks: snapshot.tasks.length,
+    });
+    await connectWorkspace();
+    openList();
+    fireEvent.click(screen.getByRole("button", { name: /collapse ship release/i }));
+    expect(document.querySelector('.list-row[data-task-id="child"]')).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^queued\b/i }));
+    fireEvent.click(within(document.querySelector(".task-pane") as HTMLElement)
+      .getByRole("button", { name: /inspector/i }));
+    if (reason === "disconnect") {
+      fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: /disconnect/i }));
+    } else {
+      getSnapshot.mockRejectedValueOnce(new HubApiError(401, "Unauthorized", "Expired"));
+      fireEvent.click(screen.getByRole("button", { name: /refresh the snapshot/i }));
+    }
+    await screen.findByRole("button", { name: /connect to hub/i });
+    fireEvent.change(findTokenInput(), { target: { value: "another-test-token" } });
+    submitAuthGate();
+
+    await screen.findByRole("toolbar", { name: /board controls/i });
+    expect(document.querySelector(".active-filter-pill")).toBeNull();
+    expect(document.querySelector(".inspector-slot")).toBeNull();
+    openList();
+    expect(document.querySelector('.list-row[data-task-id="child"]')).toBeInTheDocument();
+  });
+
   it("opens the Board by default with one 52px row, no toolbar, no sidebar, no Events", async () => {
     await connectWorkspace();
 
@@ -926,6 +968,29 @@ describe("App workspace flow", () => {
       expect(document.querySelector(".inspector-pane")).not.toBeNull();
     });
     expect(document.querySelector(".detail-pane")).toBeNull();
+  });
+
+  it("stops resizing the Inspector when a pointer drag is cancelled", async () => {
+    await connectWorkspace();
+    fireEvent.click(within(boardFloatingBar()).getByRole("button", { name: /inspector/i }));
+    const handle = screen.getByRole("separator", { name: /resize inspector/i });
+    const pointer = (type: string, clientX: number) =>
+      new MouseEvent(type, { bubbles: true, clientX });
+    fireEvent(handle, pointer("pointerdown", 800));
+    fireEvent(window, pointer("pointermove", 760));
+    expect(handle).toHaveAttribute("aria-valuenow", "454");
+    fireEvent(window, pointer("pointercancel", 760));
+    fireEvent(window, pointer("pointermove", 720));
+    expect(handle).toHaveAttribute("aria-valuenow", "454");
+  });
+
+  it("reserves Shift+F for a selected Board task", async () => {
+    await connectWorkspace();
+    fireEvent.click(within(boardFloatingBar()).getByRole("button", { name: /inspector/i }));
+    expect(fireEvent.keyDown(document, { key: "F", shiftKey: true })).toBe(true);
+    fireEvent.click(document.querySelector('.atlas-node[data-task-id="t1"]') as HTMLElement);
+    expect(fireEvent.keyDown(document, { key: "F", shiftKey: true })).toBe(false);
+    await screen.findByText("Work on Ship release.");
   });
 
   it("uses one sibling scrim, inert background, and focus return for both Inspector modes", async () => {
