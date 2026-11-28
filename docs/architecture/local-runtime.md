@@ -27,7 +27,7 @@ MYRLET_HOME/
 - Hub uses **one local SQLite database** in WAL mode (`PRAGMA foreign_keys = ON`, bounded `busy_timeout`).
 - Synchronous `rusqlite` work MUST NOT block Tokio async scheduler threads: wrap the single writer connection behind a one-permit semaphore + `tokio::task::block_in_place` on the multi-thread Tokio runtime (running inline only on current-thread test runtimes). Do not introduce separate actor threads, connection pools, or external message brokers.
 
-The Hub stores the two Security & Trust booleans in one singleton `hub_settings` row. The existing `workers` row holds approval, reported/applied scheduling inventory and their revisions. Policy decisions and their associated Pair, report or Apply are serialized by the existing SQLite writer.
+The Hub stores the two Security & Trust booleans in one singleton `hub_settings` row. The existing `workers` row holds the server-controlled `permissionTier` (`worker` or `owner`), approval, reported/applied scheduling inventory and their revisions. New pairing defaults to `worker`; only Admin can change the tier. Policy decisions and their associated Pair, report, Apply, or tier change are serialized by the existing SQLite writer.
 
 ## Workspace Layout and Crate Boundaries
 
@@ -55,22 +55,37 @@ crates/protocol (myrlet-protocol: canonical Task, Delivery, IDs, enums, HTTP/WSS
 
 ## Client Surfaces
 
-All clients are thin presentation/automation shells over the Hub HTTP/SSE API; none owns a second Task state machine or scheduler.
+All clients are thin presentation/automation shells over the Hub HTTP/SSE API; none owns a second Task state machine or scheduler. The Hub evaluates the credential's actual permission tier for every operation.
 
 V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the same-origin **Web UI** compiled into `hub` from `apps/web`, and one Agent Skill.
 
-| Surface | Binary / Crate | V1 Scope |
+| Surface | Binary / Crate | V1 Scope and authorization |
 | --- | --- | --- |
-| **CLI** | `myrlet` (`apps/cli`) | Headless Hub reads (`tasks list/show/tree`, `workers list/show`, `events watch`), Owner writes (`tasks submit/import/update/cancel/finish`), execution-local commands (`done`, `result check/sync/status`), and operator bootstrap (`workers enroll/rotate/revoke/approve` and `workers config show/apply`). Human + `--json` output. Also the supported interface for Harnesses. |
-| **Shared Client SDK** | `myrlet-client` (`crates/client`) | One `Client` over `native` (`reqwest`/Tokio) and `wasm` (`fetch`) transports using canonical `myrlet-protocol` DTOs. |
-| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List and read-only Board**, **Task Detail** (hierarchy, dependencies and blockers, Delivery, latest Progress, latest result Markdown), and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
-| **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Owner Agents and Harnesses. |
+| **CLI** | `myrlet` (`apps/cli`) | Supports all three tiers. A `worker`-tier Worker credential is limited to its own Delivery-bound Task and direct related-Task summaries plus execution-local commands. An `owner`-tier Worker credential adds global Task coordination and Worker/Agent observability. The Admin token adds Worker and system administration. The CLI does not grant or infer authority; Hub checks every operation. |
+| **Shared Client SDK** | `myrlet-client` (`crates/client`) | One `Client` over `native` (`reqwest`/Tokio) and `wasm` (`fetch`) transports using canonical `myrlet-protocol` DTOs. Any non-CLI application using it must authenticate as Admin. |
+| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, Admin credential in memory only. All Web UI access requires Admin. Scope: Hub connection, List and read-only Board, Task Detail, and Worker/system administration. |
+| **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Agents and Harnesses. The Agent uses its Worker's credential and inherits the Worker's `worker` or `owner` tier; there is no separate Agent credential. |
+
+### Tiered CLI authorization
+
+- Worker and Owner operations authenticate with the Hub-issued Worker credential stored under `MYRLET_HOME/worker/credentials.json`. The Hub determines whether that Worker has `worker` or `owner` permission.
+- Admin operations authenticate with `MYRLET_ADMIN_TOKEN`. The Admin token is a separate principal and cannot be used for Worker claims or Worker-originated Progress/Result/Finish reports.
+- Worker-tier CLI reads are restricted to the Worker's Delivery-bound Task and one-hop related-Task summaries. Owner-tier CLI can read global Tasks, Workers, and reported Agent runtime status and perform the Task coordination operations defined by the Task Model.
+- Insufficient permission returns an explicit authorization error from Hub; CLI commands do not bypass server-side checks.
 
 ### Worker trust operations
 
-`myrlet workers show <worker-id>` displays approval, both revisions, and whether Apply is pending. `myrlet workers config show <worker-id>` reads the same Worker detail and displays both snapshots. `myrlet workers approve <worker-id>` and `myrlet workers config apply <worker-id> --revision <revision>` use the existing Admin authentication. Each command supports `--json`. Apply prints the applied revision on success and surfaces the Hub's specific error on failure.
+`myrlet workers show <worker-id>` is available to Owner and Admin for Worker status and scheduling observation. Owner sees operational status and scheduling-relevant inventory; Admin also sees administration-only fields. The following operations require Admin: `workers enroll`, `workers rotate`, `workers revoke`, `workers approve`, `workers config apply`, and `workers permission set <worker-id> --tier worker|owner`. The permission command changes the server-stored Worker tier; it does not create a new credential or Agent identity. Each command supports `--json`.
 
-The Workers page identifies and filters pending Workers, shows both snapshots and their field differences, and submits the revision the Admin viewed. Pending Workers offer Approve and Revoke, approved Workers offer Revoke, and revoked Workers link to pairing. The Web Settings **Security & Trust** group edits the two Hub policies independently. These policies have no CLI settings commands.
+The Workers page and Security & Trust settings are Admin-only. The Web UI cannot be used with Worker-tier or Owner-tier credentials. The Security & Trust policies have no CLI settings commands.
+
+### Desktop Shell (next iteration)
+
+Planned, not shipped in V1:
+
+- **Desktop shell** — an optional Tauri 2 wrapper in a later iteration, hosting the same embedded Web UI as a native window without forking the web surface. As a non-CLI client, it requires Admin.
+- **Owner Agent (optional, BYOK)** — a future graphical Client MAY offer an optional BYOK Owner Agent (e.g., via Pi SDK) running strictly at the Client boundary through ordinary Hub APIs; it MUST NEVER become a Hub, Worker, CLI, or core Client dependency. If the Owner Agent runs inside a Worker, it uses that Worker's identity and tier.
+- **Out of scope** — graph editing and workflow builders, saved view managers, and static login diagrams.
 
 ### Execution-local CLI commands
 
