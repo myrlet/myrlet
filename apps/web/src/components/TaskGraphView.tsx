@@ -41,6 +41,7 @@ import type { AtlasFramingOptions, AtlasPosition } from "./workAtlasLayout";
 export interface TaskGraphControls {
   fit: () => void;
   focusSelected: () => void;
+  resetZoom: () => void;
   arrange: () => void;
   restore: () => void;
 }
@@ -408,6 +409,8 @@ export function TaskGraphView(props: TaskGraphViewProps) {
     });
   }, []);
 
+  const resetZoom = useCallback(() => zoomTo(() => 1), [zoomTo]);
+
   const arrange = useCallback(() => {
     const manual: Views = {};
     let hasManual = false;
@@ -478,11 +481,11 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   }, []);
 
   useEffect(() => {
-    controlsRef.current = { fit, focusSelected, arrange, restore };
+    controlsRef.current = { fit, focusSelected, resetZoom, arrange, restore };
     return () => {
       controlsRef.current = null;
     };
-  }, [arrange, controlsRef, fit, focusSelected, restore]);
+  }, [arrange, controlsRef, fit, focusSelected, resetZoom, restore]);
 
   useEffect(() => {
     if (didAutoFitRef.current || bounds === null || viewport.width <= 0 || viewport.height <= 0) return;
@@ -512,20 +515,6 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   useEffect(() => {
     onBoardMetaChange({ zoomPercent, relationCount: edges.length, canRestore: restoreSnapshot !== null });
   }, [edges.length, onBoardMetaChange, restoreSnapshot, zoomPercent]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      const target = event.target;
-      if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
-      if (event.key === "0") {
-        event.preventDefault();
-        zoomTo(() => 1);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [zoomTo]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLElement>): void => {
     if (event.button !== 0) return;
@@ -873,7 +862,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
                 disabled={view.scale <= MIN_SCALE + 0.001} aria-label="Zoom out" title="Zoom out">
                 <Minus size={13} aria-hidden="true" />
               </button>
-              <button type="button" className="atlas-zoom-value tabular" onClick={() => zoomTo(() => 1)}
+              <button type="button" className="atlas-zoom-value tabular" onClick={resetZoom}
                 aria-label={`Zoom ${zoomPercent}% — reset to 100%`} title="Reset zoom to 100%">
                 {zoomPercent}%
               </button>

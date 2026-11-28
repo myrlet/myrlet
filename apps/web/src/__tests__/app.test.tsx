@@ -51,6 +51,7 @@ function stubFetch(handler: FetchHandler): void {
 
 interface ColorSchemeController {
   setDark: (dark: boolean) => void;
+  setNarrow: (next: boolean) => void;
 }
 
 /** A controllable `matchMedia`; color-scheme changes dispatch to real listeners. */
@@ -77,12 +78,13 @@ function stubColorScheme(dark: boolean, narrow = false): ColorSchemeController {
     removeListener: () => undefined,
     dispatchEvent: () => true,
   } as MediaQueryList;
+  const viewport = new EventTarget();
   const narrowMedia = {
-    matches: narrow,
+    get matches() { return narrow; },
     media: "(max-width: 1024px)",
     onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
+    addEventListener: viewport.addEventListener.bind(viewport),
+    removeEventListener: viewport.removeEventListener.bind(viewport),
     addListener: () => undefined,
     removeListener: () => undefined,
     dispatchEvent: () => true,
@@ -94,6 +96,10 @@ function stubColorScheme(dark: boolean, narrow = false): ColorSchemeController {
     ),
   );
   return {
+    setNarrow(next) {
+      narrow = next;
+      viewport.dispatchEvent(new Event("change"));
+    },
     setDark(next) {
       colorDark = next;
       const event = {
@@ -991,6 +997,30 @@ describe("App workspace flow", () => {
     fireEvent.click(document.querySelector('.atlas-node[data-task-id="t1"]') as HTMLElement);
     expect(fireEvent.keyDown(document, { key: "F", shiftKey: true })).toBe(false);
     await screen.findByText("Work on Ship release.");
+  });
+
+  it("only resets Board zoom when the workspace owns the shortcut", async () => {
+    await connectWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    const zoom = screen.getByRole("button", { name: /reset to 100%/i });
+    const previous = zoom.textContent;
+    expect(previous).not.toBe("100%");
+    fireEvent.click(within(appBar()).getByRole("button", { name: /workers/i }));
+    fireEvent.keyDown(screen.getByRole("button", { name: /close workers drawer/i }), { key: "0" });
+    expect(zoom.textContent).toBe(previous);
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "0" });
+    expect(zoom.textContent).toBe("100%");
+  });
+
+  it("releases the phone status menu shortcuts when the desktop counters appear", async () => {
+    const media = stubColorScheme(false, true);
+    await connectWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /filter by status/i }));
+    expect(screen.getByRole("menu", { name: /filter by status/i })).toBeInTheDocument();
+    act(() => media.setNarrow(false));
+    fireEvent.keyDown(document, { key: "i" });
+    expect(document.querySelector(".inspector-slot")).toBeInTheDocument();
   });
 
   it("uses one sibling scrim, inert background, and focus return for both Inspector modes", async () => {

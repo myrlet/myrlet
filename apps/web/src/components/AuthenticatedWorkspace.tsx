@@ -159,7 +159,10 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
       return;
     }
     const media = window.matchMedia("(max-width: 820px)");
-    const sync = (): void => setCompactStatusBar(media.matches);
+    const sync = (): void => {
+      setCompactStatusBar(media.matches);
+      if (!media.matches) setStatusMenuOpen(false);
+    };
     sync();
     media.addEventListener("change", sync);
     return () => media.removeEventListener("change", sync);
@@ -199,6 +202,7 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
   const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
   const closeWorkers = useCallback(() => setWorkersOpen(false), []);
   const toggleWorkers = useCallback(() => setWorkersOpen((current) => !current), []);
+  const resetZoom = useCallback(() => atlasRef.current?.resetZoom(), []);
   const fitBoard = useCallback(() => atlasRef.current?.fit(), []);
   const focusSelected = useCallback(() => atlasRef.current?.focusSelected(), []);
 
@@ -220,6 +224,7 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
     clearFilter,
     clearWorkspace: clearSelection,
     toggleInspector: inspector.toggle,
+    resetZoom,
     fitBoard,
     focusSelected,
     moveSelection,

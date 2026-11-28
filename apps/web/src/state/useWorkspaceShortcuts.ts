@@ -32,6 +32,7 @@ export interface WorkspaceShortcutOptions {
   readonly clearFilter: () => void;
   readonly clearWorkspace: () => void;
   readonly toggleInspector: () => void;
+  readonly resetZoom: () => void;
   readonly fitBoard: () => void;
   readonly focusSelected: () => void;
   readonly moveSelection: (direction: 1 | -1) => void;
@@ -56,6 +57,7 @@ export function useWorkspaceShortcuts(options: WorkspaceShortcutOptions): void {
     clearFilter,
     clearWorkspace,
     toggleInspector,
+    resetZoom,
     fitBoard,
     focusSelected,
     moveSelection,
@@ -137,6 +139,12 @@ export function useWorkspaceShortcuts(options: WorkspaceShortcutOptions): void {
           event.preventDefault();
           toggleInspector();
           break;
+        case "0":
+          if (mode === "board") {
+            event.preventDefault();
+            resetZoom();
+          }
+          break;
         case "f":
           if (mode === "board") {
             event.preventDefault();
@@ -177,6 +185,7 @@ export function useWorkspaceShortcuts(options: WorkspaceShortcutOptions): void {
     closeStatusMenu,
     closeWorkers,
     filterApplied,
+    resetZoom,
     fitBoard,
     focusSelected,
     hasSelectedTask,
