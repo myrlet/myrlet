@@ -7,7 +7,7 @@ use myrlet_protocol::{
     HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, PermissionTier, ProgressReceipt,
     ProgressReportRequest, ResultReceipt, ResultReportRequest, RotateWorkerCredentialResponse,
     SecurityTrustSettings, SnapshotWorker, TaskCancelledPayload, UpdateSecurityTrustRequest,
-    WorkerDetail, WorkerId, WorkerInventory, WorkerPermissionTierResponse,
+    WorkerDetailView, WorkerId, WorkerInventory, WorkerPermissionTierResponse, WorkerSnapshot,
 };
 
 use crate::{
@@ -254,6 +254,16 @@ impl HubStore {
             .await
     }
 
+    /// Every enrolled Worker as the Hub's authoritative view, for internal scheduling.
+    pub async fn list_worker_snapshots(
+        &self,
+        online_map: HashMap<WorkerId, u64>,
+    ) -> Result<Vec<WorkerSnapshot>, StoreError> {
+        self.db
+            .call(move |conn| inventory::list_worker_snapshots(conn, &online_map))
+            .await
+    }
+
     pub async fn get_delivery(&self, delivery_id: DeliveryId) -> Result<DeliveryView, StoreError> {
         self.db
             .call(move |conn| {
@@ -263,6 +273,7 @@ impl HubStore {
             .await
     }
 
+    /// The Global-Snapshot projection of one Worker.
     pub async fn get_worker(
         &self,
         worker_id: WorkerId,
@@ -273,33 +284,28 @@ impl HubStore {
             .await
     }
 
+    /// The Hub's authoritative view of one Worker, for internal scheduling and review.
+    pub async fn get_worker_snapshot(
+        &self,
+        worker_id: WorkerId,
+        online_map: HashMap<WorkerId, u64>,
+    ) -> Result<WorkerSnapshot, StoreError> {
+        self.db
+            .call(move |conn| inventory::get_worker_snapshot(conn, &worker_id, &online_map))
+            .await
+    }
+
+    /// One Worker's administrative detail: authoritative revisions, both configuration
+    /// bodies, and claimable Task IDs.
     pub async fn worker_detail(
         &self,
         worker_id: WorkerId,
         online_map: HashMap<WorkerId, u64>,
         claimable_limit: usize,
-    ) -> Result<WorkerDetail, StoreError> {
+    ) -> Result<WorkerDetailView, StoreError> {
         self.db
             .call(move |conn| {
-                let worker = inventory::get_worker(conn, &worker_id, &online_map)?;
-                let claimable_task_ids = if worker.approval
-                    == myrlet_protocol::WorkerApprovalStatus::Approved
-                    && worker.applied_revision.is_some()
-                    && worker.applied_revision == worker.reported_revision
-                {
-                    crate::reads::claimable_for_worker(
-                        conn,
-                        worker.applied_config.as_ref(),
-                        claimable_limit,
-                    )?
-                } else {
-                    Vec::new()
-                };
-                Ok(WorkerDetail {
-                    reported_config: inventory::reported_config(conn, &worker_id)?,
-                    worker,
-                    claimable_task_ids,
-                })
+                inventory::worker_detail_view(conn, &worker_id, &online_map, claimable_limit)
             })
             .await
     }

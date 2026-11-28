@@ -192,7 +192,7 @@ impl Hub {
         );
         let detail = self.get_admin(&format!("/v1/workers/{worker_id}")).await;
         assert_eq!(detail.0, 200, "{}", detail.1);
-        let revision = detail.1["worker"]["reportedRevision"]
+        let revision = detail.1["reportedRevision"]
             .as_u64()
             .expect("the connected Worker reported an inventory");
         let body = json!({ "revision": revision }).to_string();

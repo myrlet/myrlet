@@ -4,7 +4,7 @@ use myrlet_protocol::{
     ApplyWorkerConfigRequest, ApplyWorkerConfigResponse, CreateEnrollmentCodeRequest,
     CreateEnrollmentCodeResponse, PermissionTier, RotateWorkerCredentialResponse,
     SecurityTrustSettings, UpdateSecurityTrustRequest, UpdateWorkerPermissionTierRequest,
-    WorkerDetail, WorkerId, WorkerListResponse, WorkerPermissionTierResponse,
+    WorkerDetailView, WorkerId, WorkerListResponse, WorkerPermissionTierResponse,
 };
 
 use crate::error::ClientError;
@@ -30,7 +30,7 @@ impl<T: Transport> Client<T> {
     }
 
     /// Read one Worker's detail, inventory, and claimable Task IDs (`GET /v1/workers/{id}`).
-    pub async fn get_worker(&self, id: &WorkerId) -> Result<WorkerDetail, ClientError> {
+    pub async fn get_worker(&self, id: &WorkerId) -> Result<WorkerDetailView, ClientError> {
         ensure_path_segment(id.as_str())?;
         decode_direct(&self.get(&format!("/v1/workers/{id}")).await?)
     }

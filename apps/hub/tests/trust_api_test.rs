@@ -91,8 +91,10 @@ async fn a_pending_worker_cannot_claim_and_approval_is_idempotent() {
     let (worker_id, credential, _socket, epoch) = pending_worker(&hub).await;
     let listed = hub.get_admin("/v1/workers").await;
     assert_eq!(listed.1["workers"][0]["approval"], "pending");
-    assert_eq!(listed.1["workers"][0]["reportedRevision"], 1);
-    assert!(listed.1["workers"][0]["appliedRevision"].is_null());
+    // The Snapshot carries no configuration revisions, only whether one is pending.
+    assert_eq!(listed.1["workers"][0]["configurationPending"], true);
+    assert!(listed.1["workers"][0].get("reportedRevision").is_none());
+    assert!(listed.1["workers"][0].get("appliedRevision").is_none());
 
     // A pending Worker is never woken; the hint gate is the Hub's, not a local check.
     let task_id = queued_task(&hub, "pending").await;
@@ -116,9 +118,9 @@ async fn a_pending_worker_cannot_claim_and_approval_is_idempotent() {
     assert_eq!(hub.post_admin(&approve, None, None).await.0, 204);
     let detail = hub.get_admin(&format!("/v1/workers/{worker_id}")).await;
     assert_eq!(detail.1["worker"]["approval"], "approved");
-    assert_eq!(detail.1["worker"]["reportedRevision"], 1);
+    assert_eq!(detail.1["reportedRevision"], 1);
     assert!(
-        detail.1["worker"]["appliedRevision"].is_null(),
+        detail.1["appliedRevision"].is_null(),
         "approval alone never applies a report"
     );
     assert_eq!(detail.1["reportedConfig"]["slots"][0]["slotId"], "slot-a");
@@ -136,7 +138,7 @@ async fn a_pending_worker_cannot_claim_and_approval_is_idempotent() {
         .await;
     assert_eq!(applied.0, 200, "{}", applied.1);
     let detail = hub.get_admin(&format!("/v1/workers/{worker_id}")).await;
-    assert_eq!(detail.1["worker"]["appliedRevision"], 1);
+    assert_eq!(detail.1["appliedRevision"], 1);
     assert!(
         detail.1["claimableTaskIds"]
             .as_array()
@@ -191,7 +193,7 @@ async fn apply_requires_the_reviewed_revision_and_leaves_applied_unchanged_on_er
     assert_eq!(applied.1["appliedRevision"], 1);
     let detail = hub.get_admin(&format!("/v1/workers/{worker_id}")).await;
     assert_eq!(detail.1["worker"]["approval"], "pending");
-    assert_eq!(detail.1["worker"]["appliedRevision"], 1);
+    assert_eq!(detail.1["appliedRevision"], 1);
     assert!(
         detail.1["claimableTaskIds"].as_array().unwrap().is_empty(),
         "approval is still pending"
@@ -265,8 +267,8 @@ async fn a_new_report_waits_for_review_and_then_clears_the_claim_gate() {
     assert_eq!(ack["payload"]["accepted"], true);
 
     let detail = hub.get_admin(&format!("/v1/workers/{worker_id}")).await;
-    assert_eq!(detail.1["worker"]["reportedRevision"], 2);
-    assert_eq!(detail.1["worker"]["appliedRevision"], 1);
+    assert_eq!(detail.1["reportedRevision"], 2);
+    assert_eq!(detail.1["appliedRevision"], 1);
     assert_eq!(
         detail.1["reportedConfig"]["slots"][0]["capabilities"][0]["name"],
         "gpu"

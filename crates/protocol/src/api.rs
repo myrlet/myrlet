@@ -225,6 +225,30 @@ pub struct WorkerDetail {
     pub claimable_task_ids: Vec<TaskId>,
 }
 
+/// The Hub's authoritative administrative view of one Worker on the wire.
+///
+/// This is the wire form of [`crate::snapshot::WorkerSnapshot`]: it carries the reported and
+/// applied revisions, the applied configuration body, and the reported configuration under
+/// review. Both the reported revision and `reported_config` originate from the same stored
+/// report, so a reviewer can submit exactly the revision whose content they saw.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerDetailView {
+    /// Connectivity, approval, permission tier, and whether configuration is pending.
+    pub worker: SnapshotWorker,
+    /// Hub-assigned revision of the latest accepted report, or `null` before one arrives.
+    pub reported_revision: Option<u64>,
+    /// Hub-assigned revision of the applied configuration, or `null` before Apply.
+    pub applied_revision: Option<u64>,
+    /// The scheduling snapshot the Hub schedules with.
+    pub applied_config: Option<crate::trust::WorkerSchedulingConfig>,
+    /// The latest accepted report awaiting review.
+    pub reported_config: Option<crate::trust::WorkerSchedulingConfig>,
+    /// Claimable Task IDs that this Worker's applied Slots could run, oldest first.
+    #[serde(default)]
+    pub claimable_task_ids: Vec<TaskId>,
+}
+
 /// Effective status of the Worker-local result compare performed by `result status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -198,11 +198,8 @@ impl HubStore {
     ) -> Result<Vec<TaskId>, StoreError> {
         self.db
             .call(move |conn| {
-                let worker = crate::inventory::get_worker(conn, &worker_id, &online_map)?;
-                let admissible = worker.approval == myrlet_protocol::WorkerApprovalStatus::Approved
-                    && worker.applied_revision.is_some()
-                    && worker.applied_revision == worker.reported_revision;
-                if !admissible {
+                let worker = crate::inventory::get_worker_snapshot(conn, &worker_id, &online_map)?;
+                if !worker.is_schedulable() {
                     return Ok(Vec::new());
                 }
                 reads::claimable_for_worker(conn, worker.applied_config.as_ref(), limit)

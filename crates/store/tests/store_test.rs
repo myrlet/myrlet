@@ -84,7 +84,7 @@ async fn enrolled(store: &HubStore) -> u64 {
         .unwrap();
     store.approve_worker(worker_id.clone(), T0).await.unwrap();
     let reported = store
-        .get_worker(worker_id, HashMap::new())
+        .get_worker_snapshot(worker_id, HashMap::new())
         .await
         .unwrap()
         .reported_revision

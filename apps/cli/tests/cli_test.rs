@@ -106,13 +106,7 @@ fn router(hub: Hub) -> Router {
         )
         .route(
             "/v1/workers/:id",
-            get(|| async {
-                Json(json!({
-                    "worker": worker_value(),
-                    "reportedConfig": null,
-                    "claimableTaskIds": ["task_02"],
-                }))
-            }),
+            get(|| async { Json(worker_detail_value()) }),
         )
         .route(
             "/v1/workers/:id/approve",
@@ -239,8 +233,18 @@ fn worker_value() -> Value {
     json!({
         "workerId":"wkr_000000000000","online":true,"revoked":false,"approval":"approved",
         "permissionTier":"worker","connectionEpoch":7,"lastSeenAtMs":null,
-        "activeDeliveries":0,"host":null,"reportedRevision":1,"appliedRevision":1,
-        "appliedConfig":null
+        "activeDeliveries":0,"host":null,"configurationPending":false
+    })
+}
+
+fn worker_detail_value() -> Value {
+    json!({
+        "worker": worker_value(),
+        "reportedRevision": 1,
+        "appliedRevision": 1,
+        "appliedConfig": null,
+        "reportedConfig": null,
+        "claimableTaskIds": ["task_02"],
     })
 }
 
@@ -428,7 +432,7 @@ async fn list_import_workers_show_and_events_watch() {
     assert!(detail.contains("ClaimableTasks: task_02"), "{detail}");
     let (config, _) = ok(&["workers", "config", "show", "wkr_000000000000"], &url).await;
     assert!(config.contains("ReportedRevision: 1"), "{config}");
-    assert!(config.contains("ApplyPending: false"), "{config}");
+    assert!(config.contains("ConfigurationPending: false"), "{config}");
 
     let _ = ok(&["workers", "approve", "wkr_000000000000"], &url).await;
     let approve = hub.all().pop().unwrap();

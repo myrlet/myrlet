@@ -209,7 +209,7 @@ fn clear_trust_gates(cli: &Cli<'_>) {
         .to_owned();
     cli.run(&["--json", "workers", "approve", &worker_id]);
     let detail = cli.run(&["--json", "workers", "show", &worker_id]);
-    let revision = detail["worker"]["reportedRevision"]
+    let revision = detail["reportedRevision"]
         .as_u64()
         .expect("the online Worker reported an inventory");
     cli.run(&[

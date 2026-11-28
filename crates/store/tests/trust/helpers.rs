@@ -99,7 +99,7 @@ pub(super) async fn connect(store: &HubStore, inventory: myrlet_protocol::Worker
 pub(super) async fn approve_and_apply(store: &HubStore) {
     store.approve_worker(worker(), T0).await.unwrap();
     let reported = store
-        .get_worker(worker(), HashMap::new())
+        .get_worker_snapshot(worker(), HashMap::new())
         .await
         .unwrap()
         .reported_revision
