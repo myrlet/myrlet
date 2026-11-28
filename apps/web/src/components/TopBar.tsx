@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import type { Ref } from "react";
 import {
   Keyboard,
   ListTree,
@@ -40,6 +41,8 @@ export interface TopBarProps {
   readonly workerCount: number;
   readonly workersOpen: boolean;
   readonly onToggleWorkers: () => void;
+  /** The real Workers pill, so the drawer can restore focus to it on close. */
+  readonly workersTriggerRef?: Ref<HTMLButtonElement>;
   readonly onRefresh: () => void;
   readonly theme: Theme;
   readonly onChangeTheme: (theme: Theme) => void;
@@ -84,6 +87,7 @@ export function TopBar(props: TopBarProps) {
     workerCount,
     workersOpen,
     onToggleWorkers,
+    workersTriggerRef,
     onRefresh,
     theme,
     onChangeTheme,
@@ -174,6 +178,7 @@ export function TopBar(props: TopBarProps) {
 
       <div className="app-bar-actions">
         <button
+          ref={workersTriggerRef}
           type="button"
           className="app-bar-workers-btn"
           data-open={workersOpen}

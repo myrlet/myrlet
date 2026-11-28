@@ -8,6 +8,8 @@
  * verdict, health score, or progress percentage.
  */
 
+import { shortId } from "../model/shortId";
+import { isWorkerOnline } from "../model/workerPresence";
 import { ArrowUpRight, Server, X } from "lucide-react";
 
 import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
@@ -25,19 +27,11 @@ export interface WorkspaceInspectorProps {
 
 const ATTENTION_STATUSES: readonly TaskStatus[] = ["dispatched", "queued"];
 
-function shortId(id: string): string {
-  return id.length <= 12 ? id : id.slice(0, 12);
-}
-
 function workerHostLabel(worker: WorkerRecord): string {
   if (worker.inventory === null) {
     return "Inventory not reported";
   }
   return `${worker.inventory.host.os} · ${worker.inventory.host.arch}`;
-}
-
-function isOnline(worker: WorkerRecord): boolean {
-  return worker.online && !worker.revoked;
 }
 
 interface StatCellProps {
@@ -61,7 +55,7 @@ export function WorkspaceInspector(props: WorkspaceInspectorProps) {
   const attentionTasks = tasks.filter((task) => ATTENTION_STATUSES.includes(task.status));
 
   const registeredCount = workers.length;
-  const onlineCount = workers.filter(isOnline).length;
+  const onlineCount = workers.filter((worker) => isWorkerOnline(worker)).length;
   const offlineCount = registeredCount - onlineCount;
   const activeDeliveryCount = workers.reduce(
     (total, worker) => total + worker.activeDeliveries,
@@ -175,7 +169,7 @@ export function WorkspaceInspector(props: WorkspaceInspectorProps) {
           ) : (
             <ul className="inspector-worker-list">
               {workers.map((worker) => {
-                const online = isOnline(worker);
+                const online = isWorkerOnline(worker);
                 return (
                   <li key={worker.workerId}>
                     <button

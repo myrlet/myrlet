@@ -1,0 +1,40 @@
+/* ===================================================================== */
+/* 15. Responsive — desktop-width collapse points                        */
+/* ===================================================================== */
+
+@media (max-width: 1120px) {
+  .filter-pills {
+    max-width: 36vw;
+  }
+}
+
+@media (max-width: 1024px) {
+  .inspector-slot {
+    position: fixed;
+    top: var(--app-bar-height);
+    right: 0;
+    bottom: var(--status-bar-height);
+    z-index: var(--z-inspector);
+    width: min(440px, 92vw) !important;
+    border-left: 1px solid var(--border-default);
+    box-shadow: var(--shadow-overlay);
+    animation: panel-slide var(--duration-base) var(--ease-drawer);
+  }
+
+  /* Scrim is a sibling behind the panel: the panel's close button always wins
+     the hit test, and only the uncovered strip dismisses. */
+  .inspector-scrim {
+    display: block;
+    position: fixed;
+    inset: var(--app-bar-height) 0 var(--status-bar-height) 0;
+    z-index: calc(var(--z-inspector) - 1);
+    border: 0;
+    padding: 0;
+    background: var(--bg-overlay);
+    cursor: pointer;
+  }
+
+  .resize-handle {
+    display: none;
+  }
+}

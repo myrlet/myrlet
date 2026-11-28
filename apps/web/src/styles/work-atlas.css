@@ -1,0 +1,192 @@
+/* ===================================================================== */
+/* 10. Work Atlas — Spatial Board                                        */
+/* ===================================================================== */
+
+/* Board shell: a real dock row above the canvas, so controls never cover the
+   Task Group labels or the first row of cards. */
+.atlas-board {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+.atlas-dock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.atlas-dock::-webkit-scrollbar {
+  display: none;
+}
+
+.atlas-dock-label {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.atlas-dock-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+
+.atlas-dock-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.atlas-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  /* Fill whatever the dock leaves; never the whole board's height. */
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--bg-canvas);
+  background-image: radial-gradient(circle, var(--border-default) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: -1px -1px;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
+}
+
+.atlas-stage[data-panning="true"] {
+  cursor: grabbing;
+}
+
+.atlas-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.atlas-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.atlas-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-linecap: round;
+  transition: stroke 140ms var(--ease-out), stroke-width 140ms var(--ease-out),
+    opacity 140ms var(--ease-out);
+}
+
+.atlas-edge[data-kind="parent"] {
+  stroke: var(--border-strong);
+  stroke-width: 1.4px;
+}
+
+.atlas-edge[data-kind="dependency"] {
+  stroke: var(--border-strong);
+  stroke-width: 1.3px;
+  stroke-dasharray: 7 5;
+}
+
+.atlas-edge[data-kind="source"] {
+  stroke: var(--text-muted);
+  stroke-width: 1.15px;
+  stroke-dasharray: 1.5 4;
+}
+
+.atlas-edge[data-highlighted="true"] {
+  stroke: var(--accent);
+  stroke-width: 1.8px;
+  opacity: 1;
+}
+
+.atlas-edge[data-dimmed="true"] {
+  opacity: 0.25;
+}
+
+.atlas-edge-label text {
+  fill: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  paint-order: stroke;
+  stroke: var(--bg-canvas);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.atlas-edge-label[data-highlighted="true"] text {
+  fill: var(--accent);
+}
+
+/* Edge label pill and relationship port dots (drawn in the edge SVG). */
+.atlas-edge-pill {
+  fill: var(--bg-surface);
+  stroke: var(--border-default);
+  stroke-width: 1;
+}
+
+.atlas-port-dot {
+  fill: var(--accent);
+  stroke: var(--bg-surface);
+  stroke-width: 1.5;
+}
+
+.atlas-group-header {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.atlas-group-kicker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.atlas-group-name {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.atlas-group-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border-subtle);
+}

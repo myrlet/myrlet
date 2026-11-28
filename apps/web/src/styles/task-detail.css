@@ -1,0 +1,377 @@
+/* Task Detail Pane */
+.detail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: none;
+  padding: 14px 12px 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.detail-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.detail-breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.detail-breadcrumb-link {
+  max-width: 180px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  transition: var(--transition-colors);
+}
+
+.detail-breadcrumb-link:hover {
+  color: var(--accent);
+}
+
+.detail-breadcrumb-current {
+  color: var(--text-muted);
+  max-width: 220px;
+}
+
+.detail-breadcrumb-sep {
+  flex: none;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.detail-title {
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.detail-subtitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.detail-id-short {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.detail-version-pill {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-well);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.detail-refreshing {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Latest Harness progress card on the Overview tab. */
+.overview-progress-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--status-dispatched-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--status-dispatched-bg) 45%, var(--bg-surface));
+}
+
+.overview-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.overview-progress-kicker {
+  flex: none;
+  color: var(--status-dispatched-fg);
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+}
+
+.overview-progress-provider {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.overview-progress-age {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.overview-progress-text {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.detail-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex: none;
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.detail-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.detail-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 100%;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: var(--transition-colors);
+}
+
+.detail-tab:hover {
+  color: var(--text-secondary);
+}
+
+.detail-tab[data-active="true"] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.detail-tab[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
+
+.detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+.meta-grid-2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+}
+
+.meta-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.meta-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.meta-value {
+  max-width: 100%;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prompt-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-box {
+  max-height: 240px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-well);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow: auto;
+}
+
+.prompt-box-text {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.routing-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 6px 12px;
+  font-size: 12px;
+}
+
+.detail-label {
+  color: var(--text-muted);
+}
+
+.detail-value {
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.detail-value.mono {
+  font-size: 11.5px;
+}
+
+.detail-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+/* Selection known from the Snapshot, full record not loaded yet or failed. */
+.detail-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* In-panel load failure: keeps the Task header facts and offers a retry for
+   the current Task plus an explicit dismiss. */
+.detail-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--status-cancelled-border);
+  border-radius: var(--radius-md);
+  background: var(--status-cancelled-bg);
+  color: var(--status-cancelled-fg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.detail-error > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.detail-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.detail-error-title {
+  font-weight: 600;
+}
+
+.detail-error-message {
+  overflow-wrap: anywhere;
+}
+
+.detail-error-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.detail-error-actions .button {
+  color: var(--status-cancelled-fg);
+}
+
+.detail-error-actions .icon-button {
+  color: var(--status-cancelled-fg);
+}
