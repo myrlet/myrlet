@@ -47,8 +47,7 @@ async fn authentication_precedes_body_parsing_and_separates_principals() {
 #[tokio::test]
 async fn workers_can_read_tasks_trees_workers_and_events_without_the_admin_token() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
+    let (worker_id, credential, _socket, _epoch) = hub.enrolled().await;
     let definition = json!({ "title": "Readable", "prompt": "p" }).to_string();
     let created = hub
         .post_admin("/v1/tasks", Some("read-1"), Some(&definition))
@@ -119,8 +118,7 @@ async fn submit_authorizes_ready_work_and_holds_blocked_work() {
 #[tokio::test]
 async fn waking_a_worker_creates_no_delivery_and_a_claim_commits_one() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (_worker_id, credential, mut socket, epoch) = hub.enrolled().await;
 
     let definition = json!({ "title": "Wake", "prompt": "p" }).to_string();
     let created = hub
@@ -171,8 +169,7 @@ async fn waking_a_worker_creates_no_delivery_and_a_claim_commits_one() {
 #[tokio::test]
 async fn a_stale_epoch_cannot_claim() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (_socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (_worker_id, credential, _socket, epoch) = hub.enrolled().await;
     let definition = json!({ "title": "Epoch", "prompt": "p" }).to_string();
     let created = hub
         .post_admin("/v1/tasks", Some("epoch"), Some(&definition))
@@ -194,8 +191,7 @@ async fn a_stale_epoch_cannot_claim() {
 #[tokio::test]
 async fn claim_hold_finish_and_progress_drive_the_task_to_finished() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (_worker_id, credential, mut socket, epoch) = hub.enrolled().await;
     let (task_id, delivery_id) = hub.claim_one(&mut socket, &credential, epoch, "flow").await;
 
     let progress = json!({ "epoch": epoch, "observedAtMs": 1_000, "text": "started" });
@@ -222,8 +218,7 @@ async fn claim_hold_finish_and_progress_drive_the_task_to_finished() {
 #[tokio::test]
 async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (_worker_id, credential, mut socket, epoch) = hub.enrolled().await;
     let (task_id, delivery_id) = hub
         .claim_one(&mut socket, &credential, epoch, "cancel")
         .await;
@@ -256,8 +251,7 @@ async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
 #[tokio::test]
 async fn result_reconciles_latest_content_and_clears_when_absent() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (_worker_id, credential, mut socket, epoch) = hub.enrolled().await;
     let (task_id, delivery_id) = hub
         .claim_one(&mut socket, &credential, epoch, "result")
         .await;
@@ -325,8 +319,7 @@ async fn result_reconciles_latest_content_and_clears_when_absent() {
 #[tokio::test]
 async fn a_delayed_old_epoch_result_cannot_overwrite_a_newer_value() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (mut socket, epoch1) = hub.connect(&worker_id, &credential).await;
+    let (worker_id, credential, mut socket, epoch1) = hub.enrolled().await;
     let (task_id, delivery_id) = hub
         .claim_one(&mut socket, &credential, epoch1, "late")
         .await;
@@ -358,8 +351,6 @@ async fn a_delayed_old_epoch_result_cannot_overwrite_a_newer_value() {
 #[tokio::test]
 async fn a_finished_prerequisite_releases_only_ready_dependents() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
 
     let root = json!({ "title": "Root", "prompt": "p" }).to_string();
     let root = hub.post_admin("/v1/tasks", Some("r"), Some(&root)).await;
@@ -396,8 +387,6 @@ async fn a_finished_prerequisite_releases_only_ready_dependents() {
 #[tokio::test]
 async fn dispatch_idempotency_replays_after_version_bump_and_rejects_cross_payload() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
 
     let definition = json!({ "title": "Idempotent", "prompt": "replay me" }).to_string();
     let created = hub
@@ -458,8 +447,7 @@ async fn event_stream_backfills_streams_and_fails_closed_when_expired() {
 #[tokio::test]
 async fn rotation_and_revocation_fence_the_live_worker_session() {
     let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (mut socket, _) = hub.connect(&worker_id, &credential).await;
+    let (worker_id, credential, mut socket, _) = hub.enrolled().await;
 
     let path = format!("/v1/workers/{worker_id}/rotate");
     let rotated = hub.post_admin(&path, None, None).await;
@@ -540,8 +528,7 @@ async fn embedded_ui_never_shadows_the_api_and_respects_the_toggle() {
 #[tokio::test]
 async fn same_worker_recovers_claim_with_discarded_response() {
     let hub = start(10_000).await;
-    let (worker, cred) = hub.pair().await;
-    let (mut socket, epoch) = hub.connect(&worker, &cred).await;
+    let (worker, cred, mut socket, epoch) = hub.enrolled().await;
     let task = hub
         .post_admin(
             "/v1/tasks",
@@ -585,11 +572,18 @@ async fn same_worker_recovers_claim_with_discarded_response() {
 #[tokio::test]
 async fn wakeup_rotates_past_two_silent_workers() {
     let hub = start(10_000).await;
-    let mut workers = [hub.pair().await, hub.pair().await, hub.pair().await];
-    workers.sort();
-    let (mut first, _) = hub.connect(&workers[0].0, &workers[0].1).await;
-    let (mut second, _) = hub.connect(&workers[1].0, &workers[1].1).await;
-    let (mut third, epoch) = hub.connect(&workers[2].0, &workers[2].1).await;
+    let mut paired = [hub.pair().await, hub.pair().await, hub.pair().await];
+    paired.sort();
+    let mut connected = Vec::new();
+    for (worker_id, credential) in &paired {
+        let (socket, epoch) = hub.connect(worker_id, credential).await;
+        hub.clear_trust_gates(worker_id).await;
+        connected.push((socket, epoch));
+    }
+    let (mut third, epoch) = connected.pop().expect("third worker");
+    let (mut second, _) = connected.pop().expect("second worker");
+    let (mut first, _) = connected.pop().expect("first worker");
+    let workers = paired;
     let submitted = hub
         .post_admin(
             "/v1/tasks",

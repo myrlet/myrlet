@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use crate::state::{now_ms, HubState};
 use crate::ws::build_hub_frame;
 use myrlet_protocol::{
-    HubWakeupPayload, SlotId, SnapshotWorker, TaskDefinition, TaskId, WorkerId, WorkerWireKind,
+    HubWakeupPayload, SlotId, SnapshotWorker, TaskDefinition, TaskId, WorkerApprovalStatus,
+    WorkerId, WorkerWireKind,
 };
 
 const WAKEUP_SCAN_LIMIT: usize = 100;
@@ -35,7 +36,13 @@ async fn wake_eligible(state: &HubState) {
             return;
         }
     };
-    workers.retain(|worker| worker.online && !worker.revoked);
+    workers.retain(|worker| {
+        worker.online
+            && !worker.revoked
+            && worker.approval == WorkerApprovalStatus::Approved
+            && worker.applied_revision.is_some()
+            && worker.applied_revision == worker.reported_revision
+    });
     workers.sort_unstable_by(|a, b| a.worker_id.as_str().cmp(b.worker_id.as_str()));
     for (task_id, definition) in queued {
         if state.is_shutting_down() {
@@ -101,8 +108,8 @@ pub fn spawn_wakeup_loop(state: &HubState) {
 }
 
 fn eligible_slots(worker: &SnapshotWorker, definition: &TaskDefinition) -> Option<Vec<SlotId>> {
-    let inventory = worker.inventory.as_ref()?;
-    let slots: Vec<_> = inventory
+    let applied = worker.applied_config.as_ref()?;
+    let slots: Vec<_> = applied
         .slots
         .iter()
         .filter(|slot| !slot.executors.is_empty() && slot.accepts(&definition.routing, None))

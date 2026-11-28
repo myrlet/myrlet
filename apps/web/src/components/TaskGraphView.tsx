@@ -136,7 +136,10 @@ function mobileRootFrame(root: AtlasPosition, headerY: number, width: number, he
 }
 const shortId = (id: string): string => (id.length <= 12 ? id : id.slice(0, 12));
 const isWorkerOnline = (worker: WorkerRecord | undefined): boolean =>
-  worker !== undefined && worker.online && !worker.revoked;
+  worker !== undefined &&
+  worker.online &&
+  !worker.revoked &&
+  worker.approval === "approved";
 const snap = (value: number): number => Math.round(value / SNAP_STEP) * SNAP_STEP;
 
 const isFiniteNumber = (value: unknown): value is number =>

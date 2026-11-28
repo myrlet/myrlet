@@ -3,10 +3,12 @@
  *
  * Three bands, top to bottom: a one-step pairing card that issues a single-use
  * enrollment code and a copy-ready `worker pair` command, a four-cell hardware
- * KPI strip, and the enrolled Worker cards with their reported Slots.
+ * KPI strip, and the enrolled Worker cards with their applied Slots.
  *
- * Inventory is shown verbatim: advisory capacity of `null` is unknown and
- * renders as `—`, never `0`.
+ * Trust is explicit. A pending Worker can connect but never claims until an
+ * Admin approves it; a changed scheduling report stays under review until an
+ * Admin applies the exact revision they saw. Inventory is shown verbatim:
+ * advisory capacity of `null` is unknown and renders as `—`, never `0`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,7 +18,9 @@ import type {
   CreateEnrollmentCodeRequest,
   CreateEnrollmentCodeResponse,
   RotateWorkerResponse,
+  SlotInventory,
   WorkerRecord,
+  WorkerSchedulingConfig,
 } from "../api/types";
 import {
   CAPABILITY_STATE_LABELS,
@@ -43,11 +47,12 @@ function describeError(error: unknown): string {
 /* Filters                                                                */
 /* --------------------------------------------------------------------- */
 
-type WorkerFilter = "all" | "online" | "offline" | "revoked";
+type WorkerFilter = "all" | "pending" | "approved" | "offline" | "revoked";
 
 const WORKER_FILTERS: readonly { readonly value: WorkerFilter; readonly label: string }[] = [
   { value: "all", label: "All" },
-  { value: "online", label: "Online" },
+  { value: "pending", label: "Pending" },
+  { value: "approved", label: "Approved" },
   { value: "offline", label: "Offline" },
   { value: "revoked", label: "Revoked" },
 ];
@@ -56,19 +61,22 @@ function workerState(worker: WorkerRecord): Exclude<WorkerFilter, "all"> {
   if (worker.revoked) {
     return "revoked";
   }
-  return worker.online ? "online" : "offline";
+  if (worker.approval === "pending") {
+    return "pending";
+  }
+  return worker.online ? "approved" : "offline";
 }
 
 function workerMatchesQuery(worker: WorkerRecord, query: string): boolean {
   if (query === "") {
     return true;
   }
-  const parts: string[] = [worker.workerId];
-  const host = worker.inventory?.host;
+  const parts: string[] = [worker.workerId, worker.approval];
+  const host = worker.host;
   if (host) {
     parts.push(host.os, host.arch, host.deploymentMode);
   }
-  for (const slot of worker.inventory?.slots ?? []) {
+  for (const slot of worker.appliedConfig?.slots ?? []) {
     parts.push(slot.slotId, ...slot.roles);
     for (const capability of slot.capabilities) {
       parts.push(capability.name);
@@ -78,6 +86,13 @@ function workerMatchesQuery(worker: WorkerRecord, query: string): boolean {
     }
   }
   return parts.join(" ").toLowerCase().includes(query);
+}
+
+/** Whether the latest report still waits for an Admin Apply. */
+function applyPending(worker: WorkerRecord): boolean {
+  return (
+    worker.reportedRevision !== null && worker.reportedRevision !== worker.appliedRevision
+  );
 }
 
 /* --------------------------------------------------------------------- */
@@ -127,7 +142,7 @@ function PairingCard({ baseUrl, issued, busy, onCreateEnrollmentCode, onCopyText
         <h2 className="pairing-title">Pair a Worker</h2>
         <p className="pairing-description">
           Issue a single-use code, then run the command once on the new host. The code is shown
-          once and expires automatically.
+          once and expires automatically. A new Worker stays pending until an Admin approves it.
         </p>
       </div>
 
@@ -213,13 +228,15 @@ interface KpiStripProps {
   readonly registered: number;
   readonly online: number;
   readonly offline: number;
+  readonly pending: number;
   readonly activeDeliveries: number;
 }
 
-function KpiStrip({ registered, online, offline, activeDeliveries }: KpiStripProps) {
+function KpiStrip({ registered, online, offline, pending, activeDeliveries }: KpiStripProps) {
   const cells: readonly { readonly label: string; readonly value: number }[] = [
     { label: "Registered", value: registered },
     { label: "Online", value: online },
+    { label: "Awaiting approval", value: pending },
     { label: "Offline", value: offline },
     { label: "Active Deliveries", value: activeDeliveries },
   ];
@@ -239,16 +256,14 @@ function KpiStrip({ registered, online, offline, activeDeliveries }: KpiStripPro
 /* Slots                                                                  */
 /* --------------------------------------------------------------------- */
 
-function SlotTable({ worker }: { readonly worker: WorkerRecord }) {
-  const slots = worker.inventory?.slots ?? [];
+function SlotTable({ slots }: { readonly slots: readonly SlotInventory[] }) {
   if (slots.length === 0) {
     return <p className="detail-empty">No Slots reported yet.</p>;
   }
   return (
     <table className="slot-table">
       <caption className="visually-hidden">
-        Reported Slots for {worker.workerId}: enabled state, advisory capacity, roles,
-        capabilities, and executors
+        Applied Slots: enabled state, advisory capacity, roles, capabilities, and executors
       </caption>
       <thead>
         <tr>
@@ -309,23 +324,98 @@ function SlotTable({ worker }: { readonly worker: WorkerRecord }) {
 }
 
 /* --------------------------------------------------------------------- */
+/* Snapshot review                                                        */
+/* --------------------------------------------------------------------- */
+
+interface ConfigReviewProps {
+  readonly worker: WorkerRecord;
+  readonly reported: WorkerSchedulingConfig | null;
+}
+
+/** Compare what the Worker reports with what the Hub schedules, field by field. */
+function ConfigReview({ worker, reported }: ConfigReviewProps) {
+  const reportedSlots = reported?.slots ?? [];
+  const appliedSlots = worker.appliedConfig?.slots ?? [];
+  const offered = reportedSlots.filter(
+    (slot) => !appliedSlots.some((applied) => applied.slotId === slot.slotId),
+  );
+  const withdrawn = appliedSlots.filter(
+    (slot) => !reportedSlots.some((reviewed) => reviewed.slotId === slot.slotId),
+  );
+  const changed = reportedSlots.filter((slot) => {
+    const applied = appliedSlots.find((candidate) => candidate.slotId === slot.slotId);
+    return applied !== undefined && JSON.stringify(applied) !== JSON.stringify(slot);
+  });
+  const differences = [
+    ...offered.map((slot) => `new Slot ${slot.slotId}`),
+    ...withdrawn.map((slot) => `removed Slot ${slot.slotId}`),
+    ...changed.map((slot) => `changed Slot ${slot.slotId}`),
+  ];
+
+  if (worker.reportedRevision === null) {
+    return <p className="detail-empty">No scheduling inventory reported yet.</p>;
+  }
+
+  return (
+    <div className="config-review">
+      <div className="config-review-grid">
+        <section aria-label="Reported scheduling inventory">
+          <h3 className="config-review-title">
+            Reported <span className="tabular">rev {worker.reportedRevision}</span>
+          </h3>
+          <SlotTable slots={reportedSlots} />
+        </section>
+        <section aria-label="Applied scheduling inventory">
+          <h3 className="config-review-title">
+            Applied{" "}
+            <span className="tabular">
+              {worker.appliedRevision === null ? "none" : `rev ${worker.appliedRevision}`}
+            </span>
+          </h3>
+          <SlotTable slots={appliedSlots} />
+        </section>
+      </div>
+      <p className="config-diff" data-empty={differences.length === 0}>
+        {differences.length === 0 ? "No field differences." : differences.join(" · ")}
+      </p>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------- */
 /* Worker card                                                            */
 /* --------------------------------------------------------------------- */
 
 interface WorkerCardProps {
   readonly worker: WorkerRecord;
+  readonly reported: WorkerSchedulingConfig | null;
+  readonly onLoadReported: (workerId: string) => Promise<void>;
+  readonly onApproveWorker: (workerId: string) => Promise<void>;
+  readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
   readonly onRevokeWorker: (workerId: string) => Promise<void>;
+  readonly onOpenPairing: () => void;
   readonly onCopyText: (label: string, text: string) => void;
 }
 
-type PendingAction = "rotate" | "revoke" | null;
+type PendingAction = "rotate" | "revoke" | "apply" | null;
 
-function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: WorkerCardProps) {
+function WorkerCard({
+  worker,
+  reported,
+  onLoadReported,
+  onApproveWorker,
+  onApplyWorkerConfig,
+  onRotateWorker,
+  onRevokeWorker,
+  onOpenPairing,
+  onCopyText,
+}: WorkerCardProps) {
   const [pending, setPending] = useState<PendingAction>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rotatedCredential, setRotatedCredential] = useState<string | null>(null);
+  const [reviewedRevision, setReviewedRevision] = useState<number | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -335,7 +425,40 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
     };
   }, []);
 
-  const host = worker.inventory?.host ?? null;
+  const host = worker.host;
+  const pendingApply = applyPending(worker);
+
+  // Load the report under review whenever the snapshot says one is pending.
+  useEffect(() => {
+    if (!pendingApply) {
+      return;
+    }
+    void onLoadReported(worker.workerId).catch(() => {
+      // The card shows the pending state; the Apply button stays disabled without a report.
+    });
+  }, [onLoadReported, pendingApply, worker.reportedRevision, worker.workerId]);
+
+  const action = useCallback(
+    async (operation: () => Promise<void>): Promise<void> => {
+      setBusy(true);
+      setError(null);
+      try {
+        await operation();
+        if (mountedRef.current) {
+          setPending(null);
+        }
+      } catch (actionError) {
+        if (mountedRef.current) {
+          setError(describeError(actionError));
+        }
+      } finally {
+        if (mountedRef.current) {
+          setBusy(false);
+        }
+      }
+    },
+    [],
+  );
 
   const rotate = useCallback(async (): Promise<void> => {
     setBusy(true);
@@ -377,13 +500,106 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
     }
   }, [onRevokeWorker, worker.workerId]);
 
+  /** Open Apply only after the Hub supplied the report the Admin is reviewing. */
+  const beginApply = useCallback(async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onLoadReported(worker.workerId);
+      if (mountedRef.current) {
+        setReviewedRevision(worker.reportedRevision);
+        setPending("apply");
+      }
+    } catch (loadError) {
+      if (mountedRef.current) {
+        setError(describeError(loadError));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setBusy(false);
+      }
+    }
+  }, [onLoadReported, worker.reportedRevision, worker.workerId]);
+
+  const applyRevision = useCallback(async (): Promise<void> => {
+    if (reviewedRevision === null) {
+      return;
+    }
+    await action(async () => {
+      await onApplyWorkerConfig(worker.workerId, reviewedRevision);
+      setReviewedRevision(null);
+    });
+  }, [action, onApplyWorkerConfig, reviewedRevision, worker.workerId]);
+
+  const canApprove = !worker.revoked && worker.approval === "pending";
+
   return (
     <article className="worker-card" data-worker-id={worker.workerId}>
       <header className="worker-card-header">
-        <WorkerStatusBadge online={worker.online} revoked={worker.revoked} />
+        <WorkerStatusBadge
+          online={worker.online}
+          revoked={worker.revoked}
+          approval={worker.approval}
+        />
         <span className="worker-id mono">{worker.workerId}</span>
-        {worker.revoked ? null : (
+        {worker.revoked ? (
+          <button type="button" className="button button-sm" onClick={onOpenPairing}>
+            Pair again
+          </button>
+        ) : (
           <span className="worker-actions">
+            {canApprove ? (
+              <button
+                type="button"
+                className="button button-sm"
+                aria-label={`Approve ${worker.workerId}`}
+                disabled={busy}
+                onClick={() => {
+                  void action(() => onApproveWorker(worker.workerId));
+                }}
+              >
+                Approve
+              </button>
+            ) : null}
+            {pendingApply || pending === "apply" ? (
+              pending === "apply" ? (
+                <>
+                  <button
+                    type="button"
+                    className="button button-sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setPending(null);
+                      setReviewedRevision(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-sm button-primary"
+                    aria-busy={busy ? "true" : undefined}
+                    disabled={busy || reviewedRevision === null}
+                    onClick={() => {
+                      void applyRevision();
+                    }}
+                  >
+                    {busy ? "Applying…" : `Apply revision ${reviewedRevision ?? "?"}`}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="button button-sm"
+                  disabled={busy}
+                  onClick={() => {
+                    void beginApply();
+                  }}
+                >
+                  Review &amp; apply
+                </button>
+              )
+            ) : null}
             {pending === "rotate" ? (
               <>
                 <button
@@ -462,7 +678,7 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
         <div className="alert alert-error" role="alert">
           <span>
             Revoking disconnects this Worker immediately and its stored credential stops working.
-            This cannot be undone; enroll the host again to reconnect.
+            This cannot be undone; pair the host again to reconnect.
           </span>
         </div>
       ) : null}
@@ -492,7 +708,31 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
         </div>
       ) : null}
 
+      {worker.approval === "pending" ? (
+        <div className="alert alert-info" role="status">
+          <span>
+            Pending approval: this Worker is connected and reporting, but the Hub schedules no
+            work to it until an Admin approves it.
+          </span>
+        </div>
+      ) : null}
+
       <div className="worker-meta">
+        <span>
+          approval <strong>{worker.approval}</strong>
+        </span>
+        <span>
+          reported{" "}
+          <strong className="tabular">
+            {worker.reportedRevision === null ? "—" : worker.reportedRevision}
+          </strong>
+        </span>
+        <span>
+          applied{" "}
+          <strong className="tabular">
+            {worker.appliedRevision === null ? "—" : worker.appliedRevision}
+          </strong>
+        </span>
         <span>
           epoch <strong className="tabular">{worker.connectionEpoch}</strong>
         </span>
@@ -511,7 +751,11 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
         )}
       </div>
 
-      <SlotTable worker={worker} />
+      {applyPending(worker) ? (
+        <ConfigReview worker={worker} reported={reported} />
+      ) : (
+        <SlotTable slots={worker.appliedConfig?.slots ?? []} />
+      )}
     </article>
   );
 }
@@ -523,19 +767,35 @@ function WorkerCard({ worker, onRotateWorker, onRevokeWorker, onCopyText }: Work
 export interface WorkersViewProps {
   readonly baseUrl: string;
   readonly workers: readonly WorkerRecord[];
+  readonly reported: Readonly<Record<string, WorkerSchedulingConfig | null>>;
   readonly issued: CreateEnrollmentCodeResponse | null;
   readonly busy: boolean;
   readonly onCreateEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
   ) => Promise<void>;
+  readonly onLoadReported: (workerId: string) => Promise<void>;
+  readonly onApproveWorker: (workerId: string) => Promise<void>;
+  readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
   readonly onRevokeWorker: (workerId: string) => Promise<void>;
+  readonly onOpenPairing: () => void;
   readonly onCopyText: (label: string, text: string) => void;
 }
 
 export function WorkersView(props: WorkersViewProps) {
-  const { baseUrl, workers, onCreateEnrollmentCode, onRotateWorker, onRevokeWorker, onCopyText } =
-    props;
+  const {
+    baseUrl,
+    workers,
+    reported,
+    onCreateEnrollmentCode,
+    onLoadReported,
+    onApproveWorker,
+    onApplyWorkerConfig,
+    onRotateWorker,
+    onRevokeWorker,
+    onOpenPairing,
+    onCopyText,
+  } = props;
 
   const [filter, setFilter] = useState<WorkerFilter>("all");
   const [query, setQuery] = useState("");
@@ -552,8 +812,13 @@ export function WorkersView(props: WorkersViewProps) {
     [workers, filter, trimmedQuery],
   );
 
-  const online = workers.filter((worker) => !worker.revoked && worker.online).length;
-  const offline = workers.filter((worker) => !worker.revoked && !worker.online).length;
+  const online = workers.filter(
+    (worker) => !worker.revoked && worker.approval === "approved" && worker.online,
+  ).length;
+  const offline = workers.filter(
+    (worker) => !worker.revoked && worker.approval === "approved" && !worker.online,
+  ).length;
+  const pending = workers.filter((worker) => !worker.revoked && worker.approval === "pending").length;
   const activeDeliveries = workers.reduce((total, worker) => total + worker.activeDeliveries, 0);
 
   return (
@@ -571,6 +836,7 @@ export function WorkersView(props: WorkersViewProps) {
           registered={workers.length}
           online={online}
           offline={offline}
+          pending={pending}
           activeDeliveries={activeDeliveries}
         />
 
@@ -627,8 +893,13 @@ export function WorkersView(props: WorkersViewProps) {
               <WorkerCard
                 key={worker.workerId}
                 worker={worker}
+                reported={reported[worker.workerId] ?? null}
+                onLoadReported={onLoadReported}
+                onApproveWorker={onApproveWorker}
+                onApplyWorkerConfig={onApplyWorkerConfig}
                 onRotateWorker={onRotateWorker}
                 onRevokeWorker={onRevokeWorker}
+                onOpenPairing={onOpenPairing}
                 onCopyText={onCopyText}
               />
             ))}

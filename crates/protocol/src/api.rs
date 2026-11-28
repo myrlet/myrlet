@@ -180,12 +180,15 @@ pub struct EligibilityResponse {
     pub tasks: Vec<TaskEligibility>,
 }
 
-/// `GET /v1/workers/{id}` detail: inventory plus the next claimable Task IDs.
+/// `GET /v1/workers/{id}` detail: applied inventory plus the reported snapshot under review
+/// and the next claimable Task IDs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerDetail {
     pub worker: SnapshotWorker,
-    /// Claimable Task IDs that this Worker's advertised Slots could run, oldest first.
+    /// The latest accepted scheduling report; the applied snapshot lives on `worker`.
+    pub reported_config: Option<crate::trust::WorkerSchedulingConfig>,
+    /// Claimable Task IDs that this Worker's applied Slots could run, oldest first.
     #[serde(default)]
     pub claimable_task_ids: Vec<TaskId>,
 }

@@ -155,7 +155,7 @@ impl HubStore {
             .await
     }
 
-    /// Oldest claimable Task IDs for one Worker's advertised Slots.
+    /// Oldest claimable Task IDs for one Worker's applied Slots.
     pub async fn claimable_for_worker(
         &self,
         worker_id: WorkerId,
@@ -165,7 +165,13 @@ impl HubStore {
         self.db
             .call(move |conn| {
                 let worker = crate::inventory::get_worker(conn, &worker_id, &online_map)?;
-                reads::claimable_for_worker(conn, worker.inventory.as_ref(), limit)
+                let admissible = worker.approval == myrlet_protocol::WorkerApprovalStatus::Approved
+                    && worker.applied_revision.is_some()
+                    && worker.applied_revision == worker.reported_revision;
+                if !admissible {
+                    return Ok(Vec::new());
+                }
+                reads::claimable_for_worker(conn, worker.applied_config.as_ref(), limit)
             })
             .await
     }

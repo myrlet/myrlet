@@ -200,6 +200,26 @@ pub async fn execute<W: Write>(
             client.revoke_worker(&worker_id).await.map_err(runtime)?;
             render(output::revoked(stdout, &worker_id, json))
         }
+        Command::WorkersApprove { id } => {
+            let worker_id = myrlet_protocol::WorkerId::new(id);
+            client.approve_worker(&worker_id).await.map_err(runtime)?;
+            render(output::approved(stdout, &worker_id, json))
+        }
+        Command::WorkersConfigShow { id } => {
+            let detail = client
+                .get_worker(&myrlet_protocol::WorkerId::new(id))
+                .await
+                .map_err(runtime)?;
+            render(output::worker_config(stdout, &detail, json))
+        }
+        Command::WorkersConfigApply { id, revision } => {
+            let worker_id = myrlet_protocol::WorkerId::new(id);
+            let response = client
+                .apply_worker_config(&worker_id, revision)
+                .await
+                .map_err(runtime)?;
+            render(output::config_applied(stdout, &worker_id, &response, json))
+        }
         Command::EventsWatch { cursor, limit } => watch(&client, cursor, limit, json, stdout).await,
         Command::Done { .. }
         | Command::ResultCheck { .. }

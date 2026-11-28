@@ -30,14 +30,24 @@ function shortId(id: string): string {
 }
 
 function workerHostLabel(worker: WorkerRecord): string {
-  if (worker.inventory === null) {
+  if (worker.host === null) {
     return "Inventory not reported";
   }
-  return `${worker.inventory.host.os} · ${worker.inventory.host.arch}`;
+  return `${worker.host.os} · ${worker.host.arch}`;
 }
 
 function isOnline(worker: WorkerRecord): boolean {
-  return worker.online && !worker.revoked;
+  return worker.online && !worker.revoked && worker.approval === "approved";
+}
+
+function workerStateLabel(worker: WorkerRecord): string {
+  if (worker.revoked) {
+    return "revoked";
+  }
+  if (worker.approval === "pending") {
+    return "awaiting approval";
+  }
+  return worker.online ? "online" : "offline";
 }
 
 interface StatCellProps {
@@ -183,9 +193,7 @@ export function WorkspaceInspector(props: WorkspaceInspectorProps) {
                       className="inspector-worker"
                       onClick={onOpenWorkers}
                       title={`Open Workers — ${worker.workerId}`}
-                      aria-label={`Worker ${worker.workerId}, ${
-                        worker.revoked ? "revoked" : online ? "online" : "offline"
-                      }, ${worker.activeDeliveries} active deliveries`}
+                      aria-label={`Worker ${worker.workerId}, ${workerStateLabel(worker)}, ${worker.activeDeliveries} active deliveries`}
                     >
                       <span
                         className="connection-dot"

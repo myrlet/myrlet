@@ -169,13 +169,14 @@ function workerRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     workerId: "wkr_00000000000a",
     online: true,
     revoked: false,
+    approval: "approved",
     connectionEpoch: 4,
     lastSeenAtMs: Date.now(),
     activeDeliveries: 1,
-    inventory: {
-      revision: 2,
-      observedAtMs: 1_700_000_000_000,
-      host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    reportedRevision: 2,
+    appliedRevision: 2,
+    appliedConfig: {
       slots: [
         {
           slotId: "mac-default",
@@ -513,6 +514,9 @@ describe("App workspace flow", () => {
       if (path.startsWith("/v1/snapshot")) {
         return jsonResponse(buildSnapshot());
       }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse({ requireWorkerApproval: true, requireConfigurationApply: true });
+      }
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });
       }
@@ -772,6 +776,9 @@ describe("App workspace flow", () => {
       }
       if (path.startsWith("/v1/snapshot")) {
         return jsonResponse(buildSnapshot());
+      }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse({ requireWorkerApproval: true, requireConfigurationApply: true });
       }
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });
@@ -1228,6 +1235,9 @@ describe("App workspace flow", () => {
       if (path.startsWith("/v1/snapshot")) {
         return jsonResponse(buildSnapshot());
       }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse({ requireWorkerApproval: true, requireConfigurationApply: true });
+      }
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });
       }
@@ -1308,6 +1318,9 @@ describe("App workspace flow", () => {
       }
       if (path.startsWith("/v1/snapshot")) {
         return jsonResponse(buildSnapshot());
+      }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse({ requireWorkerApproval: true, requireConfigurationApply: true });
       }
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });

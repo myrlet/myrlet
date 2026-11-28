@@ -63,6 +63,42 @@ worker check-config
 worker
 ```
 
+### 3. Approve the Worker and Apply its Inventory
+
+The Hub starts with both **Security & Trust** policies on. A newly paired Worker is
+`pending`: it connects, reports inventory, and can read, but it **claims nothing** until an
+Admin approves it, and its first scheduling report takes effect only after an explicit
+Apply.
+
+```bash
+myrlet --json workers list                        # find approval + reportedRevision
+myrlet --json workers config show '<worker-id>'   # inspect both snapshots
+myrlet --json workers approve '<worker-id>'
+myrlet --json workers config apply '<worker-id>' --revision '<reportedRevision>'
+```
+
+Approval and Apply may happen in either order. Rotation keeps both decisions; revoking a
+Worker and re-pairing the same ID starts a fresh approval and clears both snapshots. Apply
+answers `409 NoPendingConfig` when nothing awaits review and `409 ConfigRevisionMismatch`
+when a newer report arrived — re-read the Worker before retrying. Neither change can
+retroactively alter a Worker that is already approved or a committed Delivery.
+
+The same operations live in the Web UI: the Workers page filters pending Workers, shows
+both snapshots field by field, and submits the revision the Admin actually viewed. Web
+**Settings → Security & Trust** edits the two Hub-wide policies independently. A settings
+write applies to the next Pair or inventory report; it never changes an existing decision
+or a pending report. The policies have no CLI settings command — use the Web UI or
+`GET`/`PATCH /v1/settings/security-trust`.
+
+### Worker Configuration Reload
+
+The Worker watches `worker.yaml`. An invalid edit is rejected locally and the last valid
+runtime configuration stays active. A valid scheduling change pauses new claims, swaps the
+adapters, reports the new inventory, and resumes once the Hub acknowledges it. Existing
+Deliveries keep the adapter and reporting path that admitted them, so a reload never
+strands a running execution. Apply never writes `worker.yaml`, installs a Harness, or
+restarts one.
+
 ### Worker TLS (`wss://`)
 
 `wss://` always verifies the Hub TLS certificate chain and hostname (never disabled). Mozilla public CA roots work out of the box; for a private CA, set `MYRLET_HUB_CA_FILE=/etc/myrlet/hub-ca.pem` to trust your private CA bundle. Plaintext `ws://` is for loopback or private container networks only.
@@ -113,6 +149,24 @@ docker run --rm \
 ```
 
 Set `MYRLET_HUB_UI=false` on the `hub` or `myrlet` image to serve the API only.
+
+The all-in-one image starts the Hub with both Security & Trust policies on, exactly like
+the other images. After it auto-pairs its local Worker, the container entrypoint approves
+that Worker and applies its reported inventory through the same Admin CLI an operator
+would use, so a fresh container schedules work without manual steps. If the local Worker
+does not report within the startup window, the container logs a warning and continues with
+the Worker pending; approve it later as described above. The default local `slotId` is
+`local`, and its single `process` Executor writes one Progress line so a first Task visibly
+completes.
+
+### Readiness and Health
+
+`GET /health` (also `/v1/health`) is the unauthenticated liveness probe used by the
+all-in-one entrypoint and container health checks; it answers once the Hub is serving.
+Readiness for scheduling is a separate, explicit fact: a Worker appears in
+`GET /v1/workers` with `online: true`, `approval: "approved"`, and matching
+`reportedRevision` / `appliedRevision`. A Worker whose revisions differ is healthy but not
+yet scheduling; it will claim nothing until an Admin applies the reviewed revision.
 
 Published by [`.github/workflows/docker.yml`](../../.github/workflows/docker.yml) on `main` (tag `edge` + `sha-*`), on `v*` tags (`latest` + semver), and on `workflow_dispatch`. Pull requests build with `push: false` to verify the Dockerfile. Bind-mount data dirs with the `10001` owner so state stays readable/writable, and keep Hub/Workers on the same release per the rollback rules below.
 

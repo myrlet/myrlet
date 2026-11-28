@@ -4,7 +4,13 @@
 //! replayed claim reply never runs twice, a post-registration submit failure stays
 //! unreported, no terminal verdict is ever fabricated, and no Harness-owned file is ever
 //! written here.
+//!
+//! `worker.yaml` is watched locally. A valid scheduling change pauses new claims, swaps the
+//! adapters, reports the new inventory, and resumes once the Hub acknowledges it. Every
+//! committed Delivery keeps the adapter that admitted it, so a config change never loses a
+//! running execution, its cancellation path, or its reporting path.
 
+mod config_watch;
 mod deliveries;
 mod local;
 mod reports;
@@ -12,7 +18,7 @@ mod session;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use myrlet_protocol::inventory::WorkerInventory;
@@ -43,26 +49,60 @@ impl WorkerRuntime {
     pub const CLAIM_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 }
 
-struct RuntimeCore {
-    home: MyrletHome,
-    config: WorkerConfig,
-    creds: WorkerCredentials,
-    inventory: WorkerInventory,
-    adapters: HashMap<(SlotId, ExecutorId), Arc<dyn ExecutorAdapter>>,
-    registry: Arc<LocalRegistry>,
-    reporter: Arc<HubReporter>,
-    tls: Arc<rustls::ClientConfig>,
+/// The live, reloadable half of the runtime: current config, reported inventory, adapters.
+pub(super) struct RuntimeState {
+    pub(super) config: WorkerConfig,
+    pub(super) inventory: WorkerInventory,
+    pub(super) adapters: HashMap<(SlotId, ExecutorId), Arc<dyn ExecutorAdapter>>,
+}
+
+/// Adapters pinned when a Claim is sent, before a possible reload.
+pub(super) struct ClaimAdapters {
+    pub(super) default: Option<ExecutorId>,
+    pub(super) adapters: HashMap<ExecutorId, Arc<dyn ExecutorAdapter>>,
+}
+
+impl ClaimAdapters {
+    pub(super) fn executor_id(&self) -> Option<ExecutorId> {
+        self.default.clone()
+    }
+
+    pub(super) fn get(&self, executor_id: &ExecutorId) -> Option<Arc<dyn ExecutorAdapter>> {
+        self.adapters.get(executor_id).cloned()
+    }
+}
+
+pub(super) struct RuntimeCore {
+    pub(super) home: MyrletHome,
+    pub(super) state: RwLock<RuntimeState>,
+    pub(super) creds: WorkerCredentials,
+    pub(super) registry: Arc<LocalRegistry>,
+    pub(super) reporter: Arc<HubReporter>,
+    pub(super) tls: Arc<rustls::ClientConfig>,
     /// Current non-zero `connectionEpoch`; `0` marks "no live session".
     epoch: AtomicU64,
     reconnect: Notify,
+    /// Signals the session to send the current inventory after a local reload.
+    pub(super) inventory_changed: Notify,
+    /// While set, no new claim is started; a report already in flight still completes.
+    pub(super) claims_paused: AtomicBool,
+    /// A locally reloaded inventory still awaits a Hub acknowledgement.
+    pub(super) inventory_pending: AtomicBool,
     shutting_down: AtomicBool,
     /// Serializes local registry read-modify-write cycles.
     gate: Mutex<()>,
     /// One async lock per Delivery, so a poll, exit, resync, or manual sync of the same
     /// Delivery never overtakes another. In memory only; a restart re-reads the Registry.
     reconciliation: Mutex<HashMap<DeliveryId, Arc<tokio::sync::Mutex<()>>>>,
+    /// The adapter that admitted each committed Delivery, so a config swap never strands
+    /// an execution's cancellation or reporting path.
+    pub(super) delivery_adapters: Mutex<HashMap<DeliveryId, Arc<dyn ExecutorAdapter>>>,
     /// The session retries its single outstanding claim after an ambiguous response.
     pending_claim: Mutex<Option<ClaimTaskRequest>>,
+    /// A claim HTTP request is outstanding, even though the session selected its Slot.
+    pub(super) claim_in_flight: AtomicBool,
+    /// The adapter selected with the outstanding claim, retained across a config reload.
+    pub(super) pending_adapters: Mutex<Option<ClaimAdapters>>,
     on_exit: UnboundedSender<HandlingEnded>,
     on_exit_rx: Mutex<Option<UnboundedReceiver<HandlingEnded>>>,
 }
@@ -90,19 +130,27 @@ impl WorkerRuntime {
         Ok(Self {
             core: Arc::new(RuntimeCore {
                 home,
-                config,
+                state: RwLock::new(RuntimeState {
+                    config,
+                    inventory,
+                    adapters,
+                }),
                 creds: credentials,
-                inventory,
-                adapters,
                 registry: Arc::new(registry),
                 reporter: Arc::new(reporter),
                 tls: tls_config,
                 epoch: AtomicU64::new(0),
                 reconnect: Notify::new(),
+                inventory_changed: Notify::new(),
+                claims_paused: AtomicBool::new(false),
+                inventory_pending: AtomicBool::new(false),
                 shutting_down: AtomicBool::new(false),
                 gate: Mutex::new(()),
                 reconciliation: Mutex::new(HashMap::new()),
+                delivery_adapters: Mutex::new(HashMap::new()),
                 pending_claim: Mutex::new(None),
+                claim_in_flight: AtomicBool::new(false),
+                pending_adapters: Mutex::new(None),
                 on_exit,
                 on_exit_rx: Mutex::new(Some(on_exit_rx)),
             }),
@@ -120,10 +168,15 @@ impl WorkerRuntime {
             let core = Arc::clone(&self.core);
             async move { local::serve(core, &socket_path).await }
         });
+        let watcher = tokio::spawn({
+            let core = Arc::clone(&self.core);
+            async move { core.watch_config().await }
+        });
         let result = self.core.connect_loop(&mut shutdown).await;
         if result.is_ok() {
             self.core.drain().await;
         }
+        watcher.abort();
         control.abort();
         exit_task.abort();
         report_task.abort();
@@ -132,7 +185,7 @@ impl WorkerRuntime {
 
     /// Operator-configured graceful shutdown drain bound.
     pub fn shutdown_timeout_ms(&self) -> u64 {
-        self.core.config.shutdown_timeout_ms()
+        self.core.shutdown_timeout_ms()
     }
 }
 
@@ -167,6 +220,25 @@ pub async fn wait_for_shutdown_signal() {
 }
 
 impl RuntimeCore {
+    /// The live config/inventory/adapters. Callers never hold this guard across an await.
+    pub(super) fn state(&self) -> std::sync::RwLockReadGuard<'_, RuntimeState> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn inventory(&self) -> WorkerInventory {
+        self.state().inventory.clone()
+    }
+
+    pub(super) fn hub_url(&self) -> String {
+        self.state().config.hub_url.clone()
+    }
+
+    pub(super) fn shutdown_timeout_ms(&self) -> u64 {
+        self.state().config.shutdown_timeout_ms()
+    }
+
     /// The live connection epoch, or `0` when no session is established.
     pub(super) fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::SeqCst)
@@ -214,6 +286,8 @@ pub enum RuntimeError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Report(#[from] crate::reporting::ReportError),
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
     #[error("hub.welcome named worker {reported} but this Worker is {expected}")]
     WorkerMismatch {
         reported: WorkerId,

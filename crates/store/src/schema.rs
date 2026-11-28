@@ -1,4 +1,4 @@
-//! Hub SQLite schema: seven tables, the query indexes, and no triggers.
+//! Hub SQLite schema: eight tables, the query indexes, no triggers, and one settings row.
 
 use rusqlite::Connection;
 
@@ -51,13 +51,28 @@ CREATE TABLE IF NOT EXISTS workers (
     worker_id          TEXT PRIMARY KEY NOT NULL,
     token_sha256       TEXT NOT NULL,
     revoked            INTEGER NOT NULL DEFAULT 0,
+    approval           TEXT NOT NULL DEFAULT 'pending',
     connection_epoch   INTEGER NOT NULL DEFAULT 0,
     inventory_revision INTEGER NOT NULL DEFAULT 0,
     inventory_json     TEXT,
+    reported_revision  INTEGER,
+    reported_config_json TEXT,
+    applied_revision   INTEGER,
+    applied_config_json  TEXT,
+    revision_high_water INTEGER NOT NULL DEFAULT 0,
     last_seen_at_ms    INTEGER,
     created_at_ms      INTEGER NOT NULL,
     rotated_at_ms      INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS hub_settings (
+    singleton                     INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+    require_worker_approval       INTEGER NOT NULL,
+    require_configuration_apply   INTEGER NOT NULL
+);
+
+INSERT OR IGNORE INTO hub_settings (singleton, require_worker_approval, require_configuration_apply)
+VALUES (1, 1, 1);
 
 CREATE TABLE IF NOT EXISTS enrollment_codes (
     code_sha256         TEXT PRIMARY KEY NOT NULL,

@@ -63,7 +63,12 @@ function shortId(id: string): string {
 }
 
 function isWorkerOnline(worker: WorkerRecord | undefined): boolean {
-  return worker !== undefined && worker.online && !worker.revoked;
+  return (
+    worker !== undefined &&
+    worker.online &&
+    !worker.revoked &&
+    worker.approval === "approved"
+  );
 }
 
 /**

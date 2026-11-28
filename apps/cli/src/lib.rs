@@ -29,8 +29,9 @@ Hub reads (Owner or Worker credential):
   tasks list [--limit <n>]                 Bounded newest-first Task summaries
   tasks show <id>                          One Task with its Delivery and Result
   tasks tree <id> [--direction ancestors|descendants] [--max-depth <n>] [--limit <n>]
-  workers list                             Enrolled Workers and connectivity
-  workers show <id>                        One Worker, inventory, and claimable Tasks
+  workers list                             Enrolled Workers, approval, and revisions
+  workers show <id>                        One Worker, approval, inventory, and claimable Tasks
+  workers config show <id>                 Both scheduling snapshots under review
   events watch [--cursor <seq>] [--limit <n>]
 
 Owner writes (Admin credential):
@@ -40,6 +41,8 @@ Owner writes (Admin credential):
   tasks update <id> --expected-version <n> [--depends-on <id>]... [--idempotency-key <k>]
   tasks cancel <id> [--expected-version <n>] [--reason <text>]
   tasks finish <id> [--expected-version <n>]   Coordination-only Task with no Delivery
+  workers approve <id>                     Admit a pending Worker to scheduling
+  workers config apply <id> --revision <n> Apply the reported scheduling revision
 
 Execution-local (no Hub credential; uses the local Worker control socket):
   done <delivery-id>                       Harness finished its work

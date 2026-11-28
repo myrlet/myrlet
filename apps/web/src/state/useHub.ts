@@ -22,8 +22,11 @@ import type {
   CreateEnrollmentCodeResponse,
   GlobalSnapshot,
   HubEventEnvelope,
+  SecurityTrustSettings,
   SnapshotTaskSummary,
+  UpdateSecurityTrustRequest,
   WorkerRecord,
+  WorkerSchedulingConfig,
 } from "../api/types";
 import { useTaskDetail } from "./useTaskDetail";
 
@@ -100,6 +103,11 @@ export function useHub() {
   const [snapshot, setSnapshot] = useState<GlobalSnapshot | null>(null);
   const [eventCursor, setEventCursor] = useState(0);
   const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
+  /** Latest reported scheduling snapshot per Worker, for review before Apply. */
+  const [reportedConfigs, setReportedConfigs] = useState<
+    Readonly<Record<string, WorkerSchedulingConfig | null>>
+  >({});
+  const [settings, setSettings] = useState<SecurityTrustSettings | null>(null);
 
   const clientRef = useRef<HubClient | null>(null);
   const streamRef = useRef<AbortController | null>(null);
@@ -123,6 +131,8 @@ export function useHub() {
     setSnapshot(null);
     setEventCursor(0);
     setLastSyncedAtMs(null);
+    setReportedConfigs({});
+    setSettings(null);
   }, []);
 
   /**
@@ -185,6 +195,15 @@ export function useHub() {
           return false;
         }
         applySnapshot(next);
+        // The policies are session-wide facts; a read failure leaves the last pair visible.
+        try {
+          const stored = await client.getSecurityTrust();
+          if (clientRef.current === client) {
+            setSettings(stored);
+          }
+        } catch {
+          // Keep the previous policies; the next refresh retries.
+        }
         return true;
       } catch (reloadError) {
         if (clientRef.current !== client) {
@@ -346,6 +365,14 @@ export function useHub() {
           return false;
         }
         applySnapshot(initial);
+        try {
+          const stored = await client.getSecurityTrust();
+          if (clientRef.current === client) {
+            setSettings(stored);
+          }
+        } catch {
+          // The connection itself succeeded; policies refresh with the next Snapshot.
+        }
         setSession({ baseUrl: client.baseUrl });
         setConnection("connected");
         startEventLoop(client);
@@ -423,6 +450,53 @@ export function useHub() {
     [mutate],
   );
 
+  const approveWorker = useCallback(
+    (workerId: string) => mutate((client) => client.approveWorker(workerId)),
+    [mutate],
+  );
+
+  /** Apply exactly the revision the Admin reviewed, then refresh both sides. */
+  const applyWorkerConfig = useCallback(
+    (workerId: string, revision: number) =>
+      mutate((client) => client.applyWorkerConfig(workerId, revision)),
+    [mutate],
+  );
+
+  /** Read one Worker's latest reported snapshot for display before an Apply. */
+  const loadReportedConfig = useCallback(
+    async (workerId: string): Promise<void> => {
+      const client = getClient();
+      try {
+        const detail = await client.getWorker(workerId);
+        if (clientRef.current === client) {
+          setReportedConfigs((current) => ({
+            ...current,
+            [workerId]: detail.reportedConfig,
+          }));
+        }
+      } catch (loadError) {
+        if (loadError instanceof HubApiError && loadError.status === 401) {
+          failSession(client);
+        }
+        throw loadError;
+      }
+    },
+    [failSession, getClient],
+  );
+
+  /** Merge a Security & Trust patch; the Hub echoes the stored pair. */
+  const updateSecurityTrust = useCallback(
+    (request: UpdateSecurityTrustRequest) =>
+      mutate(async (client) => {
+        const stored = await client.updateSecurityTrust(request);
+        if (clientRef.current === client) {
+          setSettings(stored);
+        }
+        return stored;
+      }),
+    [mutate],
+  );
+
   const tasks = useMemo(
     () => snapshot?.tasks ?? EMPTY_TASKS,
     [snapshot],
@@ -468,5 +542,11 @@ export function useHub() {
     createEnrollmentCode,
     rotateWorker,
     revokeWorker,
+    approveWorker,
+    applyWorkerConfig,
+    loadReportedConfig,
+    reportedConfigs,
+    settings,
+    updateSecurityTrust,
   };
 }

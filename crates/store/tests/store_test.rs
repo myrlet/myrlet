@@ -74,7 +74,30 @@ fn inventory() -> WorkerInventory {
     .unwrap()
 }
 
+/// Pair a Worker, connect it, and clear both default-on approval gates so ordinary
+/// claim tests start from an approved Worker whose reported inventory is applied.
 async fn enrolled(store: &HubStore) -> u64 {
+    let (worker_id, _credential) = paired(store).await;
+    let epoch = store
+        .open_worker_connection(worker_id.clone(), inventory(), T0)
+        .await
+        .unwrap();
+    store.approve_worker(worker_id.clone(), T0).await.unwrap();
+    let reported = store
+        .get_worker(worker_id, HashMap::new())
+        .await
+        .unwrap()
+        .reported_revision
+        .expect("a report exists");
+    store
+        .apply_worker_config(worker(), reported, T0)
+        .await
+        .unwrap();
+    epoch
+}
+
+/// Pair a Worker under the current policies without opening a connection or approving it.
+async fn paired(store: &HubStore) -> (WorkerId, String) {
     let issued = store
         .create_enrollment_code(Some(600), None, T0)
         .await
@@ -84,10 +107,7 @@ async fn enrolled(store: &HubStore) -> u64 {
         .redeem_pairing_code("hub_1".into(), request, T0)
         .await
         .unwrap();
-    store
-        .open_worker_connection(paired.worker_id, inventory(), T0)
-        .await
-        .unwrap()
+    (paired.worker_id, paired.credential)
 }
 
 fn pair_request(enrollment_code: String) -> PairWorkerRequest {

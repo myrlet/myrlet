@@ -5,20 +5,29 @@ use serde_json::Value;
 
 use crate::delivery::DeliveryView;
 use crate::id::{TaskId, WorkerId};
-use crate::inventory::WorkerInventory;
+use crate::inventory::HostFacts;
 use crate::task::{BlockingDependency, SubtreeCounts, TaskStatus};
+use crate::trust::{WorkerApprovalStatus, WorkerSchedulingConfig};
 
-/// One Worker's connectivity and last reported inventory.
+/// One Worker's connectivity, approval, and applied scheduling inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotWorker {
     pub worker_id: WorkerId,
     pub online: bool,
     pub revoked: bool,
+    pub approval: WorkerApprovalStatus,
     pub connection_epoch: u64,
     pub last_seen_at_ms: Option<i64>,
     pub active_deliveries: u64,
-    pub inventory: Option<WorkerInventory>,
+    /// Host facts from the latest accepted report; ordinary telemetry, never a gate.
+    pub host: Option<HostFacts>,
+    /// Hub-assigned revision of the latest accepted report, or `null` before one arrives.
+    pub reported_revision: Option<u64>,
+    /// Hub-assigned revision the Hub uses for Slot matching, or `null` before Apply.
+    pub applied_revision: Option<u64>,
+    /// The scheduling snapshot the Hub uses for Slot matching.
+    pub applied_config: Option<WorkerSchedulingConfig>,
 }
 
 /// Bounded read model of one Task and its current Delivery.
@@ -72,7 +81,7 @@ pub struct HubEventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inventory::{DeploymentMode, HostFacts};
+    use crate::inventory::DeploymentMode;
 
     #[test]
     fn snapshot_serializes_camel_case_and_keeps_null_capacity() {
@@ -86,19 +95,18 @@ mod tests {
                 worker_id: WorkerId::new("wkr_000000000000"),
                 online: true,
                 revoked: false,
+                approval: WorkerApprovalStatus::Approved,
                 connection_epoch: 7,
                 last_seen_at_ms: None,
                 active_deliveries: 0,
-                inventory: Some(WorkerInventory {
-                    revision: 1,
-                    observed_at_ms: 1_764_070_000_000,
-                    host: HostFacts {
-                        os: "linux".into(),
-                        arch: "x86_64".into(),
-                        deployment_mode: DeploymentMode::Native,
-                    },
-                    slots: Vec::new(),
+                host: Some(HostFacts {
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                    deployment_mode: DeploymentMode::Native,
                 }),
+                reported_revision: Some(1),
+                applied_revision: Some(1),
+                applied_config: Some(WorkerSchedulingConfig { slots: Vec::new() }),
             }],
             tasks: Vec::new(),
         };
@@ -108,15 +116,15 @@ mod tests {
         assert_eq!(value["eventCursor"], 41);
         assert_eq!(value["workers"][0]["workerId"], "wkr_000000000000");
         assert_eq!(value["workers"][0]["connectionEpoch"], 7);
+        assert_eq!(value["workers"][0]["approval"], "approved");
+        assert_eq!(value["workers"][0]["reportedRevision"], 1);
+        assert_eq!(value["workers"][0]["appliedRevision"], 1);
         assert!(value["workers"][0]["lastSeenAtMs"].is_null());
-        assert_eq!(
-            value["workers"][0]["inventory"]["host"]["deploymentMode"],
-            "native"
-        );
+        assert_eq!(value["workers"][0]["host"]["deploymentMode"], "native");
 
         let decoded: GlobalSnapshot = serde_json::from_value(value).unwrap();
         assert!(decoded.tasks.is_empty());
-        assert!(decoded.workers[0].inventory.is_some());
+        assert!(decoded.workers[0].applied_config.is_some());
     }
 
     #[test]

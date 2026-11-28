@@ -6,12 +6,54 @@ use myrlet_protocol::{
     CreateEnrollmentCodeResponse, DeliveryId, DeliveryView, FinishReceipt, FinishReportRequest,
     HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, ProgressReceipt,
     ProgressReportRequest, ResultReceipt, ResultReportRequest, RotateWorkerCredentialResponse,
-    SnapshotWorker, TaskCancelledPayload, WorkerDetail, WorkerId, WorkerInventory,
+    SecurityTrustSettings, SnapshotWorker, TaskCancelledPayload, UpdateSecurityTrustRequest,
+    WorkerDetail, WorkerId, WorkerInventory,
 };
 
-use crate::{deliveries, inventory, progress, reports, result, workers, HubStore, StoreError};
+use crate::{
+    deliveries, inventory, progress, reports, result, settings, workers, HubStore, StoreError,
+};
 
 impl HubStore {
+    /// The two Hub-wide Security & Trust policies.
+    pub async fn load_settings(&self) -> Result<SecurityTrustSettings, StoreError> {
+        self.db.call(|conn| settings::load_settings(conn)).await
+    }
+
+    /// Merge a policy patch and return the stored pair.
+    pub async fn update_settings(
+        &self,
+        request: UpdateSecurityTrustRequest,
+        now_ms: i64,
+    ) -> Result<(SecurityTrustSettings, HubEventEnvelope), StoreError> {
+        self.db
+            .call(move |conn| settings::update_settings(conn, &request, now_ms))
+            .await
+    }
+
+    /// Approve a pending Worker; repeating approval is harmless.
+    pub async fn approve_worker(
+        &self,
+        worker_id: WorkerId,
+        now_ms: i64,
+    ) -> Result<HubEventEnvelope, StoreError> {
+        self.db
+            .call(move |conn| workers::approve_worker(conn, &worker_id, now_ms))
+            .await
+    }
+
+    /// Apply a Worker's latest scheduling report at the revision the Admin reviewed.
+    pub async fn apply_worker_config(
+        &self,
+        worker_id: WorkerId,
+        revision: u64,
+        now_ms: i64,
+    ) -> Result<u64, StoreError> {
+        self.db
+            .call(move |conn| inventory::apply_worker_config(conn, &worker_id, revision, now_ms))
+            .await
+    }
+
     pub async fn record_cancellation_report(
         &self,
         worker_id: WorkerId,
@@ -219,12 +261,21 @@ impl HubStore {
         self.db
             .call(move |conn| {
                 let worker = inventory::get_worker(conn, &worker_id, &online_map)?;
-                let claimable_task_ids = crate::reads::claimable_for_worker(
-                    conn,
-                    worker.inventory.as_ref(),
-                    claimable_limit,
-                )?;
+                let claimable_task_ids = if worker.approval
+                    == myrlet_protocol::WorkerApprovalStatus::Approved
+                    && worker.applied_revision.is_some()
+                    && worker.applied_revision == worker.reported_revision
+                {
+                    crate::reads::claimable_for_worker(
+                        conn,
+                        worker.applied_config.as_ref(),
+                        claimable_limit,
+                    )?
+                } else {
+                    Vec::new()
+                };
                 Ok(WorkerDetail {
+                    reported_config: inventory::reported_config(conn, &worker_id)?,
                     worker,
                     claimable_task_ids,
                 })

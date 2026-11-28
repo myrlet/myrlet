@@ -468,6 +468,12 @@ a:hover {
   color: var(--status-cancelled-fg);
 }
 
+.alert-info {
+  background: var(--status-pending-bg);
+  border-color: var(--status-pending-border);
+  color: var(--status-pending-fg);
+}
+
 .tag {
   display: inline-flex;
   align-items: center;
@@ -623,6 +629,12 @@ a:hover {
   color: var(--status-revoked-fg);
   background: var(--status-revoked-bg);
   border-color: var(--status-revoked-border);
+}
+
+.status-badge[data-tone="pending"] {
+  color: var(--status-pending-fg);
+  background: var(--status-pending-bg);
+  border-color: var(--status-pending-border);
 }
 
 .connection-pill,
@@ -1028,6 +1040,60 @@ a:hover {
 
 .settings-menu-item-danger:hover {
   background: var(--status-cancelled-bg);
+  color: var(--status-cancelled-fg);
+}
+
+.settings-trust {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-menu-item[role="menuitemcheckbox"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-switch {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--border-default);
+  transition: var(--transition-colors);
+}
+
+.settings-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+  transition: transform 140ms var(--ease-out);
+}
+
+.settings-switch[data-on="true"] {
+  background: var(--status-online-border);
+}
+
+.settings-switch[data-on="true"]::after {
+  transform: translateX(12px);
+  background: var(--status-online-fg);
+}
+
+.settings-hint {
+  margin: 4px 6px 2px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.settings-hint-error {
   color: var(--status-cancelled-fg);
 }
 
@@ -3617,6 +3683,45 @@ a:hover {
   border-collapse: separate;
   border-spacing: 0;
   border-top: 1px solid var(--border-subtle);
+}
+
+.config-review {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--status-pending-border);
+  border-radius: var(--radius-md);
+  background: var(--bg-well);
+}
+
+.config-review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.config-review-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.config-diff {
+  margin: 0;
+  color: var(--status-pending-fg);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.config-diff[data-empty="true"] {
+  color: var(--text-muted);
 }
 
 .slot-table th {

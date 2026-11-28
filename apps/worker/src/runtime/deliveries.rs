@@ -10,12 +10,15 @@ use myrlet_protocol::{
 };
 use myrlet_worker::{ExecutorAdapter, LocalDeliveryRecord, SubmitRequest};
 
-use super::{RuntimeCore, RuntimeError};
+use super::{ClaimAdapters, RuntimeCore, RuntimeError};
 use crate::wss::HubSink;
 
 impl RuntimeCore {
     pub(super) async fn handle_wakeup(&self, wakeup: HubWakeupPayload) -> Result<(), RuntimeError> {
-        if self.shutting_down.load(Ordering::SeqCst) || self.epoch() == 0 {
+        if self.shutting_down.load(Ordering::SeqCst)
+            || self.epoch() == 0
+            || self.claims_paused.load(Ordering::SeqCst)
+        {
             return Ok(());
         }
         if self
@@ -23,25 +26,66 @@ impl RuntimeCore {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_some()
+            || self.claim_in_flight.load(Ordering::SeqCst)
         {
             return Ok(());
         }
         let busy = self.busy_slots()?;
-        let slot = self.config.slots.iter().find(|slot| {
-            slot.enabled
-                && !slot.executors.is_empty()
-                && wakeup.eligible_slot_ids.contains(&slot.slot_id)
-                && !busy.contains(&slot.slot_id)
-        });
-        let Some(slot) = slot else {
+        let slot_id = {
+            let state = self.state();
+            state
+                .config
+                .slots
+                .iter()
+                .find(|slot| {
+                    slot.enabled
+                        && !slot.executors.is_empty()
+                        && wakeup.eligible_slot_ids.contains(&slot.slot_id)
+                        && !busy.contains(&slot.slot_id)
+                })
+                .map(|slot| slot.slot_id.clone())
+        };
+        let Some(slot_id) = slot_id else {
             return Ok(());
         };
+        // Pin this Slot's adapters before the request leaves. The Hub still resolves the
+        // Task's preferred Executor; the snapshot is used only to admit the returned
+        // Delivery if `worker.yaml` reloads before its response arrives.
+        let adapters = {
+            let state = self.state();
+            let slot = state
+                .config
+                .slots
+                .iter()
+                .find(|slot| slot.slot_id == slot_id)
+                .expect("the selected Slot is in the live config");
+            ClaimAdapters {
+                default: state.config.default_executor(&slot_id),
+                adapters: slot
+                    .executors
+                    .iter()
+                    .filter_map(|executor| {
+                        state
+                            .adapters
+                            .get(&(slot_id.clone(), executor.id().clone()))
+                            .map(|adapter| (executor.id().clone(), Arc::clone(adapter)))
+                    })
+                    .collect(),
+            }
+        };
+        if adapters.adapters.is_empty() {
+            return Ok(());
+        }
+        *self
+            .pending_adapters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(adapters);
         *self
             .pending_claim
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(ClaimTaskRequest {
             task_id: wakeup.task_id,
-            slot_id: slot.slot_id.clone(),
+            slot_id,
             connection_epoch: self.epoch(),
             executor_id: None,
         });
@@ -60,7 +104,9 @@ impl RuntimeCore {
             return Ok(());
         };
         request.connection_epoch = self.epoch();
+        self.claim_in_flight.store(true, Ordering::SeqCst);
         let response = self.reporter.claim(&request).await;
+        self.claim_in_flight.store(false, Ordering::SeqCst);
         match response {
             Ok(Some(response)) => self.admit_claim(response).await,
             Ok(None) => {}
@@ -104,10 +150,16 @@ impl RuntimeCore {
             progress_path.clone(),
             result_path.clone(),
         );
-        record.executor_id = delivery
-            .executor_id
-            .clone()
-            .or_else(|| self.config.default_executor(&slot_id));
+        let pending_adapters = self
+            .pending_adapters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        record.executor_id = delivery.executor_id.clone().or_else(|| {
+            pending_adapters
+                .as_ref()
+                .and_then(ClaimAdapters::executor_id)
+        });
         // The claim is already committed at the Hub, so registration before submission
         // is what makes a replayed claim reply safe: a known `deliveryId` is never run twice.
         match self.registry.register_if_absent(&record) {
@@ -121,7 +173,16 @@ impl RuntimeCore {
                 return;
             }
         }
-        let Some(adapter) = self.adapter_for(&slot_id, record.executor_id.as_ref()) else {
+        let adapter = record
+            .executor_id
+            .as_ref()
+            .and_then(|executor_id| {
+                pending_adapters
+                    .as_ref()
+                    .and_then(|adapters| adapters.get(executor_id))
+            })
+            .or_else(|| self.adapter_for(&delivery.id, &slot_id, record.executor_id.as_ref()));
+        let Some(adapter) = adapter else {
             tracing::warn!(
                 delivery = %delivery.id,
                 slot = %slot_id,
@@ -129,6 +190,12 @@ impl RuntimeCore {
             );
             return;
         };
+        // Pin the adapter that admits this Delivery, so a later `worker.yaml` reload keeps
+        // its cancellation path even when the Slot's configured Executor disappears.
+        self.delivery_adapters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(delivery.id.clone(), Arc::clone(&adapter));
         let request = SubmitRequest {
             task_id: delivery.task_id,
             delivery_id: delivery.id.clone(),
@@ -182,7 +249,7 @@ impl RuntimeCore {
         };
         let state = match (
             record.execution_ref.as_ref(),
-            self.adapter_for(&record.slot_id, record.executor_id.as_ref()),
+            self.adapter_for(&delivery_id, &record.slot_id, record.executor_id.as_ref()),
         ) {
             (Some(execution_ref), Some(adapter)) => adapter.cancel(execution_ref).await,
             _ => CancelState::Uncertain,
@@ -219,17 +286,36 @@ impl RuntimeCore {
         }
     }
 
-    /// Adapter for one Delivery, falling back to the Slot's default Executor.
+    /// Adapter for one Delivery: the one that admitted it, else the Slot's configured
+    /// default Executor.
     pub(super) fn adapter_for(
         &self,
+        delivery_id: &DeliveryId,
         slot_id: &SlotId,
         executor_id: Option<&ExecutorId>,
     ) -> Option<Arc<dyn ExecutorAdapter>> {
+        if let Some(adapter) = self
+            .delivery_adapters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(delivery_id)
+        {
+            return Some(Arc::clone(adapter));
+        }
         let executor_id = match executor_id {
             Some(executor_id) => executor_id.clone(),
-            None => self.config.default_executor(slot_id)?,
+            None => {
+                let state = self.state();
+                return state
+                    .config
+                    .default_executor(slot_id)
+                    .and_then(|id| state.adapters.get(&(slot_id.clone(), id)).cloned());
+            }
         };
-        self.adapters.get(&(slot_id.clone(), executor_id)).cloned()
+        self.state()
+            .adapters
+            .get(&(slot_id.clone(), executor_id))
+            .cloned()
     }
 
     /// Read-modify-write one Delivery record under the store gate.
@@ -266,7 +352,7 @@ impl RuntimeCore {
     /// Wait for owned executions to end, then cancel what still runs. Never fabricates a
     /// finish report: an execution that is merely signalled stays honestly unresolved.
     pub(super) async fn drain(&self) {
-        let deadline = Instant::now() + Duration::from_millis(self.config.shutdown_timeout_ms());
+        let deadline = Instant::now() + Duration::from_millis(self.shutdown_timeout_ms());
         loop {
             let pending = self.pending_executions();
             if pending.is_empty() {
@@ -299,7 +385,11 @@ impl RuntimeCore {
         let Some(execution_ref) = record.execution_ref.as_ref() else {
             return;
         };
-        let Some(adapter) = self.adapter_for(&record.slot_id, record.executor_id.as_ref()) else {
+        let Some(adapter) = self.adapter_for(
+            &record.delivery_id,
+            &record.slot_id,
+            record.executor_id.as_ref(),
+        ) else {
             return;
         };
         let state = adapter.cancel(execution_ref).await;

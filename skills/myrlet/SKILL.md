@@ -45,6 +45,20 @@ myrlet --json events watch
 
 `tasks show` includes `blockedBy` (the dependencies keeping a Task `held`), the current Delivery, latest Progress, and the latest result Markdown.
 
+## Worker Trust
+
+A freshly paired Worker is `pending` by default: it can connect and read, but claims nothing until an Admin approves it. Its first scheduling report also waits for an explicit Apply. Operators handle both:
+
+```bash
+myrlet --json workers list                              # approval + reported/applied revisions
+myrlet --json workers show '<worker-id>'                # same detail for one Worker
+myrlet --json workers config show '<worker-id>'         # both snapshots, for review
+myrlet --json workers approve '<worker-id>'
+myrlet --json workers config apply '<worker-id>' --revision '<revision>'
+```
+
+Approval and Apply are independent and may happen in either order. If Apply answers `ConfigRevisionMismatch`, re-read the Worker; the report changed since you looked. These commands never change an existing Worker retroactively.
+
 ## Change Pending Work and Cancel
 
 Before a Task is claimed you may change its dependencies; the Hub recomputes `held`/`queued`.

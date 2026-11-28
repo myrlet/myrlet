@@ -10,7 +10,10 @@ use serde::Serialize;
 
 mod workers;
 
-pub use workers::{enrollment, revoked, rotate, worker_detail, worker_list};
+pub use workers::{
+    approved, config_applied, enrollment, revoked, rotate, worker_config, worker_detail,
+    worker_list,
+};
 
 fn to_json<W: Write, T: Serialize>(out: &mut W, value: &T) -> io::Result<()> {
     serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;

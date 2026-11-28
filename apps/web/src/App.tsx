@@ -17,7 +17,8 @@ import type {
 } from "react";
 import { Check, ChevronDown, Filter, X } from "lucide-react";
 
-import type { TaskStatus } from "./api/types";
+import type { TaskStatus, UpdateSecurityTrustRequest } from "./api/types";
+import { HubApiError } from "./api/client";
 import { AuthGate } from "./components/AuthGate";
 import { CommandPalette, ShortcutsModal, ToastStack } from "./components/CommandPalette";
 import type { ToastItem } from "./components/CommandPalette";
@@ -44,6 +45,17 @@ const INITIAL_ATLAS_META: AtlasBoardMeta = {
   relationCount: 0,
   canRestore: false,
 };
+
+/** One Hub failure as short operator-facing text. */
+function describeHubError(error: unknown): string {
+  if (error instanceof HubApiError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "The Hub command could not be completed.";
+}
 
 export default function App() {
   const hub = useHub();
@@ -75,6 +87,8 @@ export default function App() {
   const [toasts, setToasts] = useState<readonly ToastItem[]>([]);
   const toastIdRef = useRef(0);
   const toastTimersRef = useRef<number[]>([]);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const tasks = hub.tasks;
   const expandInitialized = useRef(false);
@@ -262,6 +276,38 @@ export default function App() {
       pushToast("Worker revoked");
     },
     [hub.revokeWorker, pushToast],
+  );
+
+  const approveWorker = useCallback(
+    async (workerId: string): Promise<void> => {
+      await hub.approveWorker(workerId);
+      pushToast("Worker approved");
+    },
+    [hub.approveWorker, pushToast],
+  );
+
+  const applyWorkerConfig = useCallback(
+    async (workerId: string, revision: number): Promise<void> => {
+      await hub.applyWorkerConfig(workerId, revision);
+      pushToast(`Applied revision ${revision}`);
+    },
+    [hub.applyWorkerConfig, pushToast],
+  );
+
+  const changeSecurityTrust = useCallback(
+    async (request: UpdateSecurityTrustRequest): Promise<void> => {
+      setSettingsBusy(true);
+      setSettingsError(null);
+      try {
+        await hub.updateSecurityTrust(request);
+      } catch (trustError) {
+        setSettingsError(describeHubError(trustError));
+        throw trustError;
+      } finally {
+        setSettingsBusy(false);
+      }
+    },
+    [hub.updateSecurityTrust],
   );
 
   const refresh = useCallback(() => {
@@ -543,7 +589,7 @@ export default function App() {
   }
 
   const onlineWorkerCount = hub.workers.filter(
-    (worker) => worker.online && !worker.revoked,
+    (worker) => worker.online && !worker.revoked && worker.approval === "approved",
   ).length;
   const totalTasks = hub.snapshot?.totalTasks ?? tasks.length;
   const tasksTruncated = hub.snapshot?.tasksTruncated ?? false;
@@ -572,6 +618,10 @@ export default function App() {
         onChangeTheme={appearance.setTheme}
         onDisconnect={hub.disconnect}
         onOpenShortcuts={() => setShortcutsOpen(true)}
+        settings={hub.settings}
+        settingsBusy={settingsBusy}
+        settingsError={settingsError}
+        onChangeSecurityTrust={changeSecurityTrust}
       />
 
       <div className="workspace-split">
@@ -822,9 +872,14 @@ export default function App() {
                 busy={hub.issuingCode}
                 baseUrl={hub.session.baseUrl}
                 workers={hub.workers}
+                reported={hub.reportedConfigs}
                 onCreateEnrollmentCode={hub.createEnrollmentCode}
+                onLoadReported={hub.loadReportedConfig}
+                onApproveWorker={approveWorker}
+                onApplyWorkerConfig={applyWorkerConfig}
                 onRotateWorker={rotateWorker}
                 onRevokeWorker={revokeWorker}
+                onOpenPairing={() => setWorkersOpen(true)}
                 onCopyText={copyText}
               />
             </div>

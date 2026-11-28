@@ -1,8 +1,9 @@
 //! Worker enrollment and fleet administration over any [`Transport`].
 
 use myrlet_protocol::{
-    CreateEnrollmentCodeRequest, CreateEnrollmentCodeResponse, RotateWorkerCredentialResponse,
-    WorkerDetail, WorkerId, WorkerListResponse,
+    ApplyWorkerConfigRequest, ApplyWorkerConfigResponse, CreateEnrollmentCodeRequest,
+    CreateEnrollmentCodeResponse, RotateWorkerCredentialResponse, SecurityTrustSettings,
+    UpdateSecurityTrustRequest, WorkerDetail, WorkerId, WorkerListResponse,
 };
 
 use crate::error::ClientError;
@@ -63,5 +64,55 @@ impl<T: Transport> Client<T> {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Approve a pending Worker (`POST /v1/workers/{id}/approve`).
+    pub async fn approve_worker(&self, id: &WorkerId) -> Result<(), ClientError> {
+        ensure_path_segment(id.as_str())?;
+        self.exchange(
+            "POST",
+            &format!("/v1/workers/{id}/approve"),
+            true,
+            None,
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Apply a Worker's reported scheduling revision (`POST /v1/workers/{id}/config/apply`).
+    pub async fn apply_worker_config(
+        &self,
+        id: &WorkerId,
+        revision: u64,
+    ) -> Result<ApplyWorkerConfigResponse, ClientError> {
+        ensure_path_segment(id.as_str())?;
+        let body = encode_json(&ApplyWorkerConfigRequest { revision })?;
+        let response = self
+            .post(&format!("/v1/workers/{id}/config/apply"), None, body)
+            .await?;
+        decode_direct(&response)
+    }
+
+    /// Read the two Hub Security & Trust policies (`GET /v1/settings/security-trust`).
+    pub async fn security_trust(&self) -> Result<SecurityTrustSettings, ClientError> {
+        decode_direct(&self.get("/v1/settings/security-trust").await?)
+    }
+
+    /// Update one or both policies and return the stored pair (`PATCH /v1/settings/security-trust`).
+    pub async fn update_security_trust(
+        &self,
+        request: &UpdateSecurityTrustRequest,
+    ) -> Result<SecurityTrustSettings, ClientError> {
+        let body = self
+            .exchange(
+                "PATCH",
+                "/v1/settings/security-trust",
+                true,
+                None,
+                Some(encode_json(request)?),
+            )
+            .await?;
+        decode_direct(&body)
     }
 }

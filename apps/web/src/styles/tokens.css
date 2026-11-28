@@ -151,6 +151,11 @@
   --status-revoked-fg: #9a3f2e;
   --status-revoked-bg: #fcede9;
   --status-revoked-border: #f0cfc6;
+
+  /* Worker awaiting Admin approval — connected, not yet admitted to scheduling */
+  --status-pending-fg: #7a5a12;
+  --status-pending-bg: #fbf3de;
+  --status-pending-border: #eeddb0;
 }
 
 /* ===================================================================== */
@@ -225,6 +230,10 @@
     --status-revoked-fg: #f0907e;
     --status-revoked-bg: #2a1815;
     --status-revoked-border: #4e2b24;
+
+    --status-pending-fg: #e8c069;
+    --status-pending-bg: #2a2314;
+    --status-pending-border: #4e412a;
   }
 }
 
@@ -296,4 +305,8 @@
   --status-revoked-fg: #f0907e;
   --status-revoked-bg: #2a1815;
   --status-revoked-border: #4e2b24;
+
+  --status-pending-fg: #e8c069;
+  --status-pending-bg: #2a2314;
+  --status-pending-border: #4e412a;
 }

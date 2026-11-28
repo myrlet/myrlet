@@ -22,6 +22,7 @@ pub mod reads;
 pub mod reports;
 pub mod result;
 pub mod schema;
+pub mod settings;
 pub mod tasks;
 pub mod workers;
 

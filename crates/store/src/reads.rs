@@ -229,13 +229,13 @@ pub fn eligibility(conn: &Connection, task_id: &TaskId) -> Result<TaskEligibilit
     })
 }
 
-/// Oldest `queued` Tasks this Worker's advertised Slots could run, bounded by `limit`.
+/// Oldest `queued` Tasks this Worker's applied Slots could run, bounded by `limit`.
 pub fn claimable_for_worker(
     conn: &Connection,
-    inventory: Option<&myrlet_protocol::WorkerInventory>,
+    applied: Option<&myrlet_protocol::WorkerSchedulingConfig>,
     limit: usize,
 ) -> Result<Vec<TaskId>, StoreError> {
-    let Some(inventory) = inventory else {
+    let Some(applied) = applied else {
         return Ok(Vec::new());
     };
     let mut stmt = conn.prepare(
@@ -250,7 +250,7 @@ pub fn claimable_for_worker(
         let (id, definition_json) = row?;
         let definition: myrlet_protocol::TaskDefinition = serde_json::from_str(&definition_json)?;
         let eligible = !deliveries::task_has_delivery(conn, &TaskId::new(id.clone()))?
-            && inventory
+            && applied
                 .slots
                 .iter()
                 .any(|slot| slot.accepts(&definition.routing, None));

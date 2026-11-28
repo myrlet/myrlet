@@ -96,6 +96,16 @@ impl From<StoreError> for ApiError {
                 "StaleDelivery",
                 "a stale connection epoch or delivery report was rejected",
             ),
+            StoreError::NoPendingConfig => (
+                StatusCode::CONFLICT,
+                "NoPendingConfig",
+                "the worker has no scheduling report awaiting Apply",
+            ),
+            StoreError::ConfigRevisionMismatch => (
+                StatusCode::CONFLICT,
+                "ConfigRevisionMismatch",
+                "the pending report has moved on; inspect the latest reported revision",
+            ),
             StoreError::InvalidInput(_) => (
                 StatusCode::BAD_REQUEST,
                 "InvalidInput",
