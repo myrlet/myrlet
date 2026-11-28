@@ -72,6 +72,7 @@ impl RuntimeCore {
             "worker session established"
         );
         self.send_resync(&mut sink).await?;
+        self.retry_pending_claim().await?;
         self.flush_pending(&mut sink).await?;
 
         let lease_ttl = Duration::from_millis(welcome.lease_ttl_ms.max(1));
@@ -170,7 +171,7 @@ impl RuntimeCore {
             }
             WorkerWireKind::HubWakeup => {
                 let wakeup: HubWakeupPayload = serde_json::from_value(payload)?;
-                self.handle_wakeup(&wakeup.task_id).await?;
+                self.handle_wakeup(wakeup).await?;
             }
             WorkerWireKind::TaskCancel => {
                 let cancel: TaskCancelPayload = serde_json::from_value(payload)?;

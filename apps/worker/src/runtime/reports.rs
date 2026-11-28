@@ -40,28 +40,12 @@ impl RuntimeCore {
                         .await?;
                 }
             }
-            if record.finish_pending && !record.finish_acked {
-                match self.reporter.post_finish(&record.delivery_id, epoch).await {
-                    Ok(Some(_)) => {
-                        self.update(&record.delivery_id, |record| record.finish_acked = true);
-                    }
-                    Ok(None) => {}
-                    Err(error) => tracing::warn!(
-                        delivery = %record.delivery_id,
-                        %error,
-                        "pending finish report could not be flushed"
-                    ),
-                }
-            }
-            self.sync_progress(&record, epoch).await;
-            self.sync_result(&record, epoch).await;
+            self.reconcile(&record.delivery_id, epoch).await;
         }
         Ok(())
     }
 
     /// Record end of handling, relay the final Progress, Finish, and Result.
-    ///
-    /// A `done` signal and a Worker-observed exit both arrive here; either one is enough.
     async fn run_exit_handler(self: Arc<Self>) {
         let receiver = self
             .on_exit_rx
@@ -82,13 +66,7 @@ impl RuntimeCore {
             if epoch == 0 {
                 continue;
             }
-            self.post_finish_if_pending(&record.delivery_id, epoch)
-                .await;
-            let refreshed = self.registry.get(&record.delivery_id).ok().flatten();
-            if let Some(record) = refreshed {
-                self.sync_progress(&record, epoch).await;
-                self.sync_result(&record, epoch).await;
-            }
+            self.reconcile(&record.delivery_id, epoch).await;
         }
     }
 
@@ -110,14 +88,45 @@ impl RuntimeCore {
                 }
             };
             for record in records {
-                if record.finish_pending && !record.finish_acked {
-                    self.post_finish_if_pending(&record.delivery_id, epoch)
-                        .await;
-                }
-                self.sync_progress(&record, epoch).await;
-                self.sync_result(&record, epoch).await;
+                self.reconcile(&record.delivery_id, epoch).await;
             }
         }
+    }
+
+    /// Serialize all Progress/Result reconciliation of one Delivery behind its own lock.
+    ///
+    /// The poll loop, the exit handler, resync flush, and a manual `result sync` command
+    /// all funnel here, so no two of them ever have a request for the same Delivery in
+    /// flight at once. The lock is per Delivery, so unrelated Deliveries stay parallel.
+    async fn reconcile(&self, delivery_id: &myrlet_protocol::DeliveryId, epoch: u64) {
+        let lock = self.reconciliation_lock(delivery_id);
+        let _guard = lock.lock().await;
+        if self.epoch() != epoch {
+            return;
+        }
+        let Some(record) = self.registry.get(delivery_id).ok().flatten() else {
+            return;
+        };
+        if record.finish_pending && !record.finish_acked {
+            self.post_finish_if_pending(delivery_id, epoch).await;
+        }
+        self.sync_progress(&record, epoch).await;
+        self.sync_result(&record, epoch).await;
+    }
+
+    fn reconciliation_lock(
+        &self,
+        delivery_id: &myrlet_protocol::DeliveryId,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .reconciliation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            locks
+                .entry(delivery_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     async fn post_finish_if_pending(&self, delivery_id: &myrlet_protocol::DeliveryId, epoch: u64) {
@@ -221,6 +230,8 @@ impl RuntimeCore {
         &self,
         delivery_id: &myrlet_protocol::DeliveryId,
     ) -> Result<Option<String>, crate::reporting::ReportError> {
+        let lock = self.reconciliation_lock(delivery_id);
+        let _guard = lock.lock().await;
         let Some(record) = self
             .registry
             .get(delivery_id)

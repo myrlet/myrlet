@@ -19,13 +19,15 @@ use crate::workers::load_worker;
 /// creates the Task's unique Delivery in the same transaction.
 ///
 /// A competing claim for the same Task fails on the unique Delivery index or on the
-/// version check, so exactly one winner commits.
+/// version check, so exactly one winner commits. The one exception is the winning
+/// Worker itself replaying its claim after losing the acknowledgement: it receives the
+/// already committed Delivery again instead of a second one.
 pub fn claim_task(
     conn: &mut Connection,
     worker_id: &WorkerId,
     request: &ClaimTaskRequest,
     now_ms: i64,
-) -> Result<(ClaimTaskResponse, HubEventEnvelope), StoreError> {
+) -> Result<(ClaimTaskResponse, Option<HubEventEnvelope>), StoreError> {
     if request.connection_epoch == 0 {
         return Err(StoreError::StaleDelivery);
     }
@@ -39,11 +41,29 @@ pub fn claim_task(
         return Err(StoreError::StaleDelivery);
     }
     let row = load_task(&tx, &request.task_id)?;
+    if let Some(existing) = current_delivery(&tx, &request.task_id)? {
+        // A lost claim acknowledgement is recovered by replaying the same claim: the
+        // owning Worker gets its committed Delivery back, never a second execution.
+        let replay = existing.state == DeliveryStatus::Accepted
+            && existing.worker_id == *worker_id
+            && existing.slot_id == request.slot_id
+            && row.status == TaskStatus::Dispatched;
+        if replay {
+            if existing.connection_epoch != request.connection_epoch {
+                tx.execute(
+                    "UPDATE deliveries SET connection_epoch = ?1 WHERE id = ?2",
+                    params![request.connection_epoch as i64, existing.id.as_str()],
+                )?;
+            }
+            let delivery = delivery_view(&tx, &load_delivery(&tx, &existing.id)?)?;
+            let task = crate::tasks::build_record(&tx, &row)?;
+            tx.commit()?;
+            return Ok((ClaimTaskResponse { task, delivery }, None));
+        }
+        return Err(StoreError::AlreadyClaimed);
+    }
     if row.status != TaskStatus::Queued || !are_dependencies_satisfied(&tx, &request.task_id)? {
         return Err(StoreError::InvalidTransition);
-    }
-    if current_delivery(&tx, &request.task_id)?.is_some() {
-        return Err(StoreError::AlreadyClaimed);
     }
     let definition: TaskDefinition = row.definition()?;
     // The Task's preferred Executor is a soft preference that only matters at launch: the
@@ -56,7 +76,7 @@ pub fn claim_task(
         &worker.inventory_json,
         &request.slot_id,
         &definition,
-        requested.as_ref(),
+        request.executor_id.as_ref(),
     )?;
     let executor_id = requested
         .filter(|id| slot.executors.iter().any(|executor| &executor.id == id))
@@ -93,7 +113,7 @@ pub fn claim_task(
     )?;
     let task = crate::tasks::build_record(&tx, &load_task(&tx, &request.task_id)?)?;
     tx.commit()?;
-    Ok((ClaimTaskResponse { task, delivery }, event))
+    Ok((ClaimTaskResponse { task, delivery }, Some(event)))
 }
 
 /// Return the claimed Slot only when it is enabled and satisfies the Task's hard rules.

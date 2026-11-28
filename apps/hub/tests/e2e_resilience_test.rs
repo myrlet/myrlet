@@ -391,3 +391,39 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     shutdown(&mut second.0, "worker");
     shutdown(&mut hub_guard.0, "hub");
 }
+
+#[tokio::test]
+async fn worker_uses_second_slot_when_only_it_meets_capability() {
+    let (hub_bin, worker_bin, cli_bin) = binaries();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    myrlet_protocol::ensure_private_dir(&home).unwrap();
+    let (_hub, url) = start_hub(&hub_bin, &home).await;
+    let cli = cli(&cli_bin, &home, &url);
+    enroll_and_pair(&cli, &worker_bin, &home, &url);
+    let cpu = "  - slotId: cpu-first\n    capabilities: [{name: cpu, state: available}]\n    executors: [{id: exec-cpu, kind: process, program: /usr/bin/true, args: []}]\n";
+    let gpu_config = gpu_yaml(&url);
+    let config = gpu_config.replace("slots:\n", &format!("slots:\n{cpu}"));
+    std::fs::write(home.join("worker/worker.yaml"), config).unwrap();
+    run_worker(&worker_bin, &home, &["check-config"]);
+    let _worker = spawn_daemon(&worker_bin, &[("MYRLET_HOME", home.to_str().unwrap())]);
+    poll("two-slot worker online", Duration::from_secs(4), || {
+        online_epoch(&cli)
+    });
+    let id = create_task(&cli, "two-slots", "test", "gpu", "exec-gpu");
+    let limit = Instant::now() + Duration::from_secs(4);
+    loop {
+        let task = show(&cli, &id);
+        if let Some(slot) = task["currentDelivery"]["slotId"].as_str() {
+            assert_eq!(slot, "gpu-slot");
+            break;
+        }
+        assert!(
+            Instant::now() < limit,
+            "online two-slot Worker with eligible second slot: Task {}, Delivery {}",
+            status(&task),
+            task["currentDelivery"]
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
