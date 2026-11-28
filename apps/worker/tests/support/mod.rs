@@ -1,6 +1,8 @@
 //! In-process Hub stub: Worker HTTP Progress/Finish endpoints plus one WSS control socket.
 //!
-//! Shared by several test binaries; each exercises a subset of these helpers.
+//! Shared by several test binaries; each exercises a subset of these helpers, so helpers
+//! a given binary does not touch are expected rather than dead.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use std::time::Duration;
