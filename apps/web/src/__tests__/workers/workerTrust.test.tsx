@@ -158,7 +158,9 @@ describe("Worker trust", () => {
     expect(review).not.toBeNull();
     expect(review?.textContent ?? "").toMatch(/Reported rev 3/);
     expect(review?.textContent ?? "").toMatch(/Applied rev 2/);
-    expect(review?.textContent ?? "").toMatch(/changed Slot mac-default/);
+    await waitFor(() =>
+      expect(review?.textContent ?? "").toMatch(/changed Slot mac-default/),
+    );
     fireEvent.click(within(drawer).getByRole("button", { name: /review & apply/i }));
     const apply = await within(drawer).findByRole("button", { name: /apply revision 3/i });
     fireEvent.click(apply);
