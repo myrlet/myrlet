@@ -22,7 +22,8 @@ pub async fn report_progress(
     Path(delivery_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let worker_id = auth::require_worker(&state, &headers).await?;
+    let worker = auth::require_worker(&state, &headers).await?;
+    let worker_id = worker.worker_id;
     run_bounded(state.clone(), async move {
         let request: ProgressReportRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -44,7 +45,8 @@ pub async fn report_finish(
     Path(delivery_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let worker_id = auth::require_worker(&state, &headers).await?;
+    let worker = auth::require_worker(&state, &headers).await?;
+    let worker_id = worker.worker_id;
     run_bounded(state.clone(), async move {
         let request: FinishReportRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -67,7 +69,8 @@ pub async fn report_result(
     Path(delivery_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let worker_id = auth::require_worker(&state, &headers).await?;
+    let worker = auth::require_worker(&state, &headers).await?;
+    let worker_id = worker.worker_id;
     run_bounded(state.clone(), async move {
         let request: ResultReportRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -93,7 +96,8 @@ pub async fn read_result(
     headers: HeaderMap,
     Path(delivery_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let worker_id = auth::require_worker(&state, &headers).await?;
+    let worker = auth::require_worker(&state, &headers).await?;
+    let worker_id = worker.worker_id;
     let view = state
         .store
         .worker_delivery_result(worker_id, DeliveryId::new(delivery_id))

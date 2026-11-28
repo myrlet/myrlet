@@ -25,7 +25,7 @@ pub async fn snapshot(
     State(state): State<HubState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_global_reader(&state, &headers).await?;
     let snapshot = state
         .store
         .list_snapshot(
@@ -43,7 +43,7 @@ pub async fn events(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_global_reader(&state, &headers).await?;
     let cursor = resume_cursor(&headers, query.as_deref())?;
     // Subscribe before reading the log so no committed event can fall between the two.
     let mut receiver = state.events_tx.subscribe();

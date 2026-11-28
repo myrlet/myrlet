@@ -10,11 +10,12 @@ use axum::Json;
 use myrlet_protocol::{
     CancelTaskRequest, DeliveryView, FinishTaskRequest, SubmitTaskResponse,
     TaskBundleImportRequest, TaskCancelPayload, TaskDefinition, TaskEligibility, TaskId,
-    TaskStatus, TaskTreeDirection, UpdateTaskRequest, WorkerWireKind,
+    TaskReadResponse, TaskStatus, TaskTreeDirection, UpdateTaskRequest, WorkerWireKind,
 };
 
+use crate::auth::{authenticate, require_global_reader};
 use crate::error::ApiError;
-use crate::http::{authorize_command, read_bounded_json, require_reader, run_bounded};
+use crate::http::{authorize_command, read_bounded_json, run_bounded};
 use crate::state::{now_ms, HubState};
 use crate::wakeup::spawn_wakeup;
 use crate::ws::build_hub_frame;
@@ -31,7 +32,7 @@ pub async fn create_task(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let key = authorize_command(&state, &headers)?;
+    let key = authorize_command(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let definition: TaskDefinition =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -55,7 +56,7 @@ pub async fn import_bundle(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let key = authorize_command(&state, &headers)?;
+    let key = authorize_command(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: TaskBundleImportRequest =
             read_bounded_json(body, state.config.max_bundle_bytes).await?;
@@ -71,13 +72,13 @@ pub async fn import_bundle(
     .await
 }
 
-/// `GET /v1/tasks`: bounded newest-first Task summaries. Owners and Workers may read.
+/// `GET /v1/tasks`: bounded newest-first global Task summaries. Owner/Admin only.
 pub async fn list_tasks(
     State(state): State<HubState>,
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
+    require_global_reader(&state, &headers).await?;
     let limit = match query.get("limit") {
         Some(raw) => bounded(raw, "limit")?.clamp(1, MAX_TASK_LIST_LIMIT),
         None => DEFAULT_TASK_LIST_LIMIT,
@@ -85,14 +86,30 @@ pub async fn list_tasks(
     Ok(Json(state.store.list_tasks(limit).await?).into_response())
 }
 
+/// `GET /v1/tasks/{id}`: a global reader gets the full Task; a `worker`-tier credential
+/// gets its own Delivery-bound Task or a one-hop related summary, never anything else.
 pub async fn get_task(
     State(state): State<HubState>,
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
-    let record = state.store.get_task(TaskId::new(task_id)).await?;
-    Ok(Json(record).into_response())
+    let caller = authenticate(&state, &headers).await?;
+    let task_id = TaskId::new(task_id);
+    if caller.is_global() {
+        let task = state.store.get_task(task_id).await?;
+        return Ok(Json(TaskReadResponse {
+            task: Some(task),
+            summary: None,
+            related: Vec::new(),
+        })
+        .into_response());
+    }
+    let worker_id = caller.worker_scope()?;
+    match state.store.worker_task_read(worker_id, task_id).await? {
+        Some(read) => Ok(Json(read).into_response()),
+        // Conceal a Task outside the Worker's visibility boundary.
+        None => Err(ApiError::from(myrlet_store::StoreError::NotFound)),
+    }
 }
 
 /// `GET /v1/tasks/{id}/eligibility`: whether this Task can be claimed, and why not.
@@ -101,9 +118,21 @@ pub async fn task_eligibility(
     headers: HeaderMap,
     Path(task_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
-    let eligibility: TaskEligibility = state.store.task_eligibility(TaskId::new(task_id)).await?;
-    Ok(Json(eligibility).into_response())
+    let caller = authenticate(&state, &headers).await?;
+    let task_id = TaskId::new(task_id);
+    if caller.is_global() {
+        let eligibility: TaskEligibility = state.store.task_eligibility(task_id).await?;
+        return Ok(Json(eligibility).into_response());
+    }
+    let worker_id = caller.worker_scope()?;
+    match state
+        .store
+        .worker_task_eligibility(worker_id, task_id)
+        .await?
+    {
+        Some(eligibility) => Ok(Json(eligibility).into_response()),
+        None => Err(ApiError::from(myrlet_store::StoreError::NotFound)),
+    }
 }
 
 pub async fn get_task_tree(
@@ -112,7 +141,7 @@ pub async fn get_task_tree(
     Path(task_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
+    let caller = authenticate(&state, &headers).await?;
     let mut direction = TaskTreeDirection::Descendants;
     let mut max_depth = MAX_TREE_DEPTH;
     let mut limit = DEFAULT_TREE_LIMIT;
@@ -129,10 +158,19 @@ pub async fn get_task_tree(
             _ => {}
         }
     }
-    let tree = state
-        .store
-        .get_task_tree(TaskId::new(task_id), direction, max_depth, limit);
-    Ok(Json(tree.await?).into_response())
+    let task_id = TaskId::new(task_id);
+    if caller.is_global() {
+        let tree = state
+            .store
+            .get_task_tree(task_id, direction, max_depth, limit)
+            .await?;
+        return Ok(Json(tree).into_response());
+    }
+    let worker_id = caller.worker_scope()?;
+    match state.store.worker_task_tree(worker_id, task_id).await? {
+        Some(tree) => Ok(Json(tree).into_response()),
+        None => Err(ApiError::from(myrlet_store::StoreError::NotFound)),
+    }
 }
 
 fn bounded(raw: &str, name: &str) -> Result<usize, ApiError> {
@@ -147,7 +185,7 @@ pub async fn update_task(
     Path(task_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let key = authorize_command(&state, &headers)?;
+    let key = authorize_command(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: UpdateTaskRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -171,7 +209,7 @@ pub async fn cancel_task(
     Path(task_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let key = authorize_command(&state, &headers)?;
+    let key = authorize_command(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: CancelTaskRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -194,7 +232,7 @@ pub async fn finish_task(
     Path(task_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let key = authorize_command(&state, &headers)?;
+    let key = authorize_command(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: FinishTaskRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;

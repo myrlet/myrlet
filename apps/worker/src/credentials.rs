@@ -1,60 +1,19 @@
 //! Hub-issued Worker credential binding stored at `worker/credentials.json` (`0600`).
 //! Missing or corrupt credentials fail closed: a new identity is never generated here.
 
-use std::fmt;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use myrlet_protocol::paths::{verify_private_file, write_private_file_atomic, PathError};
+use myrlet_protocol::paths::{write_private_file_atomic, PathError};
+use myrlet_protocol::{load_worker_credentials, CredentialsError as LoadError};
 use myrlet_protocol::{ErrorResponse, PairWorkerRequest, PairWorkerResponse, WorkerId};
-use serde::{Deserialize, Serialize};
 
-/// Durable `(hubId, workerId)` binding with the Worker's bearer credential.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkerCredentials {
-    pub hub_id: String,
-    pub worker_id: WorkerId,
-    pub credential: String,
-}
-
-impl fmt::Debug for WorkerCredentials {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WorkerCredentials")
-            .field("hub_id", &self.hub_id)
-            .field("worker_id", &self.worker_id)
-            .field("credential", &"<redacted>")
-            .finish()
-    }
-}
-
-impl WorkerCredentials {
-    /// A complete binding names a Hub, a canonical Worker, and a bearer credential.
-    pub fn is_complete(&self) -> bool {
-        !self.hub_id.is_empty() && !self.credential.is_empty() && self.worker_id.is_canonical()
-    }
-}
+pub use myrlet_protocol::WorkerCredentials;
 
 /// Failure to load, store, or redeem a Worker credential.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialsError {
-    #[error("no Worker credential at {0:?}; run `myrlet-worker pair` first")]
-    Missing(PathBuf),
-    #[error("Worker credential at {path:?} is unreadable: {source}")]
-    Io {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("Worker credential at {path:?} is not a valid credential document")]
-    Document {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("Worker credential at {0:?} is incomplete or not a canonical worker id")]
-    Incomplete(PathBuf),
+    #[error(transparent)]
+    Load(#[from] LoadError),
     #[error("Worker credential could not be serialized")]
     Serialize(#[source] serde_json::Error),
     #[error("pairing with {url} failed: {message}")]
@@ -69,28 +28,7 @@ pub enum CredentialsError {
 
 /// Load the stored binding, verifying `0600`-style ownership first. Never generates one.
 pub fn load_credentials(path: &Path) -> Result<WorkerCredentials, CredentialsError> {
-    verify_private_file(path)?;
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Err(CredentialsError::Missing(path.to_path_buf()))
-        }
-        Err(source) => {
-            return Err(CredentialsError::Io {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
-    };
-    let credentials: WorkerCredentials =
-        serde_json::from_slice(&bytes).map_err(|source| CredentialsError::Document {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    if !credentials.is_complete() {
-        return Err(CredentialsError::Incomplete(path.to_path_buf()));
-    }
-    Ok(credentials)
+    Ok(load_worker_credentials(path)?)
 }
 
 /// Store the binding atomically with owner-only permissions.
@@ -99,7 +37,7 @@ pub fn save_credentials(
     credentials: &WorkerCredentials,
 ) -> Result<(), CredentialsError> {
     if !credentials.is_complete() {
-        return Err(CredentialsError::Incomplete(path.to_path_buf()));
+        return Err(LoadError::Incomplete(path.to_path_buf()).into());
     }
     let bytes = serde_json::to_vec(credentials).map_err(CredentialsError::Serialize)?;
     write_private_file_atomic(path, &bytes)?;
@@ -157,8 +95,25 @@ pub async fn pair_with_hub(
         credential: paired.credential,
     };
     if !credentials.is_complete() {
-        return Err(CredentialsError::Incomplete(credentials_path.to_path_buf()));
+        return Err(LoadError::Incomplete(credentials_path.to_path_buf()).into());
     }
     save_credentials(credentials_path, &credentials)?;
     Ok(credentials)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credentials_debug_redacts_the_bearer() {
+        let credentials = WorkerCredentials {
+            hub_id: "hub_stub".into(),
+            worker_id: WorkerId::new("wkr_000000000000"),
+            credential: "secret-token".into(),
+        };
+        let debug = format!("{credentials:?}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+        assert!(!debug.contains("secret-token"), "{debug}");
+    }
 }

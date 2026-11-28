@@ -5,12 +5,11 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::HeaderMap;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Router;
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 
-use crate::auth::Principal;
 use crate::error::ApiError;
 use crate::state::HubState;
 
@@ -54,6 +53,10 @@ pub fn build_router(state: HubState) -> Router {
         .route("/v1/workers/:id/revoke", post(workers::revoke_worker))
         .route("/v1/workers/:id/approve", post(workers::approve_worker))
         .route(
+            "/v1/workers/:id/permission-tier",
+            patch(workers::update_permission_tier),
+        )
+        .route(
             "/v1/workers/:id/config/apply",
             post(workers::apply_worker_config),
         )
@@ -77,9 +80,15 @@ pub fn build_router(state: HubState) -> Router {
         .with_state(state)
 }
 
-/// Authenticate an Admin command and read its required `Idempotency-Key`.
-pub(crate) fn authorize_command(state: &HubState, headers: &HeaderMap) -> Result<String, ApiError> {
-    crate::auth::require_admin(state, headers)?;
+/// Authenticate a Task command and read its required `Idempotency-Key`.
+///
+/// Task coordination is available to the Admin principal and to an `owner`-tier Worker
+/// credential; a `worker`-tier credential receives `403`.
+pub(crate) async fn authorize_command(
+    state: &HubState,
+    headers: &HeaderMap,
+) -> Result<String, ApiError> {
+    crate::auth::require_global_reader(state, headers).await?;
     idempotency_key(headers)
 }
 
@@ -136,17 +145,8 @@ pub(crate) async fn run_bounded<T>(
     outcome.map_err(|_| ApiError::request_timeout())?
 }
 
-/// Resolve the caller of a read route: the Admin token or an enrolled Worker credential.
+/// Global read caller: the Admin principal or an `owner`-tier Worker.
 ///
-/// Reads never grant management authority; routes that write still require the Admin
-/// principal, so a Harness can inspect the fleet without holding the Admin token.
-pub(crate) async fn require_reader(
-    state: &HubState,
-    headers: &HeaderMap,
-) -> Result<Principal, ApiError> {
-    if crate::auth::require_admin(state, headers).is_ok() {
-        return Ok(Principal::Admin);
-    }
-    let worker_id = crate::auth::require_worker(state, headers).await?;
-    Ok(Principal::Worker(worker_id))
-}
+/// A `worker`-tier credential receives `403`; invalid or missing credentials receive
+/// `401`. Global reads never grant management authority.
+pub(crate) use crate::auth::require_global_reader;

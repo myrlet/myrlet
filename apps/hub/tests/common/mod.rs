@@ -114,10 +114,37 @@ impl Hub {
             .await
     }
 
+    pub async fn patch_admin(&self, path: &str, body: Option<&str>) -> (u16, Value) {
+        self.request("PATCH", path, Some(ADMIN), None, body).await
+    }
+
+    /// Promote a Worker to the `owner` tier as Admin.
+    pub async fn set_tier(&self, worker_id: &str, tier: &str) {
+        let body = json!({ "permissionTier": tier }).to_string();
+        let (status, response) = self
+            .patch_admin(
+                &format!("/v1/workers/{worker_id}/permission-tier"),
+                Some(&body),
+            )
+            .await;
+        assert_eq!(status, 200, "set tier: {response}");
+        assert_eq!(response["permissionTier"], tier);
+    }
+
     /// Issue an enrollment code and redeem it in one step.
     pub async fn pair(&self) -> (String, String) {
+        self.pair_as(None).await
+    }
+
+    /// Issue an enrollment code that suggests `worker_id` and redeem it, so a revoked
+    /// Worker ID can be re-paired explicitly.
+    pub async fn pair_as(&self, worker_id: Option<&str>) -> (String, String) {
+        let request = match worker_id {
+            Some(worker_id) => json!({ "suggestedWorkerId": worker_id }).to_string(),
+            None => "{}".to_string(),
+        };
         let issued = self
-            .post_admin("/v1/enrollment-codes", None, Some("{}"))
+            .post_admin("/v1/enrollment-codes", None, Some(&request))
             .await;
         assert_eq!(issued.0, 200, "{}", issued.1);
         let body = json!({ "enrollmentCode": issued.1["enrollmentCode"] }).to_string();

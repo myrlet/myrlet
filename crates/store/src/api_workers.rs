@@ -4,10 +4,10 @@ use std::collections::HashMap;
 
 use myrlet_protocol::{
     CreateEnrollmentCodeResponse, DeliveryId, DeliveryView, FinishReceipt, FinishReportRequest,
-    HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, ProgressReceipt,
+    HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, PermissionTier, ProgressReceipt,
     ProgressReportRequest, ResultReceipt, ResultReportRequest, RotateWorkerCredentialResponse,
     SecurityTrustSettings, SnapshotWorker, TaskCancelledPayload, UpdateSecurityTrustRequest,
-    WorkerDetail, WorkerId, WorkerInventory,
+    WorkerDetail, WorkerId, WorkerInventory, WorkerPermissionTierResponse,
 };
 
 use crate::{
@@ -162,9 +162,24 @@ impl HubStore {
             .await
     }
 
-    pub async fn authenticate_worker(&self, bearer_token: String) -> Result<WorkerId, StoreError> {
+    pub async fn authenticate_worker(
+        &self,
+        bearer_token: String,
+    ) -> Result<enrollment::AuthenticatedWorker, StoreError> {
         self.db
             .call(move |conn| enrollment::authenticate_worker(conn, &bearer_token))
+            .await
+    }
+
+    /// Set a Worker's server-controlled permission tier (`worker` or `owner`).
+    pub async fn set_worker_permission_tier(
+        &self,
+        worker_id: WorkerId,
+        tier: PermissionTier,
+        now_ms: i64,
+    ) -> Result<(WorkerPermissionTierResponse, HubEventEnvelope), StoreError> {
+        self.db
+            .call(move |conn| fleet::set_worker_permission_tier(conn, &worker_id, tier, now_ms))
             .await
     }
 

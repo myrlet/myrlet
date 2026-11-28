@@ -24,6 +24,7 @@ function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     online: true,
     revoked: false,
     approval: "approved",
+    permissionTier: "worker",
     connectionEpoch: 4,
     lastSeenAtMs: 1_700_000_000_000,
     activeDeliveries: 1,

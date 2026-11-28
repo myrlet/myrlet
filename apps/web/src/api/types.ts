@@ -139,10 +139,35 @@ export interface SnapshotTaskSummary {
 /** Direction of a bounded Task tree read. */
 export type TaskTreeDirection = "ancestors" | "descendants";
 
+/**
+ * Limited one-hop projection of a Task related to a Worker's assigned Task.
+ *
+ * The Web UI is Admin-only and always reads global Task records, so it normally sees an
+ * empty list here; the shape exists so a Worker-tier client's response decodes cleanly.
+ */
+export interface RelatedTaskSummary {
+  id: TaskId;
+  parentTaskId: TaskId | null;
+  depth: number;
+  dependencies: TaskId[];
+  blockedBy: BlockingDependency[];
+  title: string;
+  status: TaskStatus;
+  version: number;
+}
+
+/** `GET /v1/tasks/{id}` response: the Task and its one-hop related summaries. */
+export interface TaskReadResponse {
+  task: TaskRecord | null;
+  summary: RelatedTaskSummary | null;
+  related: RelatedTaskSummary[];
+}
+
 /** `GET /v1/tasks/{id}/tree` response. */
 export interface TaskTreeResponse {
   rootTaskId: TaskId;
   tasks: TaskRecord[];
+  related: RelatedTaskSummary[];
   truncated: boolean;
 }
 
@@ -250,12 +275,17 @@ export interface WorkerSchedulingConfig {
 /** Effective trust state of one enrolled Worker. */
 export type WorkerApprovalStatus = "pending" | "approved" | "revoked";
 
+/** Server-controlled permission tier of one Worker principal. */
+export type PermissionTier = "worker" | "owner";
+
 /** One enrolled Worker's connectivity, approval, and applied scheduling inventory. */
 export interface WorkerRecord {
   workerId: WorkerId;
   online: boolean;
   revoked: boolean;
   approval: WorkerApprovalStatus;
+  /** Server-controlled tier; the Web UI shows this but cannot select it per request. */
+  permissionTier: PermissionTier;
   connectionEpoch: number;
   lastSeenAtMs: number | null;
   activeDeliveries: number;

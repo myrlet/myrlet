@@ -25,27 +25,40 @@ myrlet - Myrlet Hub CLI
 
 USAGE: myrlet [--json] <group> <command> [options]
 
-Hub reads (Owner or Worker credential):
+Credentials:
+  MYRLET_ADMIN_TOKEN           Admin: global reads, Task coordination, Worker/system admin
+  MYRLET_HOME/worker/credentials.json
+                               Worker or Owner: the Hub decides the tier. Without the Admin
+                               token, Hub reads and Task coordination use this credential.
+
+Hub reads (Owner or Admin; Worker only for its own Task and direct related Tasks):
   tasks list [--limit <n>]                 Bounded newest-first Task summaries
   tasks show <id>                          One Task with its Delivery and Result
   tasks tree <id> [--direction ancestors|descendants] [--max-depth <n>] [--limit <n>]
   workers list                             Enrolled Workers, approval, and revisions
   workers show <id>                        One Worker, approval, inventory, and claimable Tasks
-  workers config show <id>                 Both scheduling snapshots under review
   events watch [--cursor <seq>] [--limit <n>]
 
-Owner writes (Admin credential):
-  policy show                              Read automatic approval and apply policies
-  policy set [--auto-approve <bool>] [--auto-apply <bool>]
-                                           Enable/disable automatic approval or apply
+Task coordination (Owner or Admin):
   tasks submit --file <def.json> | --title <t> --prompt <p> [--idempotency-key <k>]
                [--parent-task-id <id>] [--depends-on <id>]... [--capability <name>]...
   tasks import --file <bundle.json> [--idempotency-key <k>]
   tasks update <id> --expected-version <n> [--depends-on <id>]... [--idempotency-key <k>]
   tasks cancel <id> [--expected-version <n>] [--reason <text>]
   tasks finish <id> [--expected-version <n>]   Coordination-only Task with no Delivery
+
+Admin (Worker and system administration):
+  workers enroll [--ttl-seconds <n>]       Issue a one-time pairing code
+  workers rotate <id>                      Rotate a Worker credential
+  workers revoke <id>                      Revoke a Worker credential
   workers approve <id>                     Admit a pending Worker to scheduling
+  workers config show <id>                 Both scheduling snapshots under review
   workers config apply <id> --revision <n> Apply the reported scheduling revision
+  workers permission set <id> --tier worker|owner
+                                           Change the server-stored permission tier
+  policy show                              Read automatic approval and apply policies
+  policy set [--auto-approve <bool>] [--auto-apply <bool>]
+                                           Enable/disable automatic approval or apply
 
 Execution-local (no Hub credential; uses the local Worker control socket):
   done <delivery-id>                       Harness finished its work
@@ -53,8 +66,8 @@ Execution-local (no Hub credential; uses the local Worker control socket):
   result sync <delivery-id>                Request one Result reconciliation
   result status <delivery-id>              Compare local and Hub Result content
 
-env: MYRLET_HUB_URL (default http://127.0.0.1:4140), MYRLET_ADMIN_TOKEN (Owner writes),
-     MYRLET_HOME (execution-local commands)
+env: MYRLET_HUB_URL (default http://127.0.0.1:4140), MYRLET_ADMIN_TOKEN (Admin),
+     MYRLET_HOME (Worker credential and execution-local commands)
 ";
 
 pub async fn run_with_io<W: Write, E: Write, F: Fn(&str) -> Option<String>>(
@@ -90,16 +103,16 @@ async fn dispatch<W: Write, F: Fn(&str) -> Option<String>>(
         .filter(|url| !url.trim().is_empty())
         .unwrap_or_else(|| args::DEFAULT_HUB_URL.to_string());
     let admin_token = env("MYRLET_ADMIN_TOKEN").filter(|token| !token.is_empty());
-    let worker_socket = env("MYRLET_HOME")
-        .filter(|home| !home.trim().is_empty())
-        .map(|home| {
-            commands::control_socket(&home)
-                .to_string_lossy()
-                .into_owned()
-        });
+    let home = env("MYRLET_HOME").filter(|home| !home.trim().is_empty());
+    let worker_socket = home.as_deref().map(|home| {
+        commands::control_socket(home)
+            .to_string_lossy()
+            .into_owned()
+    });
     let environment = commands::Env {
         hub_url: &hub_url,
         admin_token: admin_token.as_deref(),
+        home: home.as_deref(),
         worker_socket: worker_socket.as_deref(),
     };
     commands::execute(&environment, parsed.command, parsed.json, stdout).await

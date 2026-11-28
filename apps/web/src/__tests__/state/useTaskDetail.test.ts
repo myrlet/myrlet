@@ -9,7 +9,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HubApiError, HubClient } from "../../api/client";
-import type { TaskRecord, TaskTreeResponse } from "../../api/types";
+import type { TaskReadResponse, TaskRecord, TaskTreeResponse } from "../../api/types";
 import { useTaskDetail } from "../../state/useTaskDetail";
 
 function taskRecord(id: string, rootTaskId = id): TaskRecord {
@@ -47,8 +47,14 @@ function taskRecord(id: string, rootTaskId = id): TaskRecord {
 }
 
 function taskTree(rootTaskId: string): TaskTreeResponse {
-  return { rootTaskId, tasks: [taskRecord(rootTaskId)], truncated: false };
+  return { rootTaskId, tasks: [taskRecord(rootTaskId)], related: [], truncated: false };
 }
+
+/** Wrap a full Task record as the `{ task, summary, related }` read response. */
+function taskRead(record: TaskRecord | null): TaskReadResponse {
+  return { task: record, summary: null, related: [] };
+}
+
 
 afterEach(() => {
   cleanup();
@@ -66,7 +72,9 @@ function setup() {
 describe("useTaskDetail", () => {
   it("reads the selected task and then its root tree at depth 5 with a 200-task limit", async () => {
     const { client, result } = setup();
-    const getTask = vi.spyOn(client, "getTask").mockResolvedValue(taskRecord("child", "root"));
+    const getTask = vi
+      .spyOn(client, "getTask")
+      .mockResolvedValue(taskRead(taskRecord("child", "root")));
     const getTree = vi.spyOn(client, "getTaskTree").mockResolvedValue(taskTree("root"));
 
     await act(async () => {
@@ -87,7 +95,7 @@ describe("useTaskDetail", () => {
     const { client, result } = setup();
     const task = taskRecord("child", "root");
     const tree = taskTree("root");
-    vi.spyOn(client, "getTask").mockResolvedValue(task);
+    vi.spyOn(client, "getTask").mockResolvedValue(taskRead(task));
     const getTree = vi.spyOn(client, "getTaskTree").mockResolvedValue(tree);
     await act(async () => { await result.current.selectTask("child"); });
 
@@ -112,7 +120,7 @@ describe("useTaskDetail", () => {
 
   it.each(["current", "replaced"])("handles a late tree 401 from a %s Hub session", async (session) => {
     const { client, clientRef, onAuthFailure, result } = setup();
-    vi.spyOn(client, "getTask").mockResolvedValue(taskRecord("child", "root"));
+    vi.spyOn(client, "getTask").mockResolvedValue(taskRead(taskRecord("child", "root")));
     let rejectTree!: (error: Error) => void;
     vi.spyOn(client, "getTaskTree").mockImplementationOnce(
       () => new Promise<TaskTreeResponse>((_, reject) => { rejectTree = reject; }),
@@ -141,10 +149,10 @@ describe("useTaskDetail", () => {
 
   it("drops a Task read that resolves after another Task is selected", async () => {
     const { client, result } = setup();
-    const pending = new Map<string, (task: TaskRecord) => void>();
+    const pending = new Map<string, (task: TaskReadResponse) => void>();
     vi.spyOn(client, "getTask").mockImplementation(
       (taskId) =>
-        new Promise<TaskRecord>((resolve) => {
+        new Promise<TaskReadResponse>((resolve) => {
           pending.set(taskId, resolve);
         }),
     );
@@ -158,11 +166,11 @@ describe("useTaskDetail", () => {
     act(() => { second = result.current.selectTask("t2"); });
 
     await act(async () => {
-      pending.get("t2")?.(taskRecord("t2"));
+      pending.get("t2")?.(taskRead(taskRecord("t2")));
       await second;
     });
     await act(async () => {
-      pending.get("t1")?.(taskRecord("t1"));
+      pending.get("t1")?.(taskRead(taskRecord("t1")));
       await first;
     });
     expect(result.current.selectedTaskId).toBe("t2");
@@ -174,9 +182,9 @@ describe("useTaskDetail", () => {
     let rejectFirst!: (error: Error) => void;
     vi.spyOn(client, "getTask")
       .mockImplementationOnce(
-        () => new Promise<TaskRecord>((_, reject) => { rejectFirst = reject; }),
+        () => new Promise<TaskReadResponse>((_, reject) => { rejectFirst = reject; }),
       )
-      .mockResolvedValueOnce(taskRecord("t2"));
+      .mockResolvedValueOnce(taskRead(taskRecord("t2")));
     vi.spyOn(client, "getTaskTree").mockImplementation(async (rootTaskId) =>
       taskTree(rootTaskId),
     );
@@ -197,16 +205,16 @@ describe("useTaskDetail", () => {
 
   it("drops a Task read that resolves after the Hub session is replaced", async () => {
     const { client, clientRef, onAuthFailure, result } = setup();
-    let resolveTask!: (task: TaskRecord) => void;
+    let resolveTask!: (task: TaskReadResponse) => void;
     vi.spyOn(client, "getTask").mockImplementation(
-      () => new Promise<TaskRecord>((resolve) => { resolveTask = resolve; }),
+      () => new Promise<TaskReadResponse>((resolve) => { resolveTask = resolve; }),
     );
 
     let read!: Promise<void>;
     act(() => { read = result.current.selectTask("t1"); });
     clientRef.current = new HubClient({ baseUrl: "", token: "{{SECRET_m6p1r4tz}}" });
     await act(async () => {
-      resolveTask(taskRecord("t1"));
+      resolveTask(taskRead(taskRecord("t1")));
       await read;
     });
 
@@ -217,20 +225,20 @@ describe("useTaskDetail", () => {
 
   it("keeps the foreground spinner off while a background read is in flight", async () => {
     const { client, result } = setup();
-    vi.spyOn(client, "getTask").mockResolvedValue(taskRecord("t1"));
+    vi.spyOn(client, "getTask").mockResolvedValue(taskRead(taskRecord("t1")));
     vi.spyOn(client, "getTaskTree").mockResolvedValue(taskTree("t1"));
     await act(async () => { await result.current.selectTask("t1"); });
 
-    let release!: (task: TaskRecord) => void;
+    let release!: (task: TaskReadResponse) => void;
     vi.spyOn(client, "getTask").mockImplementationOnce(
-      () => new Promise<TaskRecord>((resolve) => { release = resolve; }),
+      () => new Promise<TaskReadResponse>((resolve) => { release = resolve; }),
     );
     let refresh!: Promise<void>;
     act(() => { refresh = result.current.refreshSelected(); });
     expect(result.current.detailLoading).toBe(false);
 
     await act(async () => {
-      release(taskRecord("t1"));
+      release(taskRead(taskRecord("t1")));
       await refresh;
     });
     expect(result.current.detailLoading).toBe(false);

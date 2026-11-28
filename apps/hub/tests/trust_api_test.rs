@@ -29,14 +29,16 @@ async fn queued_task(hub: &common::Hub, key: &str) -> String {
 }
 
 #[tokio::test]
-async fn policy_defaults_are_on_and_readable_by_either_principal() {
+async fn policy_defaults_are_on_and_readable_by_admin_only() {
     let hub = start(10_000).await;
-    let (_, credential) = hub.pair().await;
+    let (worker_id, credential) = hub.pair().await;
     let admin = hub.get_admin("/v1/settings/security-trust").await;
     assert_eq!(admin.0, 200, "{}", admin.1);
     assert_eq!(admin.1["requireWorkerApproval"], true);
     assert_eq!(admin.1["requireConfigurationApply"], true);
 
+    // Even an owner-tier Worker cannot read or change system security configuration.
+    hub.set_tier(&worker_id, "owner").await;
     let worker_read = hub
         .request(
             "GET",
@@ -46,8 +48,8 @@ async fn policy_defaults_are_on_and_readable_by_either_principal() {
             None,
         )
         .await;
-    assert_eq!(worker_read.0, 200, "{}", worker_read.1);
-    // A Worker credential may read the policies but never change them.
+    assert_eq!(worker_read.0, 403, "{}", worker_read.1);
+    assert_eq!(worker_read.1["requiredTier"], "admin");
     let denied = hub
         .request(
             "PATCH",
@@ -57,7 +59,7 @@ async fn policy_defaults_are_on_and_readable_by_either_principal() {
             Some(r#"{"requireWorkerApproval":false}"#),
         )
         .await;
-    assert_eq!(denied.0, 401);
+    assert_eq!(denied.0, 403);
     assert_eq!(
         hub.get_admin("/v1/settings/security-trust").await.1["requireWorkerApproval"],
         true
@@ -104,7 +106,7 @@ async fn a_pending_worker_cannot_claim_and_approval_is_idempotent() {
     assert_eq!(refused.0, 409, "{}", refused.1);
     assert_eq!(refused.1["error"], "InvalidTransition");
     assert_eq!(
-        hub.get_admin(&format!("/v1/tasks/{task_id}")).await.1["status"],
+        hub.get_admin(&format!("/v1/tasks/{task_id}")).await.1["task"]["status"],
         "queued"
     );
 

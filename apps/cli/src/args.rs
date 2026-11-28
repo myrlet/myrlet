@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use myrlet_protocol::{TaskDefinition, TaskTreeDirection};
+use myrlet_protocol::{PermissionTier, TaskDefinition, TaskTreeDirection};
 
 use crate::CliError;
 
@@ -93,6 +93,10 @@ pub enum Command {
     WorkersConfigApply {
         id: String,
         revision: u64,
+    },
+    WorkersPermissionSet {
+        id: String,
+        tier: PermissionTier,
     },
     EventsWatch {
         cursor: Option<u64>,
@@ -310,6 +314,7 @@ fn parse_workers(scanner: &mut Scanner) -> Result<Command, CliError> {
             Ok(Command::WorkersApprove { id })
         }
         Some("config") => parse_workers_config(scanner),
+        Some("permission") => parse_workers_permission(scanner),
         Some(other) => Err(CliError::Usage(format!(
             "unknown workers command {other:?}"
         ))),
@@ -369,6 +374,28 @@ fn parse_workers_config(scanner: &mut Scanner) -> Result<Command, CliError> {
         ))),
         None => Err(CliError::Usage(
             "workers config requires show or apply".to_string(),
+        )),
+    }
+}
+
+/// `workers permission set <id> --tier worker|owner`.
+fn parse_workers_permission(scanner: &mut Scanner) -> Result<Command, CliError> {
+    match scanner.take_token().as_deref() {
+        Some("set") => {
+            let mut raw = RawArgs::parse(scanner)?;
+            let id = raw.positional("workers permission set <id>")?;
+            let tier = raw.required("--tier")?;
+            raw.finish("workers permission set")?;
+            Ok(Command::WorkersPermissionSet {
+                id,
+                tier: crate::commands::parse_permission_tier(&tier)?,
+            })
+        }
+        Some(other) => Err(CliError::Usage(format!(
+            "unknown workers permission command {other:?}"
+        ))),
+        None => Err(CliError::Usage(
+            "workers permission requires set".to_string(),
         )),
     }
 }

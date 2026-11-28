@@ -4,7 +4,7 @@
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use myrlet_protocol::{WorkerApprovalStatus, WorkerId};
+use myrlet_protocol::{PermissionTier, WorkerApprovalStatus, WorkerId};
 
 use crate::error::StoreError;
 use crate::idempotency::hex;
@@ -18,6 +18,7 @@ pub const EVENT_WORKER_PAIRED: &str = "worker.paired";
 pub const EVENT_WORKER_ROTATED: &str = "worker.rotated";
 pub const EVENT_WORKER_REVOKED: &str = "worker.revoked";
 pub const EVENT_WORKER_APPROVED: &str = "worker.approved";
+pub const EVENT_WORKER_PERMISSION_TIER: &str = "worker.permission_tier";
 
 /// Stored Worker row without the derived Snapshot fields.
 ///
@@ -29,6 +30,8 @@ pub struct WorkerRow {
     pub worker_id: WorkerId,
     pub revoked: bool,
     pub approval: WorkerApprovalStatus,
+    /// Server-controlled tier of this Worker principal; never supplied by a client.
+    pub permission_tier: PermissionTier,
     pub connection_epoch: u64,
     pub inventory_json: Option<String>,
     pub reported_revision: Option<u64>,
@@ -61,6 +64,7 @@ type RawWorker = (
     String,
     i64,
     String,
+    String,
     i64,
     Option<String>,
     Option<i64>,
@@ -84,6 +88,7 @@ fn map_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawWorker> {
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
+        row.get(11)?,
     ))
 }
 
@@ -95,6 +100,18 @@ fn parse_approval(raw: &str) -> Result<WorkerApprovalStatus, StoreError> {
             "unknown stored worker approval {other}"
         ))),
     }
+}
+
+/// Parse the stored tier, failing closed on any value outside the Worker tiers.
+///
+/// A missing or corrupt tier must never widen authority, so it is a storage error
+/// rather than a silent fallback to `worker` or `owner`.
+pub(crate) fn parse_permission_tier(raw: &str) -> Result<PermissionTier, StoreError> {
+    PermissionTier::parse(raw).ok_or_else(|| {
+        StoreError::invalid(format!(
+            "stored worker permission tier {raw:?} is not worker or owner"
+        ))
+    })
 }
 
 fn parse_revision(value: Option<i64>) -> Result<Option<u64>, StoreError> {
@@ -111,22 +128,23 @@ fn to_worker_row(raw: RawWorker) -> Result<WorkerRow, StoreError> {
         worker_id: WorkerId::new(raw.0),
         revoked: raw.1 != 0,
         approval: parse_approval(&raw.2)?,
-        connection_epoch: u64::try_from(raw.3)
+        permission_tier: parse_permission_tier(&raw.3)?,
+        connection_epoch: u64::try_from(raw.4)
             .map_err(|_| StoreError::invalid("stored connection epoch is negative"))?,
-        inventory_json: raw.4,
-        reported_revision: parse_revision(raw.5)?,
-        reported_config_json: raw.6,
-        applied_revision: parse_revision(raw.7)?,
-        applied_config_json: raw.8,
-        revision_high_water: u64::try_from(raw.9)
+        inventory_json: raw.5,
+        reported_revision: parse_revision(raw.6)?,
+        reported_config_json: raw.7,
+        applied_revision: parse_revision(raw.8)?,
+        applied_config_json: raw.9,
+        revision_high_water: u64::try_from(raw.10)
             .map_err(|_| StoreError::invalid("stored revision high-water mark is negative"))?,
-        last_seen_at_ms: raw.10,
+        last_seen_at_ms: raw.11,
     })
 }
 
-const WORKER_COLUMNS: &str = "worker_id, revoked, approval, connection_epoch, inventory_json, \
-     reported_revision, reported_config_json, applied_revision, applied_config_json, \
-     revision_high_water, last_seen_at_ms";
+const WORKER_COLUMNS: &str = "worker_id, revoked, approval, permission_tier, connection_epoch, \
+     inventory_json, reported_revision, reported_config_json, applied_revision, \
+     applied_config_json, revision_high_water, last_seen_at_ms";
 
 pub fn load_worker(conn: &Connection, worker_id: &WorkerId) -> Result<WorkerRow, StoreError> {
     let sql = format!("SELECT {WORKER_COLUMNS} FROM workers WHERE worker_id = ?1");

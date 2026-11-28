@@ -25,29 +25,61 @@ async fn authentication_precedes_body_parsing_and_separates_principals() {
     assert_eq!(malformed.0, 400);
     assert_eq!(malformed.1["error"], "BadRequest");
 
-    let (_, credential) = hub.pair().await;
-    // A Worker credential may read the fleet but may never manage it.
+    let (worker_id, credential) = hub.pair().await;
+    // A worker-tier credential is valid but cannot enumerate the fleet, coordinate
+    // Tasks, or administer Workers; each denial names the required and current tier.
     let listed = hub
         .request("GET", "/v1/workers", Some(&credential), None, None)
         .await;
-    assert_eq!(listed.0, 200);
-    let rotate = format!(
-        "/v1/workers/{}/rotate",
-        listed.1["workers"][0]["workerId"].as_str().unwrap()
-    );
+    assert_eq!(listed.0, 403, "{}", listed.1);
+    assert_eq!(listed.1["error"], "Forbidden");
+    assert_eq!(listed.1["requiredTier"], "owner");
+    assert_eq!(listed.1["currentTier"], "worker");
+    let rotate = format!("/v1/workers/{worker_id}/rotate");
     let denied = hub
         .request("POST", &rotate, Some(&credential), None, None)
         .await;
-    assert_eq!(denied.0, 401, "a Worker read credential must not rotate");
+    assert_eq!(denied.0, 403, "a Worker credential must not rotate");
+    assert_eq!(denied.1["requiredTier"], "admin");
+    let task = hub
+        .post_admin(
+            "/v1/tasks",
+            Some("owner-required"),
+            Some(r#"{"title":"T","prompt":"p"}"#),
+        )
+        .await;
+    assert_eq!(task.0, 201, "{}", task.1);
+    let task_id = task.1["task"]["id"].as_str().unwrap();
+    let cancel = json!({ "expectedTaskVersion": task.1["task"]["version"] }).to_string();
+    let coordinate = hub
+        .request(
+            "POST",
+            &format!("/v1/tasks/{task_id}/cancel"),
+            Some(&credential),
+            Some("worker-cancel"),
+            Some(&cancel),
+        )
+        .await;
+    assert_eq!(coordinate.0, 403, "{}", coordinate.1);
+    // Admin is a separate principal; it cannot report Worker execution state.
     let progress = "/v1/worker/deliveries/delivery_x/progress";
     assert_eq!(hub.post_admin(progress, None, Some("{}")).await.0, 401);
     assert_eq!(hub.get_admin("/v1/workers/connect").await.0, 401);
 }
 
 #[tokio::test]
-async fn workers_can_read_tasks_trees_workers_and_events_without_the_admin_token() {
+async fn owner_tier_reads_globally_and_coordinates_but_cannot_administer() {
     let hub = start(10_000).await;
     let (worker_id, credential, _socket, _epoch) = hub.enrolled().await;
+    assert_eq!(
+        hub.patch_admin(
+            &format!("/v1/workers/{worker_id}/permission-tier"),
+            Some(r#"{"permissionTier":"owner"}"#),
+        )
+        .await
+        .0,
+        200
+    );
     let definition = json!({ "title": "Readable", "prompt": "p" }).to_string();
     let created = hub
         .post_admin("/v1/tasks", Some("read-1"), Some(&definition))
@@ -62,24 +94,46 @@ async fn workers_can_read_tasks_trees_workers_and_events_without_the_admin_token
         format!("/v1/tasks/{task_id}/eligibility"),
         "/v1/workers".to_string(),
         format!("/v1/workers/{worker_id}"),
+        "/v1/snapshot".to_string(),
     ] {
-        let (status, _) = hub
+        let (status, body) = hub
             .request("GET", &path, Some(&credential), None, None)
             .await;
-        assert_eq!(status, 200, "a Worker credential may read {path}");
+        assert_eq!(status, 200, "an owner tier may read {path}: {body}");
     }
-    // A read credential cannot perform management writes.
+    // An owner coordinates Tasks but cannot administer Workers or settings.
     let cancel = json!({ "expectedTaskVersion": created.1["task"]["version"] }).to_string();
-    let denied = hub
-        .request(
+    assert_eq!(
+        hub.request(
             "POST",
             &format!("/v1/tasks/{task_id}/cancel"),
             Some(&credential),
-            Some("read-cancel"),
+            Some("owner-cancel"),
             Some(&cancel),
         )
-        .await;
-    assert_eq!(denied.0, 401);
+        .await
+        .0,
+        200
+    );
+    for (method, path, body) in [
+        ("POST", format!("/v1/workers/{worker_id}/rotate"), None),
+        (
+            "PATCH",
+            format!("/v1/workers/{worker_id}/permission-tier"),
+            Some(r#"{"permissionTier":"worker"}"#),
+        ),
+        (
+            "PATCH",
+            "/v1/settings/security-trust".to_string(),
+            Some(r#"{"requireWorkerApproval":false}"#),
+        ),
+    ] {
+        let denied = hub
+            .request(method, &path, Some(&credential), None, body)
+            .await;
+        assert_eq!(denied.0, 403, "{method} {path}: {}", denied.1);
+        assert_eq!(denied.1["requiredTier"], "admin", "{method} {path}");
+    }
 }
 
 #[tokio::test]
@@ -132,9 +186,9 @@ async fn waking_a_worker_creates_no_delivery_and_a_claim_commits_one() {
     assert_eq!(wakeup["kind"], "hub.wakeup");
     assert_eq!(wakeup["payload"]["taskId"], task_id);
     let shown = hub.get_admin(&format!("/v1/tasks/{task_id}")).await;
-    assert_eq!(shown.1["status"], "queued");
+    assert_eq!(shown.1["task"]["status"], "queued");
     assert!(
-        shown.1["currentDelivery"].is_null(),
+        shown.1["task"]["currentDelivery"].is_null(),
         "a wakeup is only a hint"
     );
 
@@ -161,7 +215,7 @@ async fn waking_a_worker_creates_no_delivery_and_a_claim_commits_one() {
     assert_eq!(repeated.1["delivery"]["id"], claimed.1["delivery"]["id"]);
     let shown = hub.get_admin(&format!("/v1/tasks/{task_id}")).await;
     assert_eq!(
-        shown.1["currentDelivery"]["id"],
+        shown.1["task"]["currentDelivery"]["id"],
         claimed.1["delivery"]["id"]
     );
 }
@@ -204,8 +258,11 @@ async fn claim_hold_finish_and_progress_drive_the_task_to_finished() {
 
     let task_path = format!("/v1/tasks/{task_id}");
     let detail = hub.get_admin(&task_path).await;
-    assert_eq!(detail.1["currentDelivery"]["state"], "accepted");
-    assert_eq!(detail.1["currentDelivery"]["progress"]["text"], "started");
+    assert_eq!(detail.1["task"]["currentDelivery"]["state"], "accepted");
+    assert_eq!(
+        detail.1["task"]["currentDelivery"]["progress"]["text"],
+        "started"
+    );
 
     let finish = json!({ "epoch": epoch }).to_string();
     let path = format!("/v1/worker/deliveries/{delivery_id}/finish");
@@ -226,7 +283,7 @@ async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
     let task_path = format!("/v1/tasks/{task_id}");
     let detail = hub.get_admin(&task_path).await;
     let cancel = json!({
-        "expectedTaskVersion": detail.1["version"],
+        "expectedTaskVersion": detail.1["task"]["version"],
         "reason": "operator",
     });
     let path = format!("/v1/tasks/{task_id}/cancel");
@@ -245,7 +302,10 @@ async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
     let late = hub.post_worker(&path, &credential, &finish).await;
     assert_eq!(late.1["taskStatus"], "cancelled");
     assert_eq!(late.1["changed"], false);
-    assert_eq!(hub.get_admin(&task_path).await.1["status"], "cancelled");
+    assert_eq!(
+        hub.get_admin(&task_path).await.1["task"]["status"],
+        "cancelled"
+    );
 }
 
 #[tokio::test]
@@ -259,7 +319,7 @@ async fn result_reconciles_latest_content_and_clears_when_absent() {
 
     assert_eq!(hub.post_admin(&path, None, Some("{}")).await.0, 401);
     let task_path = format!("/v1/tasks/{task_id}");
-    assert!(hub.get_admin(&task_path).await.1["resultMarkdown"].is_null());
+    assert!(hub.get_admin(&task_path).await.1["task"]["resultMarkdown"].is_null());
 
     let report = json!({ "epoch": epoch, "text": "# Findings\n\n- one" });
     let recorded = hub
@@ -281,7 +341,7 @@ async fn result_reconciles_latest_content_and_clears_when_absent() {
         .await;
     assert_eq!(replaced.0, 200, "{}", replaced.1);
     assert_eq!(
-        hub.get_admin(&task_path).await.1["resultMarkdown"],
+        hub.get_admin(&task_path).await.1["task"]["resultMarkdown"],
         "# Different"
     );
 
@@ -305,7 +365,7 @@ async fn result_reconciles_latest_content_and_clears_when_absent() {
         .await;
     assert_eq!(cleared.0, 200, "{}", cleared.1);
     assert_eq!(cleared.1["cleared"], true);
-    assert!(hub.get_admin(&task_path).await.1["resultMarkdown"].is_null());
+    assert!(hub.get_admin(&task_path).await.1["task"]["resultMarkdown"].is_null());
     let repeat = hub
         .post_worker(
             &path,
@@ -345,7 +405,10 @@ async fn a_delayed_old_epoch_result_cannot_overwrite_a_newer_value() {
         .await;
     assert_eq!(refused.0, 409, "{}", refused.1);
     let task_path = format!("/v1/tasks/{task_id}");
-    assert_eq!(hub.get_admin(&task_path).await.1["resultMarkdown"], "# v2");
+    assert_eq!(
+        hub.get_admin(&task_path).await.1["task"]["resultMarkdown"],
+        "# v2"
+    );
 }
 
 #[tokio::test]
@@ -380,8 +443,8 @@ async fn a_finished_prerequisite_releases_only_ready_dependents() {
         .await;
     assert_eq!(closed.0, 200, "{}", closed.1);
     let released = hub.get_admin(&format!("/v1/tasks/{second_id}")).await;
-    assert_eq!(released.1["status"], "queued");
-    assert_eq!(released.1["blockedBy"].as_array().unwrap().len(), 0);
+    assert_eq!(released.1["task"]["status"], "queued");
+    assert_eq!(released.1["task"]["blockedBy"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -546,7 +609,7 @@ async fn same_worker_recovers_claim_with_discarded_response() {
             .0,
         200
     );
-    let committed = hub.get_admin(&format!("/v1/tasks/{id}")).await.1;
+    let committed = hub.get_admin(&format!("/v1/tasks/{id}")).await.1["task"].clone();
     assert_eq!(committed["status"], "dispatched");
     let (_next, new_epoch) = hub.connect(&worker, &cred).await;
     assert!(new_epoch > epoch);
@@ -598,7 +661,7 @@ async fn wakeup_rotates_past_two_silent_workers() {
         assert_eq!(wake["kind"], "hub.wakeup");
         assert_eq!(wake["payload"]["taskId"], id);
     }
-    let state = hub.get_admin(&format!("/v1/tasks/{id}")).await.1;
+    let state = hub.get_admin(&format!("/v1/tasks/{id}")).await.1["task"].clone();
     assert_eq!(state["status"], "queued");
     assert!(state["currentDelivery"].is_null());
     let claim = json!({"taskId":id,"slotId":"slot-a","connectionEpoch":epoch}).to_string();

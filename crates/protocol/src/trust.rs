@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::id::WorkerId;
 use crate::inventory::{SlotInventory, WorkerInventory};
 
 /// Effective trust state of one enrolled Worker.
@@ -15,6 +16,59 @@ pub enum WorkerApprovalStatus {
     Pending,
     Approved,
     Revoked,
+}
+
+/// Server-controlled permission tier of a Worker principal (`security.md`).
+///
+/// Only these two tiers can be stored on a Worker; the Admin principal is a
+/// separate identity authenticated by the Hub Admin token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionTier {
+    /// Execute assigned Deliveries and read one-hop related-Task summaries.
+    #[default]
+    Worker,
+    /// Global Task coordination plus read-only Worker/Agent observability.
+    Owner,
+}
+
+impl PermissionTier {
+    /// Canonical wire token.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Worker => "worker",
+            Self::Owner => "owner",
+        }
+    }
+
+    /// Parse the canonical wire token; anything else is refused.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "worker" => Some(Self::Worker),
+            "owner" => Some(Self::Owner),
+            _ => None,
+        }
+    }
+
+    /// Whether this tier may coordinate any Task and read global control-plane state.
+    pub fn is_global(self) -> bool {
+        matches!(self, Self::Owner)
+    }
+}
+
+/// `PATCH /v1/workers/{id}/permission-tier` request: the tier Admin is assigning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateWorkerPermissionTierRequest {
+    pub permission_tier: PermissionTier,
+}
+
+/// `PATCH /v1/workers/{id}/permission-tier` response: the stored tier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPermissionTierResponse {
+    pub worker_id: WorkerId,
+    pub permission_tier: PermissionTier,
 }
 
 /// The reviewable scheduling inventory the Hub keeps for one Worker revision.

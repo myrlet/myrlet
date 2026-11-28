@@ -28,13 +28,14 @@ pub fn worker_list<W: Write>(
     }
     writeln!(
         out,
-        "WORKER | APPROVAL | ONLINE | DELIVERIES | REPORTED | APPLIED | SLOTS"
+        "WORKER | TIER | APPROVAL | ONLINE | DELIVERIES | REPORTED | APPLIED | SLOTS"
     )?;
     for worker in &response.workers {
         writeln!(
             out,
-            "{:<20} {:<8} {:<7} {:>10}  {:>8} {:>7}  {}",
+            "{:<20} {:<6} {:<8} {:<7} {:>10}  {:>8} {:>7}  {}",
             worker.worker_id,
+            worker.permission_tier.as_str(),
             approval_label(worker.approval),
             worker.online,
             worker.active_deliveries,
@@ -57,6 +58,7 @@ pub fn worker_detail<W: Write>(
     }
     let worker = &detail.worker;
     writeln!(out, "Worker: {}", worker.worker_id)?;
+    writeln!(out, "PermissionTier: {}", worker.permission_tier.as_str())?;
     writeln!(out, "Approval: {}", approval_label(worker.approval))?;
     writeln!(out, "Online: {}", worker.online)?;
     writeln!(out, "Revoked: {}", worker.revoked)?;
@@ -275,5 +277,22 @@ pub fn policy<W: Write>(
         out,
         "AutoApplyConfiguration: {}",
         !settings.require_configuration_apply
+    )
+}
+
+/// Print the stored permission tier after an Admin change.
+pub fn permission_tier<W: Write>(
+    out: &mut W,
+    response: &myrlet_protocol::WorkerPermissionTierResponse,
+    as_json: bool,
+) -> io::Result<()> {
+    if as_json {
+        return to_json(out, response);
+    }
+    writeln!(
+        out,
+        "Worker {} permission tier: {}",
+        response.worker_id,
+        response.permission_tier.as_str()
     )
 }

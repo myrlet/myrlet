@@ -85,7 +85,7 @@ function record(id: string, options: RecordOptions = {}): TaskRecord {
 }
 
 function tree(tasks: TaskRecord[], truncated = false): TaskTreeResponse {
-  return { rootTaskId: "root", tasks, truncated };
+  return { rootTaskId: "root", tasks, related: [], truncated };
 }
 
 const noop = (): void => undefined;

@@ -7,13 +7,13 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use myrlet_protocol::{
     ApplyWorkerConfigRequest, ApplyWorkerConfigResponse, ClaimTaskRequest,
-    CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest, WorkerDetail, WorkerId,
-    WorkerListResponse,
+    CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest,
+    UpdateWorkerPermissionTierRequest, WorkerDetail, WorkerId, WorkerListResponse,
 };
 
 use crate::auth;
 use crate::error::ApiError;
-use crate::http::{read_bounded_json, require_reader, run_bounded};
+use crate::http::{read_bounded_json, require_global_reader, run_bounded};
 use crate::state::{now_ms, HubState};
 use crate::wakeup::spawn_wakeup;
 
@@ -49,7 +49,7 @@ pub async fn create_enrollment_code(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_admin(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: CreateEnrollmentCodeRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
@@ -64,12 +64,12 @@ pub async fn create_enrollment_code(
 
 /// `GET /v1/workers`: enrolled Workers with connectivity and reported inventory.
 ///
-/// Owners and Workers may both read the fleet; neither read grants management authority.
+/// Owner and Admin may read the fleet; a `worker`-tier credential cannot enumerate it.
 pub async fn list_workers(
     State(state): State<HubState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
+    require_global_reader(&state, &headers).await?;
     let workers = state.store.list_workers(state.online_map()).await?;
     Ok(Json(WorkerListResponse { workers }).into_response())
 }
@@ -80,7 +80,7 @@ pub async fn get_worker(
     headers: HeaderMap,
     Path(worker_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
+    require_global_reader(&state, &headers).await?;
     let detail: WorkerDetail = state
         .store
         .worker_detail(
@@ -101,12 +101,39 @@ pub async fn claim_task(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let worker_id = auth::require_worker(&state, &headers).await?;
+    let worker = auth::require_worker(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: ClaimTaskRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
-        let (response, event) = state.store.claim_task(worker_id, request, now_ms()).await?;
+        let (response, event) = state
+            .store
+            .claim_task(worker.worker_id, request, now_ms())
+            .await?;
         state.publish_event(event);
+        Ok(Json(response).into_response())
+    })
+    .await
+}
+
+/// `PATCH /v1/workers/{id}/permission-tier`: set the server-controlled tier.
+///
+/// Admin only; the request names `worker` or `owner`, and the `admin` tier has no Worker
+/// representation, so it can never be assigned here.
+pub async fn update_permission_tier(
+    State(state): State<HubState>,
+    headers: HeaderMap,
+    Path(worker_id): Path<String>,
+    body: Body,
+) -> Result<Response, ApiError> {
+    auth::require_admin(&state, &headers).await?;
+    run_bounded(state.clone(), async move {
+        let request: UpdateWorkerPermissionTierRequest =
+            read_bounded_json(body, state.config.max_body_bytes).await?;
+        let (response, event) = state
+            .store
+            .set_worker_permission_tier(WorkerId::new(worker_id), request.permission_tier, now_ms())
+            .await?;
+        state.publish_event(Some(event));
         Ok(Json(response).into_response())
     })
     .await
@@ -118,7 +145,7 @@ pub async fn rotate_worker(
     headers: HeaderMap,
     Path(worker_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_admin(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let worker_id = WorkerId::new(worker_id);
         let (rotated, event) = state
@@ -139,7 +166,7 @@ pub async fn revoke_worker(
     headers: HeaderMap,
     Path(worker_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_admin(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let worker_id = WorkerId::new(worker_id);
         let event = state
@@ -162,7 +189,7 @@ pub async fn approve_worker(
     headers: HeaderMap,
     Path(worker_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_admin(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let event = state
             .store
@@ -183,7 +210,7 @@ pub async fn apply_worker_config(
     Path(worker_id): Path<String>,
     body: Body,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_admin(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: ApplyWorkerConfigRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;

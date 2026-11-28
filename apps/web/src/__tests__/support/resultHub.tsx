@@ -51,6 +51,7 @@ const WORKER: WorkerRecord = {
   online: true,
   revoked: false,
   approval: "approved",
+  permissionTier: "worker",
   connectionEpoch: 4,
   lastSeenAtMs: 1_700_000_000_000,
   activeDeliveries: 1,
@@ -188,10 +189,15 @@ export function stubHub(initial: string | null): Harness {
       }
       const [pathname] = path.split("?");
       if (/^\/v1\/tasks\/[^/]+\/tree$/.test(pathname)) {
-        return jsonResponse({ rootTaskId: "t1", tasks: [record(current)], truncated: false });
+        return jsonResponse({
+          rootTaskId: "t1",
+          tasks: [record(current)],
+          related: [],
+          truncated: false,
+        });
       }
       if (/^\/v1\/tasks\/[^/]+$/.test(pathname)) {
-        return jsonResponse(record(current));
+        return jsonResponse({ task: record(current), summary: null, related: [] });
       }
       return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
     }),

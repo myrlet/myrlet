@@ -66,9 +66,14 @@ export function useTaskDetail(options: UseTaskDetailOptions) {
         setDetailLoading(true);
       }
       try {
-        const task = await client.getTask(taskId);
+        const read = await client.getTask(taskId);
         if (!isCurrent()) {
           return;
+        }
+        // Admin always reads the full record; a summary-only response is not selectable.
+        const task = read.task;
+        if (task === null) {
+          throw new HubApiError(404, "NotFound", "this Task is not readable in full");
         }
         setSelectedTask(task);
 

@@ -20,7 +20,7 @@ import type {
   ListWorkersResponse,
   RotateWorkerResponse,
   SecurityTrustSettings,
-  TaskRecord,
+  TaskReadResponse,
   TaskTreeDirection,
   TaskTreeResponse,
   UpdateSecurityTrustRequest,
@@ -278,8 +278,8 @@ export class HubClient {
   }
 
   /** Authoritative Task record, its current Delivery, and latest Progress. */
-  async getTask(taskId: string): Promise<TaskRecord> {
-    return this.request<TaskRecord>("GET", `/v1/tasks/${encodeURIComponent(taskId)}`);
+  async getTask(taskId: string): Promise<TaskReadResponse> {
+    return this.request<TaskReadResponse>("GET", `/v1/tasks/${encodeURIComponent(taskId)}`);
   }
 
   /** Bounded ancestors or descendants of one Task (simple limit, no cursor). */

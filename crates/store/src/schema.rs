@@ -2,7 +2,8 @@
 
 use rusqlite::Connection;
 
-/// Apply the durability pragmas and create the V1 schema on a fresh or existing file.
+/// Apply the durability pragmas, create the V1 schema on a fresh file, and add any
+/// Worker permission-tier column to an existing database.
 pub fn initialize(conn: &Connection) -> Result<(), rusqlite::Error> {
     for pragma in [
         "PRAGMA journal_mode = WAL",
@@ -13,6 +14,37 @@ pub fn initialize(conn: &Connection) -> Result<(), rusqlite::Error> {
         apply(conn, pragma)?;
     }
     conn.execute_batch(SCHEMA)?;
+    // A database created before the three-tier model keeps its Worker rows; the column
+    // default gives every existing Worker the least-privileged `worker` tier.
+    ensure_column(
+        conn,
+        "workers",
+        "permission_tier",
+        "TEXT NOT NULL DEFAULT 'worker'",
+    )?;
+    Ok(())
+}
+
+/// Add `column` when a pre-existing table lacks it; `CREATE TABLE IF NOT EXISTS` never
+/// changes an existing table, so this is the whole in-place schema step.
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> Result<(), rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(());
+        }
+    }
+    drop(rows);
+    drop(stmt);
+    conn.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+    ))?;
     Ok(())
 }
 
@@ -52,6 +84,7 @@ CREATE TABLE IF NOT EXISTS workers (
     token_sha256       TEXT NOT NULL,
     revoked            INTEGER NOT NULL DEFAULT 0,
     approval           TEXT NOT NULL DEFAULT 'pending',
+    permission_tier    TEXT NOT NULL DEFAULT 'worker',
     connection_epoch   INTEGER NOT NULL DEFAULT 0,
     inventory_revision INTEGER NOT NULL DEFAULT 0,
     inventory_json     TEXT,

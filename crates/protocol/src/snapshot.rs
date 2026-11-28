@@ -7,9 +7,9 @@ use crate::delivery::DeliveryView;
 use crate::id::{TaskId, WorkerId};
 use crate::inventory::HostFacts;
 use crate::task::{BlockingDependency, SubtreeCounts, TaskStatus};
-use crate::trust::{WorkerApprovalStatus, WorkerSchedulingConfig};
+use crate::trust::{PermissionTier, WorkerApprovalStatus, WorkerSchedulingConfig};
 
-/// One Worker's connectivity, approval, and applied scheduling inventory.
+/// One Worker's connectivity, approval, permission tier, and applied scheduling inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotWorker {
@@ -17,6 +17,8 @@ pub struct SnapshotWorker {
     pub online: bool,
     pub revoked: bool,
     pub approval: WorkerApprovalStatus,
+    /// Server-controlled tier of this Worker principal; never supplied by the client.
+    pub permission_tier: PermissionTier,
     pub connection_epoch: u64,
     pub last_seen_at_ms: Option<i64>,
     pub active_deliveries: u64,
@@ -96,6 +98,7 @@ mod tests {
                 online: true,
                 revoked: false,
                 approval: WorkerApprovalStatus::Approved,
+                permission_tier: PermissionTier::Worker,
                 connection_epoch: 7,
                 last_seen_at_ms: None,
                 active_deliveries: 0,
@@ -117,6 +120,7 @@ mod tests {
         assert_eq!(value["workers"][0]["workerId"], "wkr_000000000000");
         assert_eq!(value["workers"][0]["connectionEpoch"], 7);
         assert_eq!(value["workers"][0]["approval"], "approved");
+        assert_eq!(value["workers"][0]["permissionTier"], "worker");
         assert_eq!(value["workers"][0]["reportedRevision"], 1);
         assert_eq!(value["workers"][0]["appliedRevision"], 1);
         assert!(value["workers"][0]["lastSeenAtMs"].is_null());

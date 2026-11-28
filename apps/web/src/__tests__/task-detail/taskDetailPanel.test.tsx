@@ -89,7 +89,12 @@ function loaded(
   task: TaskRecord,
   overrides: Partial<TaskDetailPanelProps> = {},
 ): TaskDetailPanelProps {
-  const read: TaskTreeResponse = { rootTaskId: task.rootTaskId, tasks: [task], truncated: false };
+  const read: TaskTreeResponse = {
+    rootTaskId: task.rootTaskId,
+    tasks: [task],
+    related: [],
+    truncated: false,
+  };
   return props({ selectedTaskId: task.id, task, tree: read, summary: summary(task), ...overrides });
 }
 
@@ -198,7 +203,12 @@ describe("TaskDetailPanel", () => {
     const leaf = record("leaf", "Leaf work");
     leaf.task.parentTaskId = "parent";
     leaf.depth = 2;
-    const tree: TaskTreeResponse = { rootTaskId: "parent", tasks: [parent, leaf], truncated: false };
+    const tree: TaskTreeResponse = {
+      rootTaskId: "parent",
+      tasks: [parent, leaf],
+      related: [],
+      truncated: false,
+    };
     const onCopyText = vi.fn();
     const onSelectTask = vi.fn();
     const onClose = vi.fn();
@@ -224,7 +234,10 @@ describe("TaskDetailPanel", () => {
     leaf.task.parentTaskId = "outside";
     render(
       <TaskDetailPanel
-        {...props({ task: leaf, tree: { rootTaskId: "outside", tasks: [leaf], truncated: true } })}
+        {...props({
+          task: leaf,
+          tree: { rootTaskId: "outside", tasks: [leaf], related: [], truncated: true },
+        })}
       />,
     );
     // The breadcrumb states only relationships the read returned.

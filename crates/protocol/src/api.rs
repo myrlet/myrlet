@@ -8,11 +8,19 @@ use crate::snapshot::SnapshotWorker;
 use crate::task::TaskRecord;
 
 /// Stable error body; never leaks internal SQLite causes.
+///
+/// A permission-tier denial carries the required tier and the caller's current tier so a
+/// client can explain the failure without inventing its own policy. Both are absent on
+/// every other error, including `401`, which must not describe the credential.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub error: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tier: Option<String>,
 }
 
 /// Process liveness probe body.
@@ -117,12 +125,36 @@ pub enum TaskTreeDirection {
     Descendants,
 }
 
-/// `GET /v1/tasks/{id}/tree` response.
+/// `GET /v1/tasks/{id}` response: the Task within the caller's visibility.
+///
+/// Owner, Admin, and the assigned Worker receive the full `task`; a Worker reading a
+/// directly related Task receives only `summary`. The `related` list always contains
+/// one-hop related Tasks as limited summaries and never expands recursively.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadResponse {
+    /// The full Task record, present when the caller may read it in full.
+    pub task: Option<TaskRecord>,
+    /// Present instead of `task` when the caller may read only a related Task.
+    pub summary: Option<crate::task::RelatedTaskSummary>,
+    #[serde(default)]
+    pub related: Vec<crate::task::RelatedTaskSummary>,
+}
+
+/// `GET /v1/tasks/{id}/tree` response: a Task plus its bounded Task records.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskTreeResponse {
+    /// The anchored Task; a Worker anchor always names its own Delivery-bound Task.
     pub root_task_id: TaskId,
     pub tasks: Vec<TaskRecord>,
+    /// Direct related Tasks as limited summaries.
+    ///
+    /// A Worker credential anchored to its own Delivery-bound Task receives only
+    /// one-hop relatives here instead of expanding the tree; Owner and Admin reads
+    /// leave this empty.
+    #[serde(default)]
+    pub related: Vec<crate::task::RelatedTaskSummary>,
     pub truncated: bool,
 }
 

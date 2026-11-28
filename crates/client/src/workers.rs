@@ -2,8 +2,9 @@
 
 use myrlet_protocol::{
     ApplyWorkerConfigRequest, ApplyWorkerConfigResponse, CreateEnrollmentCodeRequest,
-    CreateEnrollmentCodeResponse, RotateWorkerCredentialResponse, SecurityTrustSettings,
-    UpdateSecurityTrustRequest, WorkerDetail, WorkerId, WorkerListResponse,
+    CreateEnrollmentCodeResponse, PermissionTier, RotateWorkerCredentialResponse,
+    SecurityTrustSettings, UpdateSecurityTrustRequest, UpdateWorkerPermissionTierRequest,
+    WorkerDetail, WorkerId, WorkerListResponse, WorkerPermissionTierResponse,
 };
 
 use crate::error::ClientError;
@@ -90,6 +91,28 @@ impl<T: Transport> Client<T> {
         let body = encode_json(&ApplyWorkerConfigRequest { revision })?;
         let response = self
             .post(&format!("/v1/workers/{id}/config/apply"), None, body)
+            .await?;
+        decode_direct(&response)
+    }
+
+    /// Set a Worker's server-controlled permission tier (`PATCH .../permission-tier`).
+    pub async fn set_worker_permission_tier(
+        &self,
+        id: &WorkerId,
+        tier: PermissionTier,
+    ) -> Result<WorkerPermissionTierResponse, ClientError> {
+        ensure_path_segment(id.as_str())?;
+        let body = encode_json(&UpdateWorkerPermissionTierRequest {
+            permission_tier: tier,
+        })?;
+        let response = self
+            .exchange(
+                "PATCH",
+                &format!("/v1/workers/{id}/permission-tier"),
+                true,
+                None,
+                Some(body),
+            )
             .await?;
         decode_direct(&response)
     }

@@ -48,6 +48,7 @@ describe("Task Detail reads", () => {
         return jsonResponse({
           rootTaskId: summary.rootTaskId,
           tasks: [taskRecord(summary)],
+          related: [],
           truncated: false,
         });
       }
@@ -58,7 +59,7 @@ describe("Task Detail reads", () => {
           500,
         );
       }
-      return jsonResponse(taskRecord(summary));
+      return jsonResponse({ task: taskRecord(summary), summary: null, related: [] });
     });
 
     await connectWorkspace();
@@ -129,13 +130,14 @@ describe("Task Detail reads", () => {
         return jsonResponse({
           rootTaskId: summary.rootTaskId,
           tasks: [taskRecord(summary)],
+          related: [],
           truncated: false,
         });
       }
       if (id === "t3") {
         await t3Gate;
       }
-      return jsonResponse(taskRecord(summary));
+      return jsonResponse({ task: taskRecord(summary), summary: null, related: [] });
     });
 
     await connectWorkspace();
