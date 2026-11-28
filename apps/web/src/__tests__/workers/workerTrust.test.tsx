@@ -156,7 +156,8 @@ describe("Worker trust", () => {
 
     const review = drawer.querySelector<HTMLElement>(".config-review");
     expect(review).not.toBeNull();
-    expect(review?.textContent ?? "").toMatch(/Reported rev 3/);
+    // The reported side is labeled with the revision of the body it loaded.
+    await waitFor(() => expect(review?.textContent ?? "").toMatch(/Reported rev 3/));
     expect(review?.textContent ?? "").toMatch(/Applied rev 2/);
     await waitFor(() =>
       expect(review?.textContent ?? "").toMatch(/changed Slot mac-default/),
