@@ -7,7 +7,7 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import App from "../../App";
@@ -261,6 +261,9 @@ export async function connectAndSelectTask(): Promise<HTMLElement> {
   await waitFor(() => {
     expect(document.querySelector(".app-bar")).not.toBeNull();
   });
+  // Let the workspace's passive effects register their document listeners
+  // before the caller presses keys or clicks surfaces that depend on them.
+  await act(async () => {});
 
   fireEvent.click(
     within(screen.getByRole("group", { name: /workspace mode/i })).getByRole("button", {

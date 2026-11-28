@@ -5,7 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { TASK_STATUS_META, buildTaskTreeRows, formatCapacity } from "../../format";
+import { TASK_STATUS_META, formatCapacity } from "../../format";
+import { buildTaskTreeRows } from "../../model/taskTree";
 import { taskSummary } from "../support/fixtures";
 
 describe("format.ts fact honesty", () => {

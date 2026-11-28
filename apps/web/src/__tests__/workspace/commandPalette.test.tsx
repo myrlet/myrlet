@@ -48,4 +48,36 @@ describe("Command Palette", () => {
       expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull();
     });
   });
+
+  it("wraps Tab inside the palette panel so focus never escapes to the workspace", async () => {
+    await connectWorkspace();
+
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: /command palette/i });
+    const input = within(palette).getByRole("textbox");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+
+    const focusable = Array.from(
+      palette.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      ),
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    expect(first).toBeDefined();
+    expect(last).toBeDefined();
+    expect(first).not.toBe(last);
+
+    last.focus();
+    expect(fireEvent.keyDown(last, { key: "Tab" })).toBe(false);
+    expect(document.activeElement).toBe(first);
+
+    expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(false);
+    expect(document.activeElement).toBe(last);
+
+    // A Tab from the middle of the panel is left to the browser.
+    input.focus();
+    expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(true);
+    expect(document.activeElement).toBe(input);
+  });
 });

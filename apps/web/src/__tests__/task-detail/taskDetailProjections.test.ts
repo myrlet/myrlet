@@ -6,14 +6,14 @@
 
 import { describe, expect, it } from "vitest";
 
-import { compareTasks } from "../model/taskIndex";
-import type { TaskRecord, TaskTreeResponse } from "../api/types";
+import { compareTasks } from "../../model/taskIndex";
+import type { TaskRecord, TaskTreeResponse } from "../../api/types";
 import {
   MAX_ANCESTRY_LENGTH,
   buildAncestry,
   miniTreeRows,
   minimumDepth,
-} from "../components/taskDetail/projections";
+} from "../../components/taskDetail/projections";
 
 function record(
   id: string,

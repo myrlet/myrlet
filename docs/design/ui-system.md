@@ -18,7 +18,7 @@ Explain `held` with the blocking dependency IDs and statuses, and `queued` with 
 
 ## 2. Tokens and Shared Controls
 
-- **Appearance**: exactly two visual themes — **light** and **dark** — selected by **System** (default, follows `prefers-color-scheme`), **Light**, or **Dark**. `hub.themeMode` resolves to `light` / `dark` and is written to `<html data-theme>`; only an explicit choice persists (`myrlet.theme`).
+- **Appearance**: exactly two visual themes — **light** and **dark** — selected by **System** (default, follows `prefers-color-scheme`), **Light**, or **Dark**. `useAppearance` writes the resolved value to `<html data-theme>` and persists the selected preference in `myrlet.theme`.
 - **Brand**: `BrandMark` (the ant collaboration silhouette) paints with `currentColor`; `public/favicon.svg` mirrors the same path and swaps ink to `prefers-color-scheme`.
 - **Fact wording**: Single formatting source for Task status (`Held`, `Queued`, `Dispatched`, `Handling ended`, `Cancelled`), Delivery milestones, and Progress provenance.
 - **Spacing scale**: `4px`, `8px`, `12px`, `16px`, `24px`. Compact desktop controls `28–32px`; dense rows `28–38px`.
@@ -43,7 +43,14 @@ V1 is a single, full-width **Work Atlas** workspace whose home view is the relat
 
 **Excluded from V1 UI**: Task creation/import/cancel/finish/subtask/retry entry points, graph canvas mutation/workflow editors, Saved Views managers, a raw SSE event browser (the former Events tab), static login topology diagrams, and production-bundled demo fixtures or component galleries (keep fixtures/galleries test-only).
 
-## 4. Verification
+## 4. Frontend ownership
+
+- `App` composes the authentication gate and authenticated workspace. Its hooks own the Hub session and notifications across workspace mounts. `useHub` owns Snapshot, SSE, and enrollment. `useTaskDetail` owns selection and its reads.
+- The authenticated workspace owns Board/List mode, status filtering, tree expansion and Inspector behavior. The Task Detail panel owns its active tab and Result Reader interactions. Worker search belongs to Workers, with confirmation state local to each Worker card.
+- The Atlas owns its viewport, pointer gestures, and saved positions. List, Task Detail and Atlas share Task ordering and parent indexing. Each view projects those relationships for its own presentation.
+- `styles/app.css` imports feature styles in cascade order. `styles/tokens.css` defines the shared tokens. Tests under `src/__tests__/` follow feature ownership, with workspace flows covering the integration.
+
+## 5. Verification
 
 Before shipping a UI change:
 1. Run the frontend typecheck, unit tests, and production build (`apps/web`), plus the Rust workspace checks (`hub` embeds `apps/web/dist`).

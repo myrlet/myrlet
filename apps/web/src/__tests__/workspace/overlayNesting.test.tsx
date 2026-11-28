@@ -7,11 +7,11 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import App from "../App";
-import type { GlobalSnapshot, SnapshotTaskSummary, TaskRecord, WorkerRecord } from "../api/types";
+import App from "../../App";
+import type { GlobalSnapshot, SnapshotTaskSummary, TaskRecord, WorkerRecord } from "../../api/types";
 
 type FetchHandler = (url: string, init: RequestInit) => Response | Promise<Response>;
 
@@ -161,6 +161,9 @@ async function connect(): Promise<void> {
   const form = document.querySelector("form") as HTMLFormElement;
   fireEvent.submit(form);
   await waitFor(() => expect(document.querySelector(".app-bar")).not.toBeNull());
+  // The App Bar paints before the workspace's passive effects register the
+  // document `keydown` listener these tests press against.
+  await act(async () => {});
 }
 
 function openList(): void {
@@ -268,5 +271,41 @@ describe("palette and drawer nesting", () => {
     // A second Escape now belongs to the selection.
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(document.querySelector(".inspector-slot")).toBeNull());
+  });
+
+  it("opens the palette over the Workers drawer and hands focus back to the drawer on dismissal", async () => {
+    render(<App />);
+    await connect();
+
+    fireEvent.click(screen.getByRole("button", { name: /workers 1\/1/i }));
+    const drawer = await screen.findByRole("dialog", { name: /workers and pairing/i });
+    await waitFor(() => expect(document.activeElement).toBe(drawer));
+
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: /command palette/i });
+    const paletteInput = within(palette).getByRole("textbox");
+    await waitFor(() => expect(document.activeElement).toBe(paletteInput));
+    // Both surfaces own their layers: the drawer stays mounted underneath.
+    expect(screen.getByRole("dialog", { name: /workers and pairing/i })).toBeInTheDocument();
+
+    // Escape closes the palette first, leaving the drawer open.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /command palette/i })).toBeNull(),
+    );
+    expect(screen.getByRole("dialog", { name: /workers and pairing/i })).toBeInTheDocument();
+    // Focus returns to the drawer that owned it before the palette opened.
+    await waitFor(() => expect(document.activeElement).toBe(drawer));
+
+    // The drawer still catches its own Tab cycle, then its own Escape.
+    const closeButton = screen.getByRole("button", { name: /close workers drawer/i });
+    closeButton.focus();
+    fireEvent.keyDown(closeButton, { key: "Tab" });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /workers and pairing/i })).toBeNull(),
+    );
   });
 });

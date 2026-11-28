@@ -11,13 +11,13 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DeliveryView, TaskRecord, TaskTreeResponse } from "../api/types";
-import { JsonViewer } from "../components/taskDetail/JsonViewer";
-import { tokenizeJson } from "../components/taskDetail/jsonTokens";
-import { DeliveryTabView } from "../components/taskDetail/DeliveryTabView";
-import { JsonTabView } from "../components/taskDetail/JsonTabView";
-import { OverviewView } from "../components/taskDetail/OverviewView";
-import { TreeView } from "../components/taskDetail/TreeView";
+import type { DeliveryView, TaskRecord, TaskTreeResponse } from "../../api/types";
+import { JsonViewer } from "../../components/taskDetail/JsonViewer";
+import { tokenizeJson } from "../../components/taskDetail/jsonTokens";
+import { DeliveryTabView } from "../../components/taskDetail/DeliveryTabView";
+import { JsonTabView } from "../../components/taskDetail/JsonTabView";
+import { OverviewView } from "../../components/taskDetail/OverviewView";
+import { TreeView } from "../../components/taskDetail/TreeView";
 
 /* --------------------------------------------------------------------- */
 /* Fixtures                                                               */

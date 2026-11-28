@@ -6,9 +6,10 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { fireEvent, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { HubClient } from "../../api/client";
 import { buildSnapshot, taskSummary, workerRecord } from "../support/fixtures";
 import { idleEventStream, jsonResponse, stubFetch } from "../support/hub";
 import {
@@ -23,6 +24,23 @@ beforeEach(installWorkspaceHub);
 afterEach(resetWorkspaceTest);
 
 describe("Work Atlas Board", () => {
+  it("keeps the minimap folded after a filter temporarily empties the Board", async () => {
+    const snapshot = buildSnapshot();
+    const tasks = snapshot.tasks.filter((task) => task.status !== "held");
+    vi.spyOn(HubClient.prototype, "getSnapshot").mockResolvedValue({
+      ...snapshot,
+      tasks,
+      totalTasks: tasks.length,
+    });
+    await connectWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: /collapse minimap/i }));
+    const held = screen.getByRole("button", { name: /^held\b/i });
+    fireEvent.click(held);
+    expect(screen.getByText("No Tasks match this status")).toBeInTheDocument();
+    fireEvent.click(held);
+    expect(screen.getByRole("button", { name: /expand minimap/i })).toBeInTheDocument();
+  });
+
   it("docks Board controls in a real header row so they never cover group labels", async () => {
     await connectWorkspace();
     await openBoard();

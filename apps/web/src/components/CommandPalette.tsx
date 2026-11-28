@@ -214,10 +214,6 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
-      if (event.key === "Tab") {
-        containTab(event);
-        return;
-      }
       switch (event.key) {
         case "Escape":
           // Stop the global handler from also clearing selection.
@@ -245,7 +241,7 @@ export function CommandPalette(props: CommandPaletteProps) {
           break;
       }
     },
-    [activate, activeIndex, containTab, onClose, visible],
+    [activate, activeIndex, onClose, visible],
   );
 
   if (!open) {
@@ -270,6 +266,7 @@ export function CommandPalette(props: CommandPaletteProps) {
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
+        onKeyDown={containTab}
       >
         <h2 className="visually-hidden" id={titleId}>
           Command Palette

@@ -17,9 +17,9 @@ import {
   settleOffset,
   visibleWorldRect,
   worldPointFromMinimap,
-} from "../components/atlas/atlasViewport";
-import { NODE_HEIGHT, NODE_WIDTH } from "../components/workAtlasLayout";
-import type { AtlasFramingBounds, AtlasGroupHeader, AtlasPosition } from "../components/workAtlasLayout";
+} from "../../components/atlas/atlasViewport";
+import { NODE_HEIGHT, NODE_WIDTH } from "../../components/workAtlasLayout";
+import type { AtlasFramingBounds, AtlasGroupHeader, AtlasPosition } from "../../components/workAtlasLayout";
 
 const BOUNDS: AtlasFramingBounds = { minX: 0, minY: 34, width: 600, height: 300 };
 

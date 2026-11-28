@@ -4,10 +4,10 @@
  *
  * Opening remembers the element that had focus, moves focus to the panel (or a
  * nominated initial control), keeps Tab inside the panel, and on close returns
- * focus to the remembered opener when it is still mounted. When the opener came
- * from a surface that has since closed (for example the palette opening the
- * Workers drawer), the surface trigger takes the focus instead of dropping it on
- * `body` or a detached node.
+ * focus to the remembered opener when it is still mounted. When that opener came
+ * from a surface that has since closed (the palette option that opened the
+ * Workers drawer, for example), the owner's `fallbackRef` takes the focus
+ * instead of dropping it on `body` or a detached node.
  */
 
 import { useCallback, useEffect, useRef } from "react";
@@ -24,7 +24,7 @@ const FOCUSABLE_SELECTOR = [
 
 function focusableWithin(panel: HTMLElement): HTMLElement[] {
   return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (node) => node.getAttribute("aria-hidden") !== "true",
+    (node) => node.tabIndex >= 0 && !node.closest("[inert], [hidden], [aria-hidden=true]"),
   );
 }
 
@@ -44,19 +44,12 @@ export interface UseModalFocusOptions {
   readonly initialFocusRef?: RefObject<HTMLElement | null>;
   /** Focused on close when the recorded opener is gone. */
   readonly fallbackRef?: RefObject<HTMLElement | null>;
-  /**
-   * The real surface trigger (App Bar pill, Inspector Manage button). Owners set
-   * it when a modal is opened programmatically, so closing never returns focus
-   * to a command that has already unmounted.
-   */
-  readonly triggerRef?: RefObject<HTMLElement | null>;
 }
 
 export function useModalFocus<T extends HTMLElement = HTMLElement>({
   open,
   initialFocusRef,
   fallbackRef,
-  triggerRef: explicitTriggerRef,
 }: UseModalFocusOptions) {
   const panelRef = useRef<T | null>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -66,11 +59,11 @@ export function useModalFocus<T extends HTMLElement = HTMLElement>({
       return;
     }
     // The control focused at open time is the real opener (App Bar pill,
-    // Inspector Manage). When that surface has already closed — opening from ⌘K
-    // leaves focus on a command about to unmount — the surface trigger takes over
-    // so focus never lands on `body` or a detached node.
-    openerRef.current =
-      restorable(document.activeElement, panelRef.current) || explicitTriggerRef?.current || null;
+    // Inspector Manage). When that opener is already gone by close time — the
+    // palette option that opened the drawer unmounted with the palette — the
+    // owner's fallback takes over so focus never lands on `body` or a detached
+    // node.
+    openerRef.current = restorable(document.activeElement, panelRef.current);
     const initial = initialFocusRef?.current ?? panelRef.current;
     initial?.focus();
     return () => {
@@ -81,11 +74,11 @@ export function useModalFocus<T extends HTMLElement = HTMLElement>({
         (fallbackRef?.current?.isConnected ? fallbackRef.current : null);
       target?.focus();
     };
-  }, [explicitTriggerRef, fallbackRef, initialFocusRef, open]);
+  }, [fallbackRef, initialFocusRef, open]);
 
   /** Wrap Tab at both ends so focus never leaves the modal panel. */
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Tab") {
+    if (event.key !== "Tab" || event.defaultPrevented) {
       return;
     }
     const panel = panelRef.current;

@@ -15,15 +15,10 @@ import { ChevronRight, Copy, GitBranch, RotateCcw } from "lucide-react";
 
 import type { WorkerRecord } from "../../api/types";
 import { DELIVERY_STATUS_LABELS, formatCount, formatRelativeTime } from "../../format";
+import { shortId } from "../../model/shortId";
 import type { TreeRow } from "../../model/taskTree";
 import { TaskStatusBadge } from "../StatusBadge";
 import { TreeConnectors } from "./TreeConnectors";
-
-const ID_PREVIEW_LENGTH = 12;
-
-function shortId(id: string): string {
-  return id.length <= ID_PREVIEW_LENGTH ? id : id.slice(0, ID_PREVIEW_LENGTH);
-}
 
 function isWorkerOnline(worker: WorkerRecord | undefined): boolean {
   return worker !== undefined && worker.online && !worker.revoked;

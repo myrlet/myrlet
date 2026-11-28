@@ -11,11 +11,11 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
-import { TaskGraphView } from "../components/TaskGraphView";
-import type { AtlasBoardMeta, TaskGraphControls } from "../components/TaskGraphView";
-import { DEFAULT_ATLAS_STORAGE_KEY } from "../components/atlas/atlasOffsets";
-import { NODE_HEIGHT, NODE_WIDTH } from "../components/workAtlasLayout";
+import type { SnapshotTaskSummary, WorkerRecord } from "../../api/types";
+import { TaskGraphView } from "../../components/TaskGraphView";
+import type { AtlasBoardMeta, TaskGraphControls } from "../../components/TaskGraphView";
+import { DEFAULT_ATLAS_STORAGE_KEY } from "../../components/atlas/atlasOffsets";
+import { NODE_HEIGHT, NODE_WIDTH } from "../../components/workAtlasLayout";
 
 /* --------------------------------------------------------------------- */
 /* Fixtures                                                               */

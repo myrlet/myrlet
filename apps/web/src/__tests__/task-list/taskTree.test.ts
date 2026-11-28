@@ -5,9 +5,9 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { SnapshotTaskSummary, WorkerRecord } from "../api/types";
-import { groupRowsForOutline } from "../components/taskOutlineGroups";
-import { buildTaskTreeRows, taskTitle } from "../model/taskTree";
+import type { SnapshotTaskSummary, WorkerRecord } from "../../api/types";
+import { groupRowsForOutline } from "../../components/taskOutlineGroups";
+import { buildTaskTreeRows, taskTitle } from "../../model/taskTree";
 
 function summary(
   overrides: Partial<SnapshotTaskSummary> & { id: string },

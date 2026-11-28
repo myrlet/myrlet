@@ -15,8 +15,8 @@ import type {
   CreateEnrollmentCodeRequest,
   RotateWorkerResponse,
   WorkerRecord,
-} from "../api/types";
-import { WorkersDrawer } from "../components/WorkersDrawer";
+} from "../../api/types";
+import { WorkersDrawer } from "../../components/WorkersDrawer";
 
 function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
   return {

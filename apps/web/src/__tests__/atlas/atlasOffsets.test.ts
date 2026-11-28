@@ -11,7 +11,7 @@ import {
   manualOffsets,
   readStoredOffsets,
   writeStoredOffsets,
-} from "../components/atlas/atlasOffsets";
+} from "../../components/atlas/atlasOffsets";
 
 afterEach(() => {
   window.localStorage.clear();

@@ -7,10 +7,9 @@
  * no formatting, no transport — `format.ts` stays a fact-wording module.
  */
 
-import type { SnapshotTaskSummary, TaskRecord, TaskStatus } from "../api/types";
-
-/** Either a Snapshot summary or a full Task record can feed the tree. */
-export type TaskTreeSource = SnapshotTaskSummary | TaskRecord;
+import type { TaskRecord, TaskStatus } from "../api/types";
+import { indexTasks, taskParentId } from "./taskIndex";
+import type { TaskTreeSource } from "./taskIndex";
 
 export interface TaskFilter {
   /** Free-text match against id, title, category, and assigned worker id. */
@@ -52,11 +51,6 @@ function isTaskRecord(task: TaskTreeSource): task is TaskRecord {
   return "task" in task && typeof (task as TaskRecord).task === "object";
 }
 
-/** Task parent id regardless of whether the source is a summary or record. */
-export function taskParentId(task: TaskTreeSource): string | null {
-  return isTaskRecord(task) ? task.task.parentTaskId : task.parentTaskId;
-}
-
 /** Task title regardless of whether the source is a summary or record. */
 export function taskTitle(task: TaskTreeSource): string {
   return isTaskRecord(task) ? task.task.title : task.title;
@@ -65,17 +59,6 @@ export function taskTitle(task: TaskTreeSource): string {
 /** Task category regardless of whether the source is a summary or record. */
 export function taskCategory(task: TaskTreeSource): string {
   return isTaskRecord(task) ? task.task.category : task.category;
-}
-
-function compareText(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function compareTasks(a: TaskTreeSource, b: TaskTreeSource): number {
-  if (a.createdAtMs !== b.createdAtMs) {
-    return a.createdAtMs - b.createdAtMs;
-  }
-  return compareText(a.id, b.id);
 }
 
 function activeStatus(filter: TaskFilter): TaskStatus | null {
@@ -102,32 +85,7 @@ export function buildTaskTreeRows(
   expanded: ReadonlySet<string>,
   filter: TaskFilter = {},
 ): TreeRow[] {
-  const byId = new Map<string, TaskTreeSource>();
-  for (const task of tasks) {
-    byId.set(task.id, task);
-  }
-
-  const roots: TaskTreeSource[] = [];
-  const childrenByParent = new Map<string, TaskTreeSource[]>();
-
-  for (const task of tasks) {
-    const parentId = taskParentId(task);
-    if (parentId === null || parentId === task.id || !byId.has(parentId)) {
-      roots.push(task);
-      continue;
-    }
-    const siblings = childrenByParent.get(parentId);
-    if (siblings) {
-      siblings.push(task);
-    } else {
-      childrenByParent.set(parentId, [task]);
-    }
-  }
-
-  roots.sort(compareTasks);
-  for (const siblings of childrenByParent.values()) {
-    siblings.sort(compareTasks);
-  }
+  const { byId, roots, childrenByParent } = indexTasks(tasks);
 
   const query = (filter.query ?? "").trim().toLowerCase();
   const statusFilter = activeStatus(filter);

@@ -9,15 +9,15 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HubApiError } from "../api/client";
-import type { RotateWorkerResponse, WorkerRecord } from "../api/types";
-import { describeError, describeIssueError } from "../components/workers/workerErrors";
-import { useWorkerActions } from "../components/workers/useWorkerActions";
+import { HubApiError } from "../../api/client";
+import type { RotateWorkerResponse, WorkerRecord } from "../../api/types";
+import { describeError, describeIssueError } from "../../components/workers/workerErrors";
+import { useWorkerActions } from "../../components/workers/useWorkerActions";
 import {
   workerCounts,
   workerMatchesQuery,
   workerState,
-} from "../components/workers/workerFilters";
+} from "../../components/workers/workerFilters";
 
 function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
   return {

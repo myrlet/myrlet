@@ -6,7 +6,7 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
 import App from "../../App";
@@ -127,6 +127,10 @@ export async function connectWorkspace(): Promise<void> {
   await waitFor(() => {
     expect(document.querySelector(".app-bar")).not.toBeNull();
   });
+  // The App Bar paints before the workspace's passive effects run. Keyboard
+  // tests press document keys immediately after connecting, so let that effect
+  // pass register its `keydown` listener before the test can race it.
+  await act(async () => {});
 }
 
 export function localStorageKeys(): string[] {

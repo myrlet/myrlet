@@ -9,9 +9,9 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { SnapshotTaskSummary, TaskRecord, TaskTreeResponse } from "../api/types";
-import { TaskDetailPanel } from "../components/TaskDetailPanel";
-import type { TaskDetailPanelProps } from "../components/TaskDetailPanel";
+import type { SnapshotTaskSummary, TaskRecord, TaskTreeResponse } from "../../api/types";
+import { TaskDetailPanel } from "../../components/TaskDetailPanel";
+import type { TaskDetailPanelProps } from "../../components/TaskDetailPanel";
 
 function record(id: string, title = id): TaskRecord {
   return {
