@@ -99,7 +99,9 @@ function Harness({
           onlineWorkerCount={workers.filter((record) => record.online).length}
           baseUrl=""
           workers={workers}
-          fetchReportedConfig={async () => null}
+          fetchWorkerDetail={async () => {
+            throw new Error("detail is not read in these focus tests");
+          }}
           issued={null}
           busy={false}
           onRefresh={() => undefined}

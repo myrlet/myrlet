@@ -11,11 +11,7 @@
 
 import { useEffect } from "react";
 
-import type {
-  RotateWorkerResponse,
-  WorkerRecord,
-  WorkerSchedulingConfig,
-} from "../../api/types";
+import type { RotateWorkerResponse, WorkerDetail, WorkerRecord } from "../../api/types";
 import { formatRelativeTime } from "../../format";
 import { useWorkerConfigReview } from "../../state/useWorkerConfigReview";
 import { WorkerStatusBadge } from "../StatusBadge";
@@ -26,7 +22,8 @@ import { applyPending } from "./workerFilters";
 
 export interface WorkerCardProps {
   readonly worker: WorkerRecord;
-  readonly fetchReportedConfig: (workerId: string) => Promise<WorkerSchedulingConfig | null>;
+  /** Read one Worker's detail; revision and report come from that single response. */
+  readonly fetchWorkerDetail: (workerId: string) => Promise<WorkerDetail>;
   readonly onApproveWorker: (workerId: string) => Promise<void>;
   readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
@@ -37,7 +34,7 @@ export interface WorkerCardProps {
 
 export function WorkerCard({
   worker,
-  fetchReportedConfig,
+  fetchWorkerDetail,
   onApproveWorker,
   onApplyWorkerConfig,
   onRotateWorker,
@@ -48,7 +45,7 @@ export function WorkerCard({
   const review = useWorkerConfigReview({
     workerId: worker.workerId,
     reportedRevision: worker.reportedRevision,
-    fetchReported: fetchReportedConfig,
+    fetchDetail: fetchWorkerDetail,
   });
 
   const {
@@ -65,7 +62,6 @@ export function WorkerCard({
     apply,
   } = useWorkerActions({
     workerId: worker.workerId,
-    reportedRevision: worker.reportedRevision,
     review,
     onApproveWorker,
     onApplyWorkerConfig,
@@ -83,11 +79,11 @@ export function WorkerCard({
   // card in its pending state; Apply stays disabled until a report is showing.
   const { load: loadReview } = review;
   useEffect(() => {
-    if (!pendingApply || worker.reportedRevision === null) {
+    if (!pendingApply) {
       return;
     }
-    void loadReview(worker.reportedRevision);
-  }, [loadReview, pendingApply, worker.reportedRevision]);
+    void loadReview();
+  }, [loadReview, pendingApply]);
 
   return (
     <article className="worker-card" data-worker-id={worker.workerId}>

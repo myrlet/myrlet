@@ -17,8 +17,8 @@ import type {
   CreateEnrollmentCodeRequest,
   CreateEnrollmentCodeResponse,
   RotateWorkerResponse,
+  WorkerDetail,
   WorkerRecord,
-  WorkerSchedulingConfig,
 } from "../api/types";
 import { PairingCard } from "./workers/PairingCard";
 import { WorkerCard } from "./workers/WorkerCard";
@@ -34,8 +34,8 @@ import type { WorkerFilter } from "./workers/workerFilters";
 export interface WorkersViewProps {
   readonly baseUrl: string;
   readonly workers: readonly WorkerRecord[];
-  /** Read one Worker's report under review, bound to the revision it was reported at. */
-  readonly fetchReportedConfig: (workerId: string) => Promise<WorkerSchedulingConfig | null>;
+  /** Read one Worker's detail; revision and report come from that single response. */
+  readonly fetchWorkerDetail: (workerId: string) => Promise<WorkerDetail>;
   readonly issued: CreateEnrollmentCodeResponse | null;
   readonly busy: boolean;
   readonly onCreateEnrollmentCode: (
@@ -53,7 +53,7 @@ export function WorkersView(props: WorkersViewProps) {
   const {
     baseUrl,
     workers,
-    fetchReportedConfig,
+    fetchWorkerDetail,
     onCreateEnrollmentCode,
     onApproveWorker,
     onApplyWorkerConfig,
@@ -146,7 +146,7 @@ export function WorkersView(props: WorkersViewProps) {
               <WorkerCard
                 key={worker.workerId}
                 worker={worker}
-                fetchReportedConfig={fetchReportedConfig}
+                fetchWorkerDetail={fetchWorkerDetail}
                 onApproveWorker={onApproveWorker}
                 onApplyWorkerConfig={onApplyWorkerConfig}
                 onRotateWorker={onRotateWorker}

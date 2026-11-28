@@ -130,7 +130,57 @@ describe("Reviewed configuration revision", () => {
     await waitFor(() => expect(applies).toEqual([{ revision: 3 }]));
   });
 
-  it("drops a stale review when a newer report arrives, then applies the reloaded one", async () => {
+  it("never pairs the Snapshot revision with a body a newer Detail read returned", async () => {
+    // The Snapshot still reports revision 3, but the Detail read sees revision 4. The
+    // reviewed pair must come entirely from the Detail response: 4 with the "tensor" body,
+    // and Apply must submit 4 — not the Snapshot's stale 3.
+    record = { ...record, reportedRevision: 3 };
+    reportedConfig = config("tensor");
+    stubFetch((url, init) => {
+      const path = url.replace(/^https?:\/\/[^/]+/, "");
+      const method = init.method ?? "GET";
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      if (path.startsWith("/v1/events")) return idleEventStream();
+      if (path.startsWith("/v1/snapshot")) {
+        // The Snapshot lags one revision behind the Worker's latest report.
+        return jsonResponse(snapshot(worker({ reportedRevision: 3 })));
+      }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse({
+          requireWorkerApproval: true,
+          requireConfigurationApply: true,
+        });
+      }
+      if (path.endsWith("/config/apply") && method === "POST") {
+        applies.push({ revision: body.revision });
+        return jsonResponse({ appliedRevision: body.revision });
+      }
+      if (path.startsWith("/v1/workers/")) {
+        // The Detail read carries a newer revision than the Snapshot above.
+        return jsonResponse({
+          worker: worker({ reportedRevision: 4 }),
+          reportedConfig: config("tensor"),
+          claimableTaskIds: [],
+        });
+      }
+      if (path.startsWith("/v1/workers")) {
+        return jsonResponse({ workers: [worker({ reportedRevision: 3 })] });
+      }
+      return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
+    });
+    await connectWorkspace();
+    const drawer = await openWorkers();
+
+    const review = drawer.querySelector<HTMLElement>(".config-review");
+    // Revision and body are labeled from the same Detail response.
+    await waitFor(() => expect(review?.textContent ?? "").toMatch(/Reported rev 4/));
+    expect(review?.textContent ?? "").toMatch(/tensor/);
+    const apply = await within(drawer).findByRole("button", { name: /apply revision 4/i });
+    fireEvent.click(apply);
+    await waitFor(() => expect(applies).toEqual([{ revision: 4 }]));
+  });
+
+  it("reloads the newer report before applying, replacing both revision and body", async () => {
     await connectWorkspace();
     const drawer = await openWorkers();
     const review = drawer.querySelector<HTMLElement>(".config-review");
@@ -144,7 +194,14 @@ describe("Reviewed configuration revision", () => {
     reportedConfig = config("tensor");
     fireEvent.click(within(drawer).getByRole("button", { name: /^refresh$/i }));
 
-    // The card follows the Snapshot: it now labels and submits revision 4.
+    // The reviewed revision no longer matches the Snapshot, so its pair is dropped and
+    // Apply is unavailable until the Admin reloads the newer report.
+    await waitFor(() =>
+      expect(within(drawer).queryByRole("button", { name: /apply revision 3/i })).toBeNull(),
+    );
+    fireEvent.click(within(drawer).getByRole("button", { name: /reload report/i }));
+
+    // The reload binds revision 4 to its own body; the label and the submit agree.
     const apply = await within(drawer).findByRole("button", { name: /apply revision 4/i });
     await waitFor(() => expect(review?.textContent ?? "").toMatch(/Reported rev 4/));
     fireEvent.click(apply);

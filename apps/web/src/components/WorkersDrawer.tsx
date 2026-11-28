@@ -21,7 +21,7 @@ type WorkersSurfaceProps = Pick<
   WorkersViewProps,
   | "baseUrl"
   | "workers"
-  | "fetchReportedConfig"
+  | "fetchWorkerDetail"
   | "issued"
   | "busy"
   | "onCreateEnrollmentCode"
@@ -46,7 +46,7 @@ export function WorkersDrawer(props: WorkersDrawerProps) {
     onlineWorkerCount,
     baseUrl,
     workers,
-    fetchReportedConfig,
+    fetchWorkerDetail,
     issued,
     busy,
     onRefresh,
@@ -109,7 +109,7 @@ export function WorkersDrawer(props: WorkersDrawerProps) {
             busy={busy}
             baseUrl={baseUrl}
             workers={workers}
-            fetchReportedConfig={fetchReportedConfig}
+            fetchWorkerDetail={fetchWorkerDetail}
             onCreateEnrollmentCode={onCreateEnrollmentCode}
             onApproveWorker={onApproveWorker}
             onApplyWorkerConfig={onApplyWorkerConfig}

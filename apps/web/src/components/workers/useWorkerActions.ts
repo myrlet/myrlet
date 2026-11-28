@@ -20,9 +20,7 @@ export type PendingAction = "rotate" | "revoke" | "apply" | null;
 
 interface UseWorkerActionsOptions {
   readonly workerId: string;
-  /** Latest revision the Hub accepted, used to reload the report under review. */
-  readonly reportedRevision: number | null;
-  /** The report under review, bound to the revision it was reported at. */
+  /** The report under review; its revision and body come from the same Detail read. */
   readonly review: WorkerReview;
   readonly onApproveWorker: (workerId: string) => Promise<void>;
   readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
@@ -32,7 +30,6 @@ interface UseWorkerActionsOptions {
 
 export function useWorkerActions({
   workerId,
-  reportedRevision,
   review,
   onApproveWorker,
   onApplyWorkerConfig,
@@ -129,17 +126,14 @@ export function useWorkerActions({
   }, [onApproveWorker, run, workerId]);
 
   /**
-   * Reload the latest report, then arm Apply for exactly the revision it belongs to.
-   * A reload that fails leaves Apply unavailable; the Admin retries when the Hub is back.
+   * Reload the report under review and arm Apply for exactly the revision that read
+   * reported. A reload that fails leaves Apply unavailable; the Admin retries later.
    */
   const reviewNow = useCallback(async (): Promise<void> => {
-    if (reportedRevision === null) {
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
-      const loaded = await review.load(reportedRevision);
+      const loaded = await review.load();
       if (mountedRef.current && loaded !== null) {
         setPending("apply");
       }
@@ -148,7 +142,7 @@ export function useWorkerActions({
         setBusy(false);
       }
     }
-  }, [reportedRevision, review]);
+  }, [review]);
 
   const apply = useCallback(async (): Promise<void> => {
     const pair = review.reviewed;

@@ -16,7 +16,7 @@ import type {
   CreateEnrollmentCodeRequest,
   CreateEnrollmentCodeResponse,
   RotateWorkerResponse,
-  WorkerSchedulingConfig,
+  WorkerDetail,
 } from "../api/types";
 
 export interface WorkerCommands {
@@ -28,8 +28,11 @@ export interface WorkerCommands {
   readonly revokeWorker: (workerId: string) => Promise<void>;
   readonly approveWorker: (workerId: string) => Promise<void>;
   readonly applyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
-  /** One Worker's latest reported scheduling snapshot, for review before an Apply. */
-  readonly fetchReportedConfig: (workerId: string) => Promise<WorkerSchedulingConfig | null>;
+  /**
+   * One Worker's detail. Its `reportedRevision` and `reportedConfig` come from the same
+   * response, so a review can never pair an older revision with a newer body.
+   */
+  readonly fetchWorkerDetail: (workerId: string) => Promise<WorkerDetail>;
   /** The current one-time enrollment code, or `null` once it is spent or expired. */
   readonly enrollmentCode: CreateEnrollmentCodeResponse | null;
   readonly issuingCode: boolean;
@@ -132,13 +135,12 @@ export function useWorkerCommands({
     [mutate],
   );
 
-  /** Read one Worker's latest reported snapshot for display before an Apply. */
-  const fetchReportedConfig = useCallback(
-    async (workerId: string): Promise<WorkerSchedulingConfig | null> => {
+  /** Read one Worker's detail; the report and its revision are one response. */
+  const fetchWorkerDetail = useCallback(
+    async (workerId: string): Promise<WorkerDetail> => {
       const client = getClient();
       try {
-        const detail = await client.getWorker(workerId);
-        return detail.reportedConfig;
+        return await client.getWorker(workerId);
       } catch (loadError) {
         if (loadError instanceof HubApiError && loadError.status === 401) {
           failSession(client);
@@ -155,7 +157,7 @@ export function useWorkerCommands({
     revokeWorker,
     approveWorker,
     applyWorkerConfig,
-    fetchReportedConfig,
+    fetchWorkerDetail,
     enrollmentCode,
     issuingCode,
   };
