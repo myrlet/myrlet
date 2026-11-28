@@ -6,6 +6,7 @@
 //! an unrelated group. Every real signal below is sent before the leader is reaped; after
 //! reaping, this module only probes emptiness (`signal 0`).
 
+use std::future::Future;
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
@@ -138,12 +139,21 @@ pub async fn terminate_process_group(
     {
         let _ = pgid;
         let _ = child.start_kill();
-        let leader_exited = tokio::time::timeout(grace, child.wait()).await.is_ok();
+        let leader_exited = wait_confirmed(child.wait(), grace).await;
         Termination {
             leader_exited,
             group_clear: leader_exited,
         }
     }
+}
+
+/// A bounded wait confirms exit only when the child was actually reaped. A wait error is
+/// not evidence that the process ended.
+async fn wait_confirmed(
+    wait: impl Future<Output = std::io::Result<std::process::ExitStatus>>,
+    budget: Duration,
+) -> bool {
+    matches!(tokio::time::timeout(budget, wait).await, Ok(Ok(_)))
 }
 
 /// Whether the direct child `pid` has exited, without reaping it.
@@ -199,14 +209,7 @@ async fn await_group_gone(pgid: i32, budget: Duration) -> bool {
 /// Reap the leader within `budget`; an `Err` from `wait` is not proof of exit.
 #[cfg(unix)]
 async fn reap_leader(child: &mut Child, budget: Duration) -> bool {
-    match tokio::time::timeout(budget, child.wait()).await {
-        Ok(Ok(_)) => true,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "the execution leader could not be waited for");
-            false
-        }
-        Err(_) => false,
-    }
+    wait_confirmed(child.wait(), budget).await
 }
 
 /// Whether any process still belongs to the process group led by `pgid`.
@@ -231,5 +234,18 @@ fn signal_group(pgid: i32, signal: libc::c_int) {
     // `kill` takes two integers and has no memory-safety preconditions.
     unsafe {
         libc::kill(-pgid, signal);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn unconfirmed_wait_is_not_reported_as_exit() {
+        assert!(!wait_confirmed(async { Err(Error::from(ErrorKind::Other)) }, CANCEL_GRACE).await);
+        assert!(!wait_confirmed(std::future::pending(), Duration::from_millis(1)).await);
     }
 }
