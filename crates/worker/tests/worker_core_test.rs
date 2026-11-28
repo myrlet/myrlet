@@ -271,6 +271,198 @@ fn harness_adapters_report_the_kind_of_their_cli_family() {
     }
 }
 
+/// A same-group descendant that ignores `SIGTERM` must not survive cancellation, and the
+/// cancel may only be confirmed after the whole group is gone, not merely the leader.
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_reaps_a_same_group_descendant_that_ignores_term() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("descendant.pid");
+    let script = descendant_script(&pid_file);
+    let adapter = ProcessAdapter::new(
+        ExecutorId::new("exec.descendant"),
+        "/bin/sh",
+        vec!["-c".to_owned(), script],
+        None,
+    );
+    let (on_exit, _exited) = mpsc::unbounded_channel();
+    let execution_ref = adapter
+        .submit(submit_request(&temp.path().join("p.json")), on_exit)
+        .await
+        .unwrap();
+
+    let descendant = poll_pid(&pid_file).expect("the descendant must start");
+    poll_ready(&pid_file.with_extension("pid.ready"));
+    let _guard = KillOnDrop(descendant);
+
+    let state = adapter.cancel(&execution_ref).await;
+    assert_eq!(state, CancelState::Confirmed);
+    assert!(
+        !process_alive(descendant),
+        "a same-group descendant that ignores TERM survived a confirmed cancel"
+    );
+}
+
+/// The TERM-immune leader alone is still killed by the escalation, and only then is the
+/// cancel confirmed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_term_immune_leader_is_killed_and_then_confirmed() {
+    let temp = tempfile::tempdir().unwrap();
+    let ready = temp.path().join("ready");
+    let script = format!(
+        "trap '' TERM; : > {}; while :; do sleep 0.05; done",
+        ready.display()
+    );
+    let adapter = ProcessAdapter::new(
+        ExecutorId::new("exec.stubborn"),
+        "/bin/sh",
+        vec!["-c".to_owned(), script],
+        None,
+    );
+    let (on_exit, mut exited) = mpsc::unbounded_channel();
+    let execution_ref = adapter
+        .submit(submit_request(&temp.path().join("p.json")), on_exit)
+        .await
+        .unwrap();
+    poll_ready(&ready);
+
+    assert_eq!(adapter.cancel(&execution_ref).await, CancelState::Confirmed);
+    exited.recv().await.expect("handling must end");
+}
+
+/// A cancellation that killed the group still reaches end of handling exactly once.
+#[cfg(unix)]
+#[tokio::test]
+async fn cancel_reaches_end_of_handling_after_killing_the_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("descendant.pid");
+    let script = descendant_script(&pid_file);
+    let adapter = ProcessAdapter::new(
+        ExecutorId::new("exec.ended"),
+        "/bin/sh",
+        vec!["-c".to_owned(), script],
+        None,
+    );
+    let (on_exit, mut exited) = mpsc::unbounded_channel();
+    let execution_ref = adapter
+        .submit(submit_request(&temp.path().join("p.json")), on_exit)
+        .await
+        .unwrap();
+    let descendant = poll_pid(&pid_file).expect("the descendant must start");
+    poll_ready(&pid_file.with_extension("pid.ready"));
+    let _guard = KillOnDrop(descendant);
+
+    assert_eq!(adapter.cancel(&execution_ref).await, CancelState::Confirmed);
+    let ended = exited.recv().await.expect("handling must end");
+    assert_eq!(ended.execution_ref, execution_ref);
+    assert!(
+        exited.try_recv().is_err(),
+        "end of handling is reported once"
+    );
+}
+
+/// A naturally exited long task that still writes its own Result is reported once, even
+/// though it never wrote Progress.
+#[cfg(unix)]
+#[tokio::test]
+async fn natural_exit_reports_handling_once_and_never_confirms_a_late_cancel() {
+    let temp = tempfile::tempdir().unwrap();
+    let results = temp.path().join("results");
+    myrlet_protocol::ensure_private_dir(&results).unwrap();
+    let result_path = results.join("delivery_01.md");
+    let script = format!(
+        "umask 077; printf '# Long result\\n' > '{}'",
+        result_path.display()
+    );
+    let adapter = ProcessAdapter::new(
+        ExecutorId::new("exec.long"),
+        "/bin/sh",
+        vec!["-c".to_owned(), script],
+        None,
+    );
+    let (on_exit, mut exited) = mpsc::unbounded_channel();
+    let execution_ref = adapter
+        .submit(submit_request(&temp.path().join("p.json")), on_exit)
+        .await
+        .unwrap();
+
+    let ended = exited.recv().await.expect("handling must end");
+    assert_eq!(ended.execution_ref, execution_ref);
+    assert!(
+        exited.try_recv().is_err(),
+        "end of handling is reported once"
+    );
+    assert_eq!(
+        read_result(&result_path),
+        LocalResult::Content("# Long result\n".into())
+    );
+    // The execution already ended: a later cancel cannot claim physical termination.
+    assert_eq!(adapter.cancel(&execution_ref).await, CancelState::Uncertain);
+}
+
+/// A leader that exits on TERM while a descendant ignores it: the script keeps the
+/// descendant in the same group so only a group-wide escalation can reap it. The file
+/// written after installing both traps prevents racing the signal handlers.
+#[cfg(unix)]
+fn descendant_script(pid_file: &Path) -> String {
+    format!(
+        "trap 'exit 0' TERM; (trap '' TERM; exec sleep 30) & echo $! > {}; : > {}.ready; \
+         while :; do sleep 0.05; done",
+        pid_file.display(),
+        pid_file.display()
+    )
+}
+
+/// Kill a descendant if the test fails before/after observing it.
+#[cfg(unix)]
+struct KillOnDrop(i32);
+#[cfg(unix)]
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if process_alive(self.0) {
+            // SAFETY: `kill` takes two integers and has no memory-safety preconditions.
+            unsafe { libc::kill(self.0, libc::SIGKILL) };
+        }
+    }
+}
+
+/// Poll until the child script has installed its trap and started looping.
+#[cfg(unix)]
+fn poll_ready(path: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the harness script never became ready");
+}
+
+/// Poll for a PID written by the child script.
+#[cfg(unix)]
+fn poll_pid(path: &Path) -> Option<i32> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(pid) = text.trim().parse() {
+                return Some(pid);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+/// Whether a process with `pid` currently exists.
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: `kill(pid, 0)` only probes for the process; it accesses no memory.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 #[tokio::test]
 async fn process_adapter_reports_end_of_handling_and_confirms_cancel() {
     let temp = tempfile::tempdir().unwrap();

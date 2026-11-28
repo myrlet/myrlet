@@ -156,7 +156,14 @@ async fn wait_healthy(hub_url: &str) {
 async fn start_hub(hub: &Path, home: &Path) -> (ChildGuard, String) {
     let port = free_port();
     let url = format!("http://127.0.0.1:{port}");
+    let guard = start_hub_on_port(hub, home, port).await;
+    (guard, url)
+}
+
+/// Start a real hub on an already-chosen port so a restart can reuse the same URL.
+async fn start_hub_on_port(hub: &Path, home: &Path, port: u16) -> ChildGuard {
     let bind = format!("127.0.0.1:{port}");
+    let url = format!("http://127.0.0.1:{port}");
     let env_home = home.to_str().expect("utf-8 home");
     let guard = spawn_daemon(
         hub,
@@ -167,7 +174,7 @@ async fn start_hub(hub: &Path, home: &Path) -> (ChildGuard, String) {
         ],
     );
     wait_healthy(&url).await;
-    (guard, url)
+    guard
 }
 
 /// Enroll a fresh Worker and pair the real binary with its one-shot code.
@@ -183,7 +190,43 @@ fn enroll_and_pair(cli: &Cli<'_>, worker: &Path, home: &Path, hub_url: &str) {
 
 /// Submit one authorized Task pinned to `executor` and return its id.
 fn create_task(cli: &Cli<'_>, key: &str, title: &str, capability: &str, executor: &str) -> String {
-    let created = cli.run(&[
+    submit_task(cli, key, title, "resilience", capability, executor, None)
+}
+
+fn show(cli: &Cli<'_>, id: &str) -> serde_json::Value {
+    cli.run(&["--json", "tasks", "show", id])
+}
+
+/// Submit one authorized Task with an explicit execution timeout.
+fn create_task_with_timeout(
+    cli: &Cli<'_>,
+    key: &str,
+    title: &str,
+    executor: &str,
+    timeout_seconds: u64,
+) -> String {
+    submit_task(
+        cli,
+        key,
+        title,
+        "long duration",
+        "shell",
+        executor,
+        Some(timeout_seconds),
+    )
+}
+
+fn submit_task(
+    cli: &Cli<'_>,
+    key: &str,
+    title: &str,
+    prompt: &str,
+    capability: &str,
+    executor: &str,
+    timeout_seconds: Option<u64>,
+) -> String {
+    let timeout = timeout_seconds.map(|seconds| seconds.to_string());
+    let mut args = vec![
         "--json",
         "tasks",
         "submit",
@@ -192,21 +235,21 @@ fn create_task(cli: &Cli<'_>, key: &str, title: &str, capability: &str, executor
         "--title",
         title,
         "--prompt",
-        "resilience",
+        prompt,
         "--capability",
         capability,
         "--preferred-executor-id",
         executor,
-    ]);
+    ];
+    if let Some(timeout) = timeout.as_deref() {
+        args.extend(["--timeout-seconds", timeout]);
+    }
+    let created = cli.run(&args);
     assert_eq!(status(&created), "queued", "submit {key}: {created}");
     field(&created, "id")
         .and_then(|id| id.as_str())
         .expect("id")
         .to_owned()
-}
-
-fn show(cli: &Cli<'_>, id: &str) -> serde_json::Value {
-    cli.run(&["--json", "tasks", "show", id])
 }
 
 fn finished(cli: &Cli<'_>, id: &str) -> Option<()> {
@@ -389,5 +432,284 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     assert_eq!(line_count(&counter), 1, "Task A must not run twice");
 
     shutdown(&mut second.0, "worker");
+    shutdown(&mut hub_guard.0, "hub");
+}
+
+fn silent_long_yaml(hub_url: &str, launches: &Path) -> String {
+    let document = r#"hubUrl: 'HUB_URL'
+slots:
+  - slotId: long-slot
+    capabilities: [{name: shell, state: available}]
+    executors:
+      - id: exec-long
+        kind: process
+        program: /bin/sh
+        args:
+          - -c
+          - |
+            umask 077
+            echo launch >> LAUNCH_COUNTER
+            result=""
+            while IFS= read -r line; do
+              case "$line" in
+                'Optionally write the final Markdown result '*) result="${line##* to }" ;;
+              esac
+            done
+            sleep 2
+            printf '# Long task result\n\nNo progress was ever written.\n' > "$result"
+"#;
+    document
+        .replace("HUB_URL", hub_url)
+        .replace("LAUNCH_COUNTER", &launches.display().to_string())
+}
+
+/// A silent long task that writes no Progress still finishes, and its own Result reaches
+/// the Hub through the real Worker/Hub entry points.
+#[tokio::test]
+async fn a_silent_long_task_without_progress_finishes_with_its_own_result() {
+    let (hub_bin, worker_bin, cli_bin) = binaries();
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home = directory.path().join("home");
+    myrlet_protocol::ensure_private_dir(&home).expect("create home");
+    let launches = directory.path().join("launches.txt");
+    let (mut hub_guard, hub_url) = start_hub(&hub_bin, &home).await;
+    let cli = cli(&cli_bin, &home, &hub_url);
+    let env_home = home.to_str().expect("utf-8 home");
+
+    enroll_and_pair(&cli, &worker_bin, &home, &hub_url);
+    std::fs::write(
+        home.join("worker/worker.yaml"),
+        silent_long_yaml(&hub_url, &launches),
+    )
+    .expect("write worker.yaml");
+    let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", env_home)]);
+    poll("worker online", Duration::from_secs(10), || {
+        online_epoch(&cli)
+    });
+
+    let task = create_task(
+        &cli,
+        "long-silent",
+        "Silent long task",
+        "shell",
+        "exec-long",
+    );
+    let shown = poll("the silent task to finish", Duration::from_secs(30), || {
+        finished(&cli, &task).map(|()| show(&cli, &task))
+    });
+    let delivery = field(&shown, "currentDelivery").expect("current delivery");
+    assert_eq!(delivery["state"], "finished", "delivery: {delivery}");
+    assert!(
+        delivery["progress"].is_null(),
+        "no Progress was ever written: {delivery}"
+    );
+    assert_eq!(
+        shown["resultMarkdown"],
+        "# Long task result\n\nNo progress was ever written.\n"
+    );
+    assert_eq!(
+        line_count(&launches),
+        1,
+        "the long task launched exactly once"
+    );
+
+    shutdown(&mut worker_guard.0, "worker");
+    shutdown(&mut hub_guard.0, "hub");
+}
+
+/// A Task configured with a >2h execution timeout must behave exactly like any other long
+/// task for its whole logical lifetime: it stays `dispatched` after claiming, writes no
+/// Progress, then naturally writes its Result and finishes. This is a fast integration
+/// exercise of the configured-bound path, not a real two-hour wall-clock run.
+#[tokio::test]
+async fn a_task_configured_for_more_than_two_hours_is_not_timed_out_early() {
+    const TWO_HOURS_10_MINUTES: u64 = 7_800;
+
+    let (hub_bin, worker_bin, cli_bin) = binaries();
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home = directory.path().join("home");
+    myrlet_protocol::ensure_private_dir(&home).expect("create home");
+    let launches = directory.path().join("launches.txt");
+    let (mut hub_guard, hub_url) = start_hub(&hub_bin, &home).await;
+    let cli = cli(&cli_bin, &home, &hub_url);
+    let env_home = home.to_str().expect("utf-8 home");
+
+    enroll_and_pair(&cli, &worker_bin, &home, &hub_url);
+    std::fs::write(
+        home.join("worker/worker.yaml"),
+        silent_long_yaml(&hub_url, &launches),
+    )
+    .expect("write worker.yaml");
+    let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", env_home)]);
+    poll("worker online", Duration::from_secs(10), || {
+        online_epoch(&cli)
+    });
+
+    let task = create_task_with_timeout(
+        &cli,
+        "long-2h",
+        "Two-hour long task",
+        "exec-long",
+        TWO_HOURS_10_MINUTES,
+    );
+    // Claimed and running: the Task must not be finished by any timeout sweep.
+    poll(
+        "the long task to be claimed",
+        Duration::from_secs(15),
+        || (status(&show(&cli, &task)) == "dispatched").then_some(()),
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        status(&show(&cli, &task)),
+        "dispatched",
+        "a >2h timeout must not be shortened by any intermediate fence"
+    );
+
+    let shown = poll("the long task to finish", Duration::from_secs(30), || {
+        finished(&cli, &task).map(|()| show(&cli, &task))
+    });
+    let delivery = field(&shown, "currentDelivery").expect("current delivery");
+    assert!(delivery["progress"].is_null(), "no Progress was written");
+    assert_eq!(
+        shown["resultMarkdown"],
+        "# Long task result\n\nNo progress was ever written.\n"
+    );
+    assert_eq!(line_count(&launches), 1, "exactly one launch");
+
+    shutdown(&mut worker_guard.0, "worker");
+    shutdown(&mut hub_guard.0, "hub");
+}
+
+/// Opt-in real-duration exercise of the same path. Ignored by default; run explicitly:
+///
+/// ```text
+/// MYRLET_LONG_TASK_SECONDS=7500 cargo test -p myrlet-hub \
+///     --test e2e_resilience_test a_real_duration_long_task -- --ignored --nocapture
+/// ```
+///
+/// This is the only test that consumes real wall-clock time; the default suite proves the
+/// lifecycle with short scripts instead.
+#[tokio::test]
+#[ignore = "real wall-clock duration; opt in with MYRLET_LONG_TASK_SECONDS"]
+async fn a_real_duration_long_task_runs_and_finishes_once() {
+    let seconds: u64 = std::env::var("MYRLET_LONG_TASK_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .expect("set MYRLET_LONG_TASK_SECONDS to the real duration to exercise");
+
+    let (hub_bin, worker_bin, cli_bin) = binaries();
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home = directory.path().join("home");
+    myrlet_protocol::ensure_private_dir(&home).expect("create home");
+    let launches = directory.path().join("launches.txt");
+    let (mut hub_guard, hub_url) = start_hub(&hub_bin, &home).await;
+    let cli = cli(&cli_bin, &home, &hub_url);
+    let env_home = home.to_str().expect("utf-8 home");
+
+    enroll_and_pair(&cli, &worker_bin, &home, &hub_url);
+    // The YAML sleep is the real duration; the Task timeout stays comfortably above it.
+    let yaml =
+        silent_long_yaml(&hub_url, &launches).replace("sleep 2", &format!("sleep {seconds}"));
+    std::fs::write(home.join("worker/worker.yaml"), yaml).expect("write worker.yaml");
+    let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", env_home)]);
+    poll("worker online", Duration::from_secs(10), || {
+        online_epoch(&cli)
+    });
+
+    let timeout = seconds + 600;
+    let task = create_task_with_timeout(&cli, "real-long", "Real long task", "exec-long", timeout);
+    let started = std::time::Instant::now();
+    let shown = poll(
+        "the real long task to finish",
+        Duration::from_secs(seconds + 120),
+        || finished(&cli, &task).map(|()| show(&cli, &task)),
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(seconds),
+        "the harness really ran for its full duration"
+    );
+    assert_eq!(
+        shown["resultMarkdown"],
+        "# Long task result\n\nNo progress was ever written.\n"
+    );
+    assert!(field(&shown, "currentDelivery").expect("delivery")["progress"].is_null());
+    assert_eq!(line_count(&launches), 1);
+
+    shutdown(&mut worker_guard.0, "worker");
+    shutdown(&mut hub_guard.0, "hub");
+}
+
+/// The Hub is lost while a silent long task runs and exits. On reconnect the new epoch
+/// replays both the Result and the Finish, and the task is never launched a second time.
+#[tokio::test]
+async fn transport_disconnect_across_process_exit_replays_result_and_finish_once() {
+    let (hub_bin, worker_bin, cli_bin) = binaries();
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home = directory.path().join("home");
+    myrlet_protocol::ensure_private_dir(&home).expect("create home");
+    let launches = directory.path().join("launches.txt");
+    let port = free_port();
+    let hub_url = format!("http://127.0.0.1:{port}");
+    let mut hub_guard = start_hub_on_port(&hub_bin, &home, port).await;
+    let cli = cli(&cli_bin, &home, &hub_url);
+    let env_home = home.to_str().expect("utf-8 home");
+
+    enroll_and_pair(&cli, &worker_bin, &home, &hub_url);
+    std::fs::write(
+        home.join("worker/worker.yaml"),
+        silent_long_yaml(&hub_url, &launches),
+    )
+    .expect("write worker.yaml");
+    let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", env_home)]);
+    let first_epoch = poll("worker online", Duration::from_secs(10), || {
+        online_epoch(&cli)
+    });
+
+    let task = create_task(
+        &cli,
+        "long-outage",
+        "Long task across outage",
+        "shell",
+        "exec-long",
+    );
+    poll("the task to be claimed", Duration::from_secs(15), || {
+        (status(&show(&cli, &task)) == "dispatched").then_some(())
+    });
+    poll("the task to launch once", Duration::from_secs(10), || {
+        (line_count(&launches) == 1).then_some(())
+    });
+
+    // Take the Hub away while the Harness is still running, and keep it away past the
+    // Harness' own exit so the Finish and Result can only arrive after a reconnect.
+    hub_guard.0.kill().expect("stop the hub");
+    hub_guard.0.wait().expect("wait for the stopped hub");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        line_count(&launches),
+        1,
+        "the transport loss must not relaunch the task"
+    );
+
+    hub_guard = start_hub_on_port(&hub_bin, &home, port).await;
+    let second_epoch = poll("worker online again", Duration::from_secs(20), || {
+        online_epoch(&cli).filter(|epoch| *epoch > first_epoch)
+    });
+    assert!(second_epoch > first_epoch);
+    let shown = poll(
+        "the replayed result and finish",
+        Duration::from_secs(20),
+        || finished(&cli, &task).map(|()| show(&cli, &task)),
+    );
+    assert_eq!(
+        shown["resultMarkdown"], "# Long task result\n\nNo progress was ever written.\n",
+        "the new epoch replayed the Result: {shown}"
+    );
+    assert_eq!(
+        line_count(&launches),
+        1,
+        "exactly one launch across the disconnect"
+    );
+
+    shutdown(&mut worker_guard.0, "worker");
     shutdown(&mut hub_guard.0, "hub");
 }

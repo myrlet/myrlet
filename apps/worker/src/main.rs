@@ -5,11 +5,15 @@ use std::time::Duration;
 
 use myrlet_protocol::paths::MyrletHome;
 use myrlet_protocol::WorkerId;
+use myrlet_worker::process_group::CANCEL_ACK_BOUND;
 use myrlet_worker_daemon::credentials::{self, WorkerCredentials};
 use myrlet_worker_daemon::{tls, wait_for_shutdown_signal, WorkerConfig, WorkerRuntime};
 use tokio::sync::watch;
 
 const USAGE: &str = "usage: worker [run|check-config|pair|credential-import] [options]";
+
+/// Extra time past the drain bound before the outer guard gives up on the run loop.
+const SHUTDOWN_GUARD_MARGIN: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -34,13 +38,20 @@ fn main() -> ExitCode {
 }
 
 /// Default command: run the Worker until `SIGTERM` / `SIGINT`, then drain and stop.
+///
+/// The runtime owns its drain bound (it reserves cleanup time inside
+/// `MYRLET_WORKER_SHUTDOWN_TIMEOUT_MS`); this outer select only guards against the run
+/// loop itself stalling. It must not cut cleanup short, so it never expires before one
+/// full cancel acknowledgement could, and leaves an extra margin past the drain budget.
 fn run(options: &[String]) -> Result<(), String> {
     if !options.is_empty() {
         return Err(format!("run takes no options\n{USAGE}"));
     }
     let home = owned(MyrletHome::resolve(None))?;
     let config = owned(WorkerConfig::load(&home.worker_config()))?;
-    let timeout = Duration::from_millis(config.shutdown_timeout_ms());
+    let timeout = Duration::from_millis(config.shutdown_timeout_ms())
+        .max(CANCEL_ACK_BOUND)
+        .saturating_add(SHUTDOWN_GUARD_MARGIN);
     let credentials = owned(credentials::load_credentials(&home.worker_credentials()))?;
     let runtime = owned(WorkerRuntime::new(home, config, credentials))?;
     new_runtime()?.block_on(async move {
