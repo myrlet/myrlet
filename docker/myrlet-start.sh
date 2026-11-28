@@ -22,12 +22,16 @@
 #   MYRLET_HOME          data root (default: /var/lib/myrlet)
 #   MYRLET_HUB_BIND      Hub listen address (default: 0.0.0.0:4140); the local
 #                        Worker always reaches the Hub over 127.0.0.1:<port>
+#   MYRLET_HUB_BIN, MYRLET_WORKER_BIN, MYRLET_CLI_BIN
+#                        optional binary paths; default to the image layout, and let an
+#                        integration test run this exact script against freshly built
+#                        binaries instead of the baked-in ones.
 
 set -euo pipefail
 
-readonly HUB_BIN="/usr/local/bin/hub"
-readonly WORKER_BIN="/usr/local/bin/worker"
-readonly CLI_BIN="/usr/local/bin/myrlet"
+readonly HUB_BIN="${MYRLET_HUB_BIN:-/usr/local/bin/hub}"
+readonly WORKER_BIN="${MYRLET_WORKER_BIN:-/usr/local/bin/worker}"
+readonly CLI_BIN="${MYRLET_CLI_BIN:-/usr/local/bin/myrlet}"
 readonly READY_TIMEOUT_SECONDS=30
 
 log() { printf 'myrlet-start: %s\n' "$*" >&2; }
@@ -124,8 +128,8 @@ worker_config="${worker_dir}/worker.yaml"
 # Trust stays exactly as the Hub is configured: this entrypoint never edits the
 # Security & Trust policies, so any other Worker enrolled with the same Hub keeps
 # whatever approval and review rules the operator set. Instead it approves and
-# applies configuration for this one local Worker, identified by the `workerId` the
-# pairing response reported — never by position in `workers list`.
+# applies configuration for this one local Worker, identified by the `workerId`
+# bound in this image's credential file — never by position in `workers list`.
 if [ ! -f "$worker_credentials" ]; then
   log "no worker credentials in ${worker_credentials}; enrolling a local worker"
   if ! enroll_json="$(MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers enroll)"; then
@@ -136,21 +140,29 @@ if [ ! -f "$worker_credentials" ]; then
   if [ -z "$code" ]; then
     die "could not extract an enrollmentCode from the Hub response: ${enroll_json}"
   fi
-  # `worker pair` prints the Hub-assigned identity and writes it to credentials.json.
+  # `worker pair` writes the Hub-assigned identity to credentials.json.
   if ! pair_out="$("$WORKER_BIN" pair --hub-url "$local_hub_url" --code "$code" 2>&1)"; then
     die "pairing the local worker failed: ${pair_out}"
   fi
   log "$pair_out"
-  local_worker_id="$(printf '%s' "$pair_out" | sed -n 's/^worker: paired as \([^ ]*\).*/\1/p')"
-  if [ -z "$local_worker_id" ] && [ -f "$worker_credentials" ]; then
-    # Fall back to the credential binding the pairing wrote, never to a Worker listing.
-    local_worker_id="$(sed -n 's/.*"workerId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$worker_credentials" | head -n 1)"
-  fi
-  if [ -z "$local_worker_id" ]; then
-    die "could not determine the local worker identity after pairing"
-  fi
-  log "local worker paired as ${local_worker_id}"
 fi
+
+# --- Resolve the local Worker identity (both fresh install and restart) -----
+# The credential binding this image wrote is the authoritative, restart-stable local
+# identity. Resolving it here — not only inside the first-boot branch — is what lets a
+# restarted container converge its own Worker. It is read from the local file, never
+# inferred from `workers list` order.
+if [ ! -f "$worker_credentials" ]; then
+  die "no worker credentials at ${worker_credentials}; the local worker was never paired"
+fi
+local_worker_id="$(sed -n 's/.*"workerId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$worker_credentials" | head -n 1)"
+case "$local_worker_id" in
+  wkr_*) ;;
+  *)
+    die "could not resolve the local worker identity from ${worker_credentials} (got '${local_worker_id}')"
+    ;;
+esac
+log "local worker identity ${local_worker_id}"
 
 # --- Default Worker configuration (first boot only) -------------------------
 # Field names mirror `apps/worker/src/config.rs` (`hubUrl`, `slots`, `slotId`,
@@ -254,11 +266,37 @@ fi
 
 # --- Supervise --------------------------------------------------------------
 log "myrlet is running (hub pid ${hub_pid}, worker pid ${worker_pid})"
-if wait -n "$hub_pid" "$worker_pid"; then
-  status=0
-else
-  status=$?
-fi
+
+# Join whichever daemon exits first and return its status. `wait -n` does this directly on
+# bash 5+ (the Debian image); a polling fallback keeps this script runnable on an older
+# host shell (bash 3.2 on macOS) for non-container integration tests.
+wait_first_exit() {
+  if wait -n 2>/dev/null; then
+    return 0
+  else
+    first_status=$?
+  fi
+  # `wait -n` is unsupported (it rejects its own usage), so poll the two children instead.
+  if [ "$first_status" -eq 2 ]; then
+    while kill -0 "$hub_pid" 2>/dev/null && kill -0 "$worker_pid" 2>/dev/null; do
+      sleep 1
+    done
+    set +e
+    wait "$hub_pid"
+    hub_exit=$?
+    wait "$worker_pid"
+    worker_exit=$?
+    set -e
+    # Report the daemon that stopped first; a clean stop is 0.
+    if [ "$hub_exit" -eq 0 ] || [ "$worker_exit" -eq 0 ]; then
+      return 0
+    fi
+    return "$hub_exit"
+  fi
+  return "$first_status"
+}
+wait_first_exit
+status=$?
 
 if [ "$shutting_down" -eq 1 ]; then
   exit 0

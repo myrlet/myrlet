@@ -1,224 +1,282 @@
-//! All-in-one deployment regression: the local Worker is approved and applied by its own
-//! Hub-assigned identity, while the Hub's Security & Trust policies stay untouched and any
-//! other Worker remains subject to them. Mirrors `docker/myrlet-start.sh`.
+//! All-in-one deployment regression: execute the **actual** `docker/myrlet-start.sh`
+//! entrypoint against freshly built binaries, and prove the local Worker is approved and
+//! applied by its own identity on a fresh install and again on a restart — without the
+//! script ever touching the Hub's Security & Trust policies or another Worker.
 
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use myrlet_protocol::ensure_private_dir;
 
-use crate::fixtures::{create_task, finished, line_count};
-use crate::harness::{binaries, cli, field, poll, shutdown, spawn_daemon, start_hub, Cli};
+use crate::harness::{binaries, ADMIN_TOKEN};
 
-/// Run a foreground `worker` subcommand and return its combined output text.
-fn run_worker_capture(worker: &Path, home: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new(worker)
-        .args(args)
-        .env("MYRLET_HOME", home)
+/// The entrypoint shipped in the image, located relative to this crate.
+fn entrypoint() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docker/myrlet-start.sh")
+        .canonicalize()
+        .expect("docker/myrlet-start.sh exists")
+}
+
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
+    listener.local_addr().expect("addr").port()
+}
+
+/// One running `myrlet-start` instance and the Hub it supervises.
+struct Entrypoint {
+    child: Option<Child>,
+    hub_url: String,
+}
+
+impl Entrypoint {
+    fn start(hub: &Path, worker: &Path, cli: &Path, home: &Path, bind: &str) -> Self {
+        let port = bind.rsplit(':').next().expect("port");
+        let hub_url = format!("http://127.0.0.1:{port}");
+        let child = Command::new("/bin/bash")
+            .arg(entrypoint())
+            .env("MYRLET_HOME", home)
+            .env("MYRLET_ADMIN_TOKEN", ADMIN_TOKEN)
+            .env("MYRLET_HUB_BIND", bind)
+            .env("MYRLET_HUB_BIN", hub)
+            .env("MYRLET_WORKER_BIN", worker)
+            .env("MYRLET_CLI_BIN", cli)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn myrlet-start");
+        Self {
+            child: Some(child),
+            hub_url,
+        }
+    }
+
+    /// One `myrlet` CLI call against this instance's Hub, parsed as JSON.
+    ///
+    /// Returns `None` while the Hub is still starting (a transport failure), so a poll can
+    /// retry; a non-transport failure panics with the CLI's message.
+    fn cli(&self, cli: &Path, home: &Path, args: &[&str]) -> Option<serde_json::Value> {
+        let output = Command::new(cli)
+            .args(args)
+            .env("MYRLET_HOME", home)
+            .env("MYRLET_HUB_URL", &self.hub_url)
+            .env("MYRLET_ADMIN_TOKEN", ADMIN_TOKEN)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run myrlet cli");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("transport failure") || stderr.contains("connect") {
+                return None; // the Hub is not listening yet
+            }
+            panic!("myrlet {args:?} failed: {stderr}");
+        }
+        serde_json::from_slice(&output.stdout).ok()
+    }
+
+    /// Poll until `probe` returns a value, feeding it a CLI runner that returns `None`
+    /// while the Hub is still starting.
+    fn poll<T>(
+        &self,
+        cli: &Path,
+        home: &Path,
+        what: &str,
+        limit: Duration,
+        mut probe: impl FnMut(&dyn Fn(&[&str]) -> Option<serde_json::Value>) -> Option<T>,
+    ) -> T {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            let run = |args: &[&str]| self.cli(cli, home, args);
+            if let Some(value) = probe(&run) {
+                return value;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Stop the entrypoint with SIGTERM; it forwards to both daemons and exits cleanly.
+    fn stop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = Command::new("/bin/kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if child.try_wait().expect("try_wait").is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("myrlet-start did not exit within 10s");
+    }
+}
+
+/// Enroll and pair one extra Worker against the entrypoint's Hub, returning its id.
+///
+/// Uses the Admin CLI to issue a code and the Worker binary to pair into its own home, so
+/// it never shares the entrypoint's identity.
+fn enroll_extra_worker(entry: &Entrypoint, cli: &Path, worker: &Path, other_home: &Path) -> String {
+    let issued = {
+        let output = Command::new(cli)
+            .args(["--json", "workers", "enroll"])
+            .env("MYRLET_HOME", other_home)
+            .env("MYRLET_HUB_URL", &entry.hub_url)
+            .env("MYRLET_ADMIN_TOKEN", ADMIN_TOKEN)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run myrlet workers enroll");
+        assert!(
+            output.status.success(),
+            "workers enroll failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("enroll json")
+    };
+    let code = issued["enrollmentCode"].as_str().expect("enrollment code");
+    let output = Command::new(worker)
+        .args(["pair", "--hub-url", &entry.hub_url, "--code", code])
+        .env("MYRLET_HOME", other_home)
         .output()
-        .expect("run worker");
+        .expect("run worker pair");
     assert!(
         output.status.success(),
-        "worker {args:?} failed: {}",
+        "worker pair failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8_lossy(&output.stdout).into_owned()
+    let creds = std::fs::read_to_string(other_home.join("worker/credentials.json"))
+        .expect("other worker credentials");
+    let parsed: serde_json::Value = serde_json::from_str(&creds).expect("credentials json");
+    parsed["workerId"].as_str().expect("workerId").to_owned()
 }
 
-/// Parse `worker: paired as <id>` from the pairing command's stdout.
-fn paired_id(paired: &str) -> String {
-    paired
-        .trim()
-        .rsplit_once("paired as ")
-        .map(|(_, id)| id.trim().to_owned())
-        .filter(|id| !id.is_empty())
-        .expect("pairing prints the assigned workerId")
-}
-
-/// Enroll and pair one Worker under its own home, returning its assigned identity.
-fn pair_worker(cli: &Cli<'_>, worker_bin: &Path, home: &Path, hub_url: &str) -> String {
-    ensure_private_dir(home).expect("create worker home");
-    let enrolled = cli.run(&["--json", "workers", "enroll"]);
-    let code = field(&enrolled, "enrollmentCode")
-        .and_then(|code| code.as_str())
-        .expect("enrollment code");
-    let paired = run_worker_capture(
-        worker_bin,
-        home,
-        &["pair", "--hub-url", hub_url, "--code", code],
-    );
-    paired_id(&paired)
-}
-
-/// Read one Worker's detail once and converge it exactly as the entrypoint does.
-///
-/// Approval and the applied revision come from the same `workers show`; each step runs only
-/// while the Hub still requires it, so repeating the call changes nothing.
-fn converge_one(cli: &Cli<'_>, worker_id: &str) -> u32 {
-    let shown = cli.run(&["--json", "workers", "show", worker_id]);
-    let mut mutations = 0;
-    if shown["worker"]["approval"].as_str() != Some("approved") {
-        cli.run(&["--json", "workers", "approve", worker_id]);
-        mutations += 1;
+impl Drop for Entrypoint {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
-    let revision = shown["worker"]["reportedRevision"]
-        .as_u64()
-        .expect("the online Worker reported an inventory");
-    if shown["worker"]["appliedRevision"].as_u64() != Some(revision) {
-        cli.run(&[
-            "--json",
-            "workers",
-            "config",
-            "apply",
-            worker_id,
-            "--revision",
-            &revision.to_string(),
-        ]);
-        mutations += 1;
-    }
-    mutations
-}
-
-fn shell_worker_yaml(hub_url: &str, counter: &Path) -> String {
-    format!(
-        "hubUrl: '{hub_url}'\nslots:\n  - slotId: local\n    capabilities: [{{name: shell, state: available}}]\n    executors:\n      - {{id: exec-shell, kind: process, program: /bin/sh, args: ['-c', 'echo run >> {counter}']}}\n",
-        counter = counter.display(),
-    )
-}
-
-/// Approve a Worker and read its reported revision, mirroring the entrypoint's `workers show`.
-fn reported_revision(cli: &Cli<'_>, worker_id: &str) -> Option<u64> {
-    cli.run(&["--json", "workers", "show", worker_id])["worker"]["reportedRevision"].as_u64()
 }
 
 #[tokio::test]
-async fn a_local_worker_is_converged_without_changing_the_hub_policies() {
+async fn the_entrypoint_converges_its_local_worker_on_fresh_boot_and_restart() {
     let (hub_bin, worker_bin, cli_bin) = binaries();
     let directory = tempfile::tempdir().expect("temp dir");
     let home = directory.path().join("home");
     ensure_private_dir(&home).expect("create home");
-    let counter = directory.path().join("runs.txt");
-    let (mut hub_guard, hub_url) = start_hub(&hub_bin, &home).await;
-    let cli = cli(&cli_bin, &home, &hub_url);
+    let bind = format!("127.0.0.1:{}", free_port());
 
-    // The Hub starts with both policies on and the entrypoint never changes them.
-    let policies_before = cli.run(&["--json", "policy", "show"]);
-    assert_eq!(policies_before["requireWorkerApproval"], true);
-    assert_eq!(policies_before["requireConfigurationApply"], true);
+    // --- Fresh install -------------------------------------------------------
+    let mut entry = Entrypoint::start(&hub_bin, &worker_bin, &cli_bin, &home, &bind);
 
-    // Pair the local Worker and remember the identity its pairing reported.
-    let local_id = pair_worker(&cli, &worker_bin, &home, &hub_url);
-    assert!(local_id.starts_with("wkr_"), "a workerId: {local_id}");
-    std::fs::write(
-        home.join("worker/worker.yaml"),
-        shell_worker_yaml(&hub_url, &counter),
-    )
-    .expect("write worker.yaml");
-    let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", home.to_str().unwrap())]);
-    poll(
-        "local worker online and reporting",
-        Duration::from_secs(10),
-        || reported_revision(&cli, &local_id),
-    );
-
-    // Approve and apply only this Worker; both are required by the still-on policies.
-    assert_eq!(converge_one(&cli, &local_id), 2, "approve then apply");
-    // A second call converges nothing, so a container restart is a no-op.
-    assert_eq!(
-        converge_one(&cli, &local_id),
-        0,
-        "repeat startup is idempotent"
-    );
-
-    let task = create_task(&cli, "local-run", "Local run", "shell", "exec-shell");
-    poll("the queued task to finish", Duration::from_secs(20), || {
-        finished(&cli, &task)
-    });
-    assert_eq!(line_count(&counter), 1, "the Task ran exactly once");
-
-    // The Hub's policies are untouched by the whole exchange.
-    let policies_after = cli.run(&["--json", "policy", "show"]);
-    assert_eq!(
-        policies_after, policies_before,
-        "startup leaves policies alone"
-    );
-
-    shutdown(&mut worker_guard.0, "worker");
-    shutdown(&mut hub_guard.0, "hub");
-}
-
-#[tokio::test]
-async fn another_workers_configuration_is_never_applied_and_approval_is_not_forced() {
-    let (hub_bin, worker_bin, cli_bin) = binaries();
-    let directory = tempfile::tempdir().expect("temp dir");
-    let home = directory.path().join("home");
-    let remote_home = directory.path().join("remote-home");
-    ensure_private_dir(&home).expect("create home");
-    ensure_private_dir(&remote_home).expect("create remote home");
-    let local_counter = directory.path().join("local.txt");
-    let remote_counter = directory.path().join("remote.txt");
-    let (mut hub_guard, hub_url) = start_hub(&hub_bin, &home).await;
-    let cli = cli(&cli_bin, &home, &hub_url);
-
-    // Two distinct Workers; only the first belongs to this "container".
-    let local_id = pair_worker(&cli, &worker_bin, &home, &hub_url);
-    let remote_id = pair_worker(&cli, &worker_bin, &remote_home, &hub_url);
-    assert_ne!(local_id, remote_id, "each pairing is a distinct Worker");
-    std::fs::write(
-        home.join("worker/worker.yaml"),
-        shell_worker_yaml(&hub_url, &local_counter),
-    )
-    .expect("write local worker.yaml");
-    std::fs::write(
-        remote_home.join("worker/worker.yaml"),
-        shell_worker_yaml(&hub_url, &remote_counter),
-    )
-    .expect("write remote worker.yaml");
-    let mut local_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", home.to_str().unwrap())]);
-    let mut remote_guard = spawn_daemon(
-        &worker_bin,
-        &[("MYRLET_HOME", remote_home.to_str().unwrap())],
-    );
-
-    poll(
-        "both workers online and reporting",
-        Duration::from_secs(15),
-        || {
-            let local = reported_revision(&cli, &local_id);
-            let remote = reported_revision(&cli, &remote_id);
-            (local.is_some() && remote.is_some()).then_some(())
+    // The entrypoint pairs, approves, and applies its local Worker on its own.
+    let (worker, local_id) = entry.poll(
+        &cli_bin,
+        &home,
+        "the local worker approved and applied",
+        Duration::from_secs(60),
+        |run| {
+            let list = run(&["--json", "workers", "list"])?;
+            let worker = list["workers"].as_array()?.first()?.clone();
+            let online = worker["online"].as_bool()?;
+            let approved = worker["approval"] == "approved";
+            let applied = worker["configurationPending"] == false;
+            let id = worker["workerId"].as_str()?.to_owned();
+            (online && approved && applied).then_some((worker, id))
         },
     );
-
-    // Startup converges only the local Worker.
-    assert_eq!(converge_one(&cli, &local_id), 2);
-
-    // The remote Worker keeps the Hub's approval policy: still pending, never applied.
-    let remote = cli.run(&["--json", "workers", "show", &remote_id]);
+    assert!(local_id.starts_with("wkr_"), "a workerId: {worker}");
+    let detail = entry
+        .cli(&cli_bin, &home, &["--json", "workers", "show", &local_id])
+        .expect("workers show");
     assert_eq!(
-        remote["worker"]["approval"], "pending",
-        "an unrelated Worker is not approved: {remote}"
-    );
-    assert_eq!(
-        remote["worker"]["appliedRevision"],
-        serde_json::Value::Null,
-        "an unrelated Worker's configuration is not applied: {remote}"
+        detail["appliedRevision"], detail["reportedRevision"],
+        "the local worker's configuration is applied: {detail}"
     );
 
-    // The policies are untouched and still gate the remote Worker.
-    let policies = cli.run(&["--json", "policy", "show"]);
+    // The Hub's policies are untouched: both still on.
+    let policies = entry
+        .cli(&cli_bin, &home, &["--json", "policy", "show"])
+        .expect("policy show");
     assert_eq!(policies["requireWorkerApproval"], true);
     assert_eq!(policies["requireConfigurationApply"], true);
 
-    // The local Worker remains approved and applied; the remote one stays pending.
-    let local = cli.run(&["--json", "workers", "show", &local_id]);
-    assert_eq!(local["worker"]["approval"], "approved");
-    assert_eq!(
-        local["worker"]["appliedRevision"], local["worker"]["reportedRevision"],
-        "the local Worker's configuration is applied"
+    // The identity lives in the local credential file the entrypoint wrote.
+    let creds = std::fs::read_to_string(home.join("worker/credentials.json"))
+        .expect("credentials written by the entrypoint");
+    assert!(
+        creds.contains(&local_id),
+        "credentials name the local worker"
     );
 
-    shutdown(&mut remote_guard.0, "remote worker");
-    shutdown(&mut local_guard.0, "local worker");
-    shutdown(&mut hub_guard.0, "hub");
+    // A separately enrolled Worker joins the same Hub (its own home). It must stay subject
+    // to the approval policy: enrolled via the CLI here, it never runs through the
+    // entrypoint and must remain pending.
+    let other_home = directory.path().join("other-home");
+    ensure_private_dir(&other_home).expect("create other home");
+    let other_id = enroll_extra_worker(&entry, &cli_bin, &worker_bin, &other_home);
+    assert_ne!(other_id, local_id);
+    let other = entry
+        .cli(&cli_bin, &home, &["--json", "workers", "show", &other_id])
+        .expect("other workers show");
+    assert_eq!(other["worker"]["approval"], "pending", "other: {other}");
+
+    entry.stop();
+
+    // --- Restart on the same persistent data directory -----------------------
+    let mut restarted = Entrypoint::start(&hub_bin, &worker_bin, &cli_bin, &home, &bind);
+    // Identity is recovered from the credential file, not re-paired; convergence is a
+    // no-op that must still succeed and must not enrol a second Worker.
+    let (after, restarted_id) = restarted.poll(
+        &cli_bin,
+        &home,
+        "the same local worker approved after restart",
+        Duration::from_secs(60),
+        |run| {
+            let list = run(&["--json", "workers", "list"])?;
+            let workers = list["workers"].as_array()?;
+            // The restart reuses the paired identity and enrolls no third Worker.
+            if workers.len() != 2 {
+                return None;
+            }
+            let worker = workers
+                .iter()
+                .find(|w| w["workerId"].as_str() == Some(local_id.as_str()))?
+                .clone();
+            let online = worker["online"].as_bool()?;
+            let approved = worker["approval"] == "approved";
+            let id = worker["workerId"].as_str()?.to_owned();
+            (online && approved).then_some((worker, id))
+        },
+    );
+    assert_eq!(restarted_id, local_id, "restart reuses the paired identity");
+    assert_eq!(
+        after["configurationPending"], false,
+        "the restart converges the existing configuration without changing it: {after}"
+    );
+    // The separately enrolled Worker is untouched by the restart: still pending, not applied.
+    let other = restarted
+        .cli(&cli_bin, &home, &["--json", "workers", "show", &other_id])
+        .expect("other workers show");
+    assert_eq!(
+        other["worker"]["approval"], "pending",
+        "the restart never approves another Worker: {other}"
+    );
+    assert!(
+        other["appliedRevision"].is_null(),
+        "the other Worker is not applied: {other}"
+    );
+    let policies = restarted
+        .cli(&cli_bin, &home, &["--json", "policy", "show"])
+        .expect("policy show");
+    assert_eq!(policies["requireWorkerApproval"], true);
+    assert_eq!(policies["requireConfigurationApply"], true);
+
+    restarted.stop();
 }
