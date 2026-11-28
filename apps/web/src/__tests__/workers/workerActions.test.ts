@@ -37,20 +37,7 @@ function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     lastSeenAtMs: 1_700_000_000_000,
     activeDeliveries: 2,
     host: { os: "linux", arch: "x86_64", deploymentMode: "container" },
-    reportedRevision: 2,
-    appliedRevision: 2,
-    appliedConfig: {
-      slots: [
-        {
-          slotId: "gpu-1",
-          enabled: true,
-          advisoryCapacity: null,
-          roles: ["build"],
-          capabilities: [{ name: "cuda", state: "available" }],
-          executors: [{ id: "codex-cli", kind: "codex" }],
-        },
-      ],
-    },
+    configurationPending: false,
     ...overrides,
   };
 }
@@ -88,18 +75,17 @@ describe("worker inventory predicates", () => {
 
   it("only treats an unapplied report as pending Apply", () => {
     expect(applyPending(worker())).toBe(false);
-    expect(applyPending(worker({ reportedRevision: 3 }))).toBe(true);
-    expect(applyPending(worker({ reportedRevision: null, appliedRevision: null }))).toBe(false);
+    expect(applyPending(worker({ configurationPending: true }))).toBe(true);
   });
 
-  it("matches the Worker ID, host, Slot, role, capability, and executor", () => {
+  it("matches the Worker ID, host, and approval the Snapshot carries", () => {
     const record = worker();
-    for (const query of ["00000000000a", "linux", "container", "gpu-1", "build", "cuda", "codex"]) {
+    for (const query of ["00000000000a", "linux", "container", "approved"]) {
       expect(workerMatchesQuery(record, query)).toBe(true);
     }
     expect(workerMatchesQuery(record, "windows")).toBe(false);
     expect(workerMatchesQuery(record, "")).toBe(true);
-    expect(workerMatchesQuery(worker({ host: null, appliedConfig: null }), "gpu")).toBe(false);
+    expect(workerMatchesQuery(worker({ host: null }), "gpu")).toBe(false);
   });
 });
 
@@ -131,7 +117,10 @@ describe("useWorkerActions", () => {
 
   function detail(revision: number, config: WorkerSchedulingConfig): WorkerDetail {
     return {
-      worker: { ...worker(), reportedRevision: revision },
+      worker: worker(),
+      reportedRevision: revision,
+      appliedRevision: null,
+      appliedConfig: null,
       reportedConfig: config,
       claimableTaskIds: [],
     };
@@ -173,7 +162,6 @@ describe("useWorkerActions", () => {
     const hook = renderHook(() => {
       const review = useWorkerConfigReview({
         workerId: "wkr_00000000000a",
-        reportedRevision,
         fetchDetail: (workerId) => onFetchDetail(workerId, reportedRevision),
       });
       const actions = useWorkerActions({
@@ -281,10 +269,10 @@ describe("useWorkerActions", () => {
 
     // Reviewing reads the report and arms Apply for exactly the revision it was reported at.
     await act(async () => result.current.actions.review());
-    expect(result.current.review.reviewed).toEqual({
-      revision: 3,
-      config: report("cuda"),
-    });
+    expect(result.current.review.reviewed?.revision).toBe(3);
+    expect(result.current.review.reviewed?.config).toEqual(report("cuda"));
+    // The applied side travels with the same Detail response.
+    expect(result.current.review.reviewed?.detail.appliedRevision).toBeNull();
     expect(result.current.actions.pending).toBe("apply");
     expect(result.current.review.reviewed?.revision).toBe(3);
 
@@ -383,7 +371,10 @@ describe("useWorkerActions", () => {
     const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
       reportedRevision: null,
       onFetchDetail: async () => ({
-        worker: { ...worker(), reportedRevision: null },
+        worker: worker(),
+        reportedRevision: null,
+        appliedRevision: null,
+        appliedConfig: null,
         reportedConfig: null,
         claimableTaskIds: [],
       }),

@@ -56,9 +56,7 @@ const WORKER: WorkerRecord = {
   lastSeenAtMs: 1_700_000_000_000,
   activeDeliveries: 1,
   host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
-  reportedRevision: 1,
-  appliedRevision: 1,
-  appliedConfig: { slots: [] },
+  configurationPending: false,
 };
 
 function summary(): SnapshotTaskSummary {

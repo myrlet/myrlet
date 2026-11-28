@@ -291,19 +291,29 @@ export interface WorkerRecord {
   activeDeliveries: number;
   /** Host facts from the latest accepted report; ordinary telemetry, never a gate. */
   host: HostDescriptor | null;
-  /** Hub-assigned revision of the latest accepted report, or `null` before one arrives. */
-  reportedRevision: number | null;
-  /** Hub-assigned revision the Hub schedules with, or `null` before an Apply. */
-  appliedRevision: number | null;
-  appliedConfig: WorkerSchedulingConfig | null;
+  /**
+   * The latest accepted report is newer than the applied configuration, so an Admin must
+   * apply it before the Worker receives new work. Derived by the Hub.
+   */
+  configurationPending: boolean;
 }
 
 /** Alias matching the Rust `SnapshotWorker` name. */
 export type SnapshotWorker = WorkerRecord;
 
-/** One Worker's detail, its reported snapshot under review, and claimable Task IDs. */
+/**
+ * One Worker's authoritative administrative detail. The reported revision and
+ * `reportedConfig` come from the same stored report, so Apply can submit exactly the
+ * revision whose content the Admin reviewed. Only this Detail carries configuration
+ * revisions and bodies; the Snapshot (`WorkerRecord`) never does.
+ */
 export interface WorkerDetail {
   worker: WorkerRecord;
+  /** Hub-assigned revision of the latest accepted report, or `null` before one arrives. */
+  reportedRevision: number | null;
+  /** Hub-assigned revision of the applied configuration, or `null` before Apply. */
+  appliedRevision: number | null;
+  appliedConfig: WorkerSchedulingConfig | null;
   reportedConfig: WorkerSchedulingConfig | null;
   claimableTaskIds: TaskId[];
 }

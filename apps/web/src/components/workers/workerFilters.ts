@@ -37,19 +37,11 @@ export function workerMatchesQuery(worker: WorkerRecord, query: string): boolean
   if (query === "") {
     return true;
   }
+  // The Snapshot carries only connectivity and host facts, not scheduling Slots.
   const parts: string[] = [worker.workerId, worker.approval];
   const host = worker.host;
   if (host) {
     parts.push(host.os, host.arch, host.deploymentMode);
-  }
-  for (const slot of worker.appliedConfig?.slots ?? []) {
-    parts.push(slot.slotId, ...slot.roles);
-    for (const capability of slot.capabilities) {
-      parts.push(capability.name);
-    }
-    for (const executor of slot.executors) {
-      parts.push(executor.id, executor.kind);
-    }
   }
   return parts.join(" ").toLowerCase().includes(query);
 }
@@ -88,7 +80,5 @@ export function workerCounts(workers: readonly WorkerRecord[]): WorkerCounts {
 
 /** Whether the latest report still waits for an Admin Apply. */
 export function applyPending(worker: WorkerRecord): boolean {
-  return (
-    worker.reportedRevision !== null && worker.reportedRevision !== worker.appliedRevision
-  );
+  return worker.configurationPending;
 }

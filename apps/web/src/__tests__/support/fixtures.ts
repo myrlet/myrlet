@@ -3,6 +3,7 @@ import type {
   SecurityTrustSettings,
   SnapshotTaskSummary,
   TaskRecord,
+  WorkerDetail,
   WorkerRecord,
 } from "../../api/types";
 
@@ -53,21 +54,35 @@ export function workerRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecor
     lastSeenAtMs: Date.now(),
     activeDeliveries: 1,
     host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    configurationPending: false,
+    ...overrides,
+  };
+}
+
+/** A Worker Detail for one Worker, carrying the revision/config fields the Snapshot lacks. */
+export function workerDetail(
+  record: WorkerRecord = workerRecord(),
+  overrides: Partial<WorkerDetail> = {},
+): WorkerDetail {
+  const slots = [
+    {
+      slotId: "mac-default",
+      enabled: true,
+      // Unknown capacity: must render `—`, never `0`.
+      advisoryCapacity: null,
+      roles: ["coding"],
+      capabilities: [{ name: "rust", state: "available" as const }],
+      executors: [{ id: "claude-code", kind: "claude" as const }],
+    },
+  ];
+  return {
+    worker: record,
     reportedRevision: 2,
     appliedRevision: 2,
-    appliedConfig: {
-      slots: [
-        {
-          slotId: "mac-default",
-          enabled: true,
-          // Unknown capacity: must render `—`, never `0`.
-          advisoryCapacity: null,
-          roles: ["coding"],
-          capabilities: [{ name: "rust", state: "available" }],
-          executors: [{ id: "claude-code", kind: "claude" }],
-        },
-      ],
-    },
+    appliedConfig: { slots },
+    // The same body the applied side holds, so there is nothing pending by default.
+    reportedConfig: { slots },
+    claimableTaskIds: [],
     ...overrides,
   };
 }

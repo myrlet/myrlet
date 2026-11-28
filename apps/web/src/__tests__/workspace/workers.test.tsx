@@ -39,9 +39,12 @@ describe("Workers drawer", () => {
 
     const card = drawer.querySelector<HTMLElement>('[data-worker-id="wkr_00000000000a"]');
     expect(card).not.toBeNull();
-    const slotRow = within(card as HTMLElement).getByText("mac-default").closest("tr");
-    expect(slotRow).not.toBeNull();
-    const slotRowElement = slotRow as HTMLElement;
+    // The applied Slots now come from the Worker Detail read, so wait for it to load.
+    const slotRowElement = await waitFor(() => {
+      const row = within(card as HTMLElement).getByText("mac-default").closest("tr");
+      expect(row).not.toBeNull();
+      return row as HTMLElement;
+    });
     expect(within(slotRowElement).getByText("—")).toBeInTheDocument();
     expect(slotRowElement.textContent ?? "").not.toMatch(/capacity\s*0/i);
     expect(slotRowElement.textContent ?? "").not.toContain("0");

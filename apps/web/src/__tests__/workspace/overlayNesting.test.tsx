@@ -83,9 +83,7 @@ function workerRecord(): WorkerRecord {
     lastSeenAtMs: Date.now(),
     activeDeliveries: 0,
     host: null,
-    reportedRevision: null,
-    appliedRevision: null,
-    appliedConfig: null,
+    configurationPending: false,
   };
 }
 
