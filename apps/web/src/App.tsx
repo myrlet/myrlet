@@ -5,7 +5,7 @@
  * the relationship Board (default) or the dense List, the collapsible
  * right Inspector, and the compact status bar. Workers & Pairing is a slide-over
  * drawer rather than a separate page. The Task surface is strictly read-only:
- * creation, import, dispatch, cancel, finish, subtask, and retry belong to the
+ * creation, import, cancel, finish, subtask, and retry belong to the
  * CLI, never here. All non-session state lives in this component; the bearer
  * token stays inside `useHub`.
  */

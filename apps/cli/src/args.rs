@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use myrlet_protocol::{DispatchSelection, TaskDefinition, TaskTreeDirection};
+use myrlet_protocol::{TaskDefinition, TaskTreeDirection};
 
 use crate::CliError;
 
@@ -11,7 +11,7 @@ mod tasks;
 /// Default Hub base URL when `MYRLET_HUB_URL` is unset.
 pub const DEFAULT_HUB_URL: &str = "http://127.0.0.1:4140";
 
-const BOOLEAN_FLAGS: &[&str] = &["--match", "--fallback-allowed", "--queue"];
+const BOOLEAN_FLAGS: &[&str] = &["--json"];
 
 /// Parsed command line: the global `--json` flag plus the selected command.
 pub struct ParsedCli {
@@ -20,9 +20,13 @@ pub struct ParsedCli {
 }
 
 /// One CLI subcommand with its validated options.
+///
+/// Grouped by destination: Hub reads, Owner writes, and execution-local Worker commands.
 pub enum Command {
     Help,
-    TasksList,
+    TasksList {
+        limit: Option<usize>,
+    },
     TasksShow {
         id: String,
     },
@@ -32,27 +36,20 @@ pub enum Command {
         max_depth: Option<u8>,
         limit: Option<usize>,
     },
-    TasksCreate {
-        idempotency_key: String,
-        source: CreateSource,
+    TasksSubmit {
+        file: Option<String>,
+        idempotency_key: Option<String>,
+        definition: Option<Box<TaskDefinition>>,
     },
-    TasksDispatch {
+    TasksImport {
+        file: String,
+        idempotency_key: Option<String>,
+    },
+    TasksUpdate {
         id: String,
         expected_version: u64,
-        idempotency_key: String,
-        selection: DispatchSelection,
-        queue: bool,
-    },
-    TasksSubmit {
-        file: String,
-        idempotency_key: String,
-        dispatch_idempotency_key: Option<String>,
-        fallback_allowed: bool,
-        queue: bool,
-    },
-    TasksBundleImport {
-        file: String,
-        idempotency_key: String,
+        idempotency_key: Option<String>,
+        dependencies: Option<Vec<String>>,
     },
     TasksCancel {
         id: String,
@@ -69,6 +66,7 @@ pub enum Command {
     WorkersShow {
         id: String,
     },
+    /// Operator bootstrap: issue a one-time pairing code.
     WorkersEnroll {
         ttl_seconds: Option<u64>,
         suggested_worker_id: Option<String>,
@@ -83,12 +81,18 @@ pub enum Command {
         cursor: Option<u64>,
         limit: Option<usize>,
     },
-}
-
-/// Where `tasks create` obtains its `TaskDefinition` payload.
-pub enum CreateSource {
-    File(String),
-    Definition(Box<TaskDefinition>),
+    Done {
+        delivery_id: String,
+    },
+    ResultCheck {
+        delivery_id: String,
+    },
+    ResultSync {
+        delivery_id: String,
+    },
+    ResultStatus {
+        delivery_id: String,
+    },
 }
 
 fn usage(message: impl Into<String>) -> CliError {
@@ -187,10 +191,6 @@ impl RawArgs {
         self.values.remove(flag).unwrap_or_default()
     }
 
-    fn boolean(&mut self, flag: &str) -> bool {
-        self.bools.remove(flag)
-    }
-
     fn number<T: std::str::FromStr>(&mut self, flag: &str) -> Result<Option<T>, CliError> {
         match self.single(flag) {
             None => Ok(None),
@@ -226,6 +226,13 @@ fn parse_command(scanner: &mut Scanner) -> Result<Command, CliError> {
         Some("tasks") => tasks::parse(scanner),
         Some("workers") => parse_workers(scanner),
         Some("events") => parse_events(scanner),
+        Some("done") => {
+            let mut raw = RawArgs::parse(scanner)?;
+            let delivery_id = raw.positional("done <delivery-id>")?;
+            raw.finish("done")?;
+            Ok(Command::Done { delivery_id })
+        }
+        Some("result") => parse_result(scanner),
         Some(other) => Err(CliError::Usage(format!("unknown command {other:?}"))),
         None => Err(CliError::Usage("missing command".to_string())),
     }
@@ -283,5 +290,21 @@ fn parse_events(scanner: &mut Scanner) -> Result<Command, CliError> {
         }
         Some(other) => Err(CliError::Usage(format!("unknown events command {other:?}"))),
         None => Err(CliError::Usage("events requires a command".to_string())),
+    }
+}
+
+/// `result check|sync|status <delivery-id>`; every operation names its Delivery.
+fn parse_result(scanner: &mut Scanner) -> Result<Command, CliError> {
+    let operation = scanner
+        .take_token()
+        .ok_or_else(|| usage("result requires check, sync, or status"))?;
+    let mut raw = RawArgs::parse(scanner)?;
+    let delivery_id = raw.positional("result <operation> <delivery-id>")?;
+    raw.finish(&format!("result {operation}"))?;
+    match operation.as_str() {
+        "check" => Ok(Command::ResultCheck { delivery_id }),
+        "sync" => Ok(Command::ResultSync { delivery_id }),
+        "status" => Ok(Command::ResultStatus { delivery_id }),
+        other => Err(usage(format!("unknown result command {other:?}"))),
     }
 }

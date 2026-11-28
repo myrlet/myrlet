@@ -13,6 +13,7 @@ MYRLET_HOME/
 └── worker/
     ├── worker.yaml          # Worker Slots, capabilities, and Executors
     ├── credentials.json     # Hub-issued Worker credential binding (0600)
+    ├── control.sock         # local CLI control channel (0600)
     ├── state/               # Worker local Delivery registry & inventory revision
     ├── progress/            # Worker-chosen Progress JSON files (<delivery_id>.json)
     └── results/             # Worker-chosen Markdown result files (<delivery_id>.md)
@@ -50,24 +51,22 @@ crates/protocol (myrlet-protocol: canonical Task, Delivery, IDs, enums, HTTP/WSS
 - Keep modules cohesive and cleanly decoupled (target **<= 300–400 LOC** per production `.rs` file; split distinct domain responsibilities instead of building monolithic files).
 - Production builds MUST NOT bundle test fixtures, demo datasets, or developer component galleries.
 
-## Proposed agent commands
-
-Group help by destination. Hub queries expose Tasks, trees, dependency blockers, Workers, and events. Owner operations submit, import, update unclaimed Tasks, and cancel explicitly. Keep credential administration in operator tooling. The installed binary's [CLI reference](../../skills/myrlet/references/cli.md) lists commands available today.
-
-Local Worker commands always take the Delivery ID supplied in the startup prompt. `done <delivery-id>` acknowledges the Harness notice, `result check <delivery-id>` gives advisory format feedback, `result sync <delivery-id>` requests reconciliation, and `result status <delivery-id>` compares local and Hub content without writing. The last operation distinguishes equal, different, missing locally or remotely, and unknown while the Hub is unreachable. A reused Slot cannot redirect a command. The Worker resolves recorded paths and owns Hub reporting. `done` and Result sync are repeatable. File-safety checks still apply when advisory format checks produce warnings.
-
 ## Client Surfaces
 
-Current clients use the Hub HTTP/SSE API. The proposed execution-local commands reach the local Worker. In either model, Task state is owned by the Hub.
+All clients are thin presentation/automation shells over the Hub HTTP/SSE API; none owns a second Task state machine or scheduler.
 
-The current pre-release tree builds **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the same-origin **Web UI** compiled into `hub` from `apps/web`, and one Agent Skill.
+V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the same-origin **Web UI** compiled into `hub` from `apps/web`, and one Agent Skill.
 
 | Surface | Binary / Crate | V1 Scope |
 | --- | --- | --- |
-| **CLI** | `myrlet` (`apps/cli`) | Headless Task create/dispatch/submit/bundle-import/list/show/cancel/finish, Worker list, and `events watch` (human + `--json` output). `tasks show` prints or emits the immutable result Markdown. Also the supported interface for Harnesses. |
+| **CLI** | `myrlet` (`apps/cli`) | Headless Hub reads (`tasks list/show/tree`, `workers list/show`, `events watch`), Owner writes (`tasks submit/import/update/cancel/finish`), execution-local commands (`done`, `result check/sync/status`), and operator bootstrap (`workers enroll/rotate/revoke`). Human + `--json` output. Also the supported interface for Harnesses. |
 | **Shared Client SDK** | `myrlet-client` (`crates/client`) | One `Client` over `native` (`reqwest`/Tokio) and `wasm` (`fetch`) transports using canonical `myrlet-protocol` DTOs. |
-| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List and read-only Board**, **Task Detail** (hierarchy, dependencies, Delivery, latest Progress, stored result Markdown), and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
-| **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Owner Agents. |
+| **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List and read-only Board**, **Task Detail** (hierarchy, dependencies and blockers, Delivery, latest Progress, latest result Markdown), and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
+| **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Owner Agents and Harnesses. |
+
+### Execution-local CLI commands
+
+`done <delivery-id>`, `result check <delivery-id>`, `result sync <delivery-id>`, and `result status <delivery-id>` take no Hub credential. They write one JSON request to `worker/control.sock` under `MYRLET_HOME` and read one `LocalReply`. Each reply separates **local receipt** (the Worker received and acted on the command) from **Hub confirmation** (the Hub stored the resulting value); `result status` reports `equal`, `different`, `missing_locally`, `missing_remotely`, `absent`, or `unknown` (Hub unreachable) and never writes. A Delivery ID the Worker never registered is rejected locally, so a stale command cannot act on a newer Delivery reusing the same Slot.
 
 ### Desktop Shell (next iteration)
 

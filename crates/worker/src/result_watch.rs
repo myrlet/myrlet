@@ -7,6 +7,36 @@ use std::path::Path;
 
 use myrlet_protocol::result::MAX_RESULT_BYTES;
 
+/// One Worker-side reading of the Result file.
+///
+/// The distinction matters: only `Absent` or `Empty` may clear the Hub copy. A file that
+/// could not be read safely, is oversized, is not UTF-8, or is being written right now is
+/// `Unreadable`, because an unreadable file never proves that there is no Result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalResult {
+    /// The file does not exist: no Result.
+    Absent,
+    /// The file exists and holds only whitespace: no Result.
+    Empty,
+    /// The file holds the current Markdown text.
+    Content(String),
+    /// The file could not be read safely; the Hub copy must be preserved.
+    Unreadable,
+}
+
+impl LocalResult {
+    /// Text the Hub should hold, or `None` when there is no Result.
+    ///
+    /// An `Unreadable` reading yields an error so the caller neither writes nor clears.
+    pub fn content(&self) -> Result<Option<&str>, LocalResultError> {
+        match self {
+            Self::Absent | Self::Empty => Ok(None),
+            Self::Content(text) => Ok(Some(text)),
+            Self::Unreadable => Err(LocalResultError::Incomplete),
+        }
+    }
+}
+
 #[cfg(unix)]
 fn open_result(path: &Path) -> io::Result<File> {
     use rustix::fs::{open, openat, Mode, OFlags};
@@ -39,9 +69,12 @@ fn open_result(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
-/// Capture a bounded, private regular file once, when local handling ends.
-pub fn read_result(path: &Path) -> Option<String> {
-    let read = || -> io::Result<Option<String>> {
+/// Read the current Result file, classifying absence separately from an unsafe read.
+///
+/// A missing file is the normal "no Result" case. Anything else that prevents a complete
+/// read is `Unreadable`, so synchronization preserves whatever the Hub already holds.
+pub fn read_result(path: &Path) -> LocalResult {
+    let read = || -> io::Result<LocalResult> {
         let file = open_result(path)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.len() > MAX_RESULT_BYTES as u64 {
@@ -53,14 +86,25 @@ pub fn read_result(path: &Path) -> Option<String> {
         if text.len() > MAX_RESULT_BYTES {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        Ok((!text.trim().is_empty()).then_some(text))
+        Ok(if text.trim().is_empty() {
+            LocalResult::Empty
+        } else {
+            LocalResult::Content(text)
+        })
     };
     match read() {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Ok(reading) => reading,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => LocalResult::Absent,
         Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "ignored invalid result file");
-            None
+            tracing::warn!(%error, path = %path.display(), "result file could not be read safely");
+            LocalResult::Unreadable
         }
     }
+}
+
+/// Failure to establish the local Result value.
+#[derive(Debug, thiserror::Error)]
+pub enum LocalResultError {
+    #[error("the local result file could not be read completely")]
+    Incomplete,
 }

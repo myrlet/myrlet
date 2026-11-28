@@ -1,4 +1,4 @@
-//! Public health/pairing routes plus the Admin Worker-enrollment and fleet routes.
+//! Public health/pairing routes, Worker claims, and the Admin fleet routes.
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -6,13 +6,18 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use myrlet_protocol::{
-    CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest, WorkerId, WorkerListResponse,
+    ClaimTaskRequest, CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest, WorkerDetail,
+    WorkerId, WorkerListResponse,
 };
 
 use crate::auth;
 use crate::error::ApiError;
-use crate::http::{read_bounded_json, run_bounded};
+use crate::http::{read_bounded_json, require_reader, run_bounded};
 use crate::state::{now_ms, HubState};
+use crate::wakeup::spawn_wakeup;
+
+/// Claimable Tasks considered per Worker detail read.
+const CLAIMABLE_LIMIT: usize = 50;
 
 /// `GET /health`, `GET /v1/health`: unauthenticated liveness probe.
 pub async fn health() -> Json<HealthResponse> {
@@ -57,28 +62,53 @@ pub async fn create_enrollment_code(
 }
 
 /// `GET /v1/workers`: enrolled Workers with connectivity and reported inventory.
+///
+/// Owners and Workers may both read the fleet; neither read grants management authority.
 pub async fn list_workers(
     State(state): State<HubState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    require_reader(&state, &headers).await?;
     let workers = state.store.list_workers(state.online_map()).await?;
     Ok(Json(WorkerListResponse { workers }).into_response())
 }
 
-/// `GET /v1/workers/{id}`: one Worker's detail and inventory.
+/// `GET /v1/workers/{id}`: one Worker's detail, inventory, and claimable Task IDs.
 pub async fn get_worker(
     State(state): State<HubState>,
     headers: HeaderMap,
     Path(worker_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
-    let worker_id = WorkerId::new(worker_id);
-    let worker = state
+    require_reader(&state, &headers).await?;
+    let detail: WorkerDetail = state
         .store
-        .get_worker(worker_id, state.online_map())
+        .worker_detail(
+            WorkerId::new(worker_id),
+            state.online_map(),
+            CLAIMABLE_LIMIT,
+        )
         .await?;
-    Ok(Json(worker).into_response())
+    Ok(Json(detail).into_response())
+}
+
+/// `POST /v1/workers/claim`: explicitly claim one queued Task for one local Slot.
+///
+/// The Worker credential identifies the claimant; the Hub rechecks readiness, Slot
+/// eligibility, and delivery uniqueness atomically, so racing claims yield one winner.
+pub async fn claim_task(
+    State(state): State<HubState>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    let worker_id = auth::require_worker(&state, &headers).await?;
+    run_bounded(state.clone(), async move {
+        let request: ClaimTaskRequest =
+            read_bounded_json(body, state.config.max_body_bytes).await?;
+        let (response, event) = state.store.claim_task(worker_id, request, now_ms()).await?;
+        state.publish_event(Some(event));
+        Ok(Json(response).into_response())
+    })
+    .await
 }
 
 /// `POST /v1/workers/{id}/rotate`: rotate the credential and fence the live session.
@@ -96,6 +126,7 @@ pub async fn rotate_worker(
             .await?;
         state.publish_event(Some(event));
         state.disconnect_worker(&worker_id);
+        spawn_wakeup(&state);
         Ok(Json(rotated).into_response())
     })
     .await
@@ -116,6 +147,7 @@ pub async fn revoke_worker(
             .await?;
         state.publish_event(Some(event));
         state.disconnect_worker(&worker_id);
+        spawn_wakeup(&state);
         Ok(StatusCode::NO_CONTENT.into_response())
     })
     .await

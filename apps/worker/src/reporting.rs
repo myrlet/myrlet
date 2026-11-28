@@ -1,14 +1,14 @@
-//! Hub HTTP reporting: Harness-authored Progress, the optional final result, and the
-//! outcome-free Finish. Every call is authenticated with the Worker credential and fenced
-//! by the current `connectionEpoch`.
+//! Hub HTTP calls the Worker makes: claim a Task, and reconcile Progress, Result, and
+//! outcome-free Finish. Every call carries the Worker credential; report calls are fenced
+//! by the live `connectionEpoch`, and the Hub rechecks ownership at its write boundary.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use myrlet_protocol::{
-    DeliveryId, ErrorResponse, FinishReceipt, FinishReportRequest, ProgressReceipt,
-    ProgressReportRequest, ProgressValidationError, ResultReceipt, ResultReportRequest,
-    ResultValidationError,
+    ClaimTaskRequest, ClaimTaskResponse, DeliveryId, DeliveryResultView, ErrorResponse,
+    FinishReceipt, FinishReportRequest, ProgressReceipt, ProgressReportRequest,
+    ProgressValidationError, ResultReceipt, ResultReportRequest, ResultValidationError,
 };
 use serde::Serialize;
 
@@ -50,7 +50,38 @@ impl HubReporter {
         }
     }
 
-    /// Relay the latest Progress snapshot (`POST .../progress`).
+    /// Ask the Hub to commit one claim. `Ok(None)` means this Worker lost the race.
+    pub async fn claim(
+        &self,
+        request: &ClaimTaskRequest,
+    ) -> Result<Option<ClaimTaskResponse>, ReportError> {
+        let url = format!("{}/v1/workers/claim", self.base_url());
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(&self.bearer)
+            .json(request)
+            .send()
+            .await
+            .map_err(|error| ReportError::Transport(error.to_string()))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| ReportError::Transport(error.to_string()))?;
+        if status.is_success() {
+            return serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|error| ReportError::Transport(format!("invalid claim reply: {error}")));
+        }
+        // A ready Task another Worker already claimed, or a Task that is no longer queued.
+        if status.as_u16() == 409 {
+            return Ok(None);
+        }
+        Err(self.classify(request.task_id.as_str(), status.as_u16(), &bytes))
+    }
+
+    /// Relay the latest Progress value (`POST .../progress`).
     pub async fn post_progress(
         &self,
         delivery_id: &DeliveryId,
@@ -90,7 +121,7 @@ impl HubReporter {
         Ok(Some(receipt))
     }
 
-    /// Relay the final Harness-written Markdown result once (`POST .../result`).
+    /// Reconcile the Hub copy with the current local Result (`Some` writes, `None` clears).
     pub async fn post_result(
         &self,
         delivery_id: &DeliveryId,
@@ -100,6 +131,31 @@ impl HubReporter {
         let body = self.post(delivery_id, "result", request).await?;
         serde_json::from_slice(&body)
             .map_err(|error| ReportError::Transport(format!("invalid Result receipt: {error}")))
+    }
+
+    /// Read the Hub's current Result copy for one owned Delivery without writing.
+    pub async fn get_result(
+        &self,
+        delivery_id: &DeliveryId,
+    ) -> Result<DeliveryResultView, ReportError> {
+        let url = self.delivery_url(delivery_id, "result")?;
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&self.bearer)
+            .send()
+            .await
+            .map_err(|error| ReportError::Transport(error.to_string()))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| ReportError::Transport(error.to_string()))?;
+        if !status.is_success() {
+            return Err(self.classify(delivery_id.as_str(), status.as_u16(), &bytes));
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|error| ReportError::Transport(format!("invalid result view: {error}")))
     }
 
     async fn post<B: Serialize>(
@@ -123,9 +179,13 @@ impl HubReporter {
             .await
             .map_err(|error| ReportError::Transport(error.to_string()))?;
         if !status.is_success() {
-            return Err(self.classify(delivery_id, status.as_u16(), &bytes));
+            return Err(self.classify(delivery_id.as_str(), status.as_u16(), &bytes));
         }
         Ok(bytes.to_vec())
+    }
+
+    fn base_url(&self) -> &str {
+        self.hub_url.trim_end_matches('/')
     }
 
     fn delivery_url(&self, delivery_id: &DeliveryId, action: &str) -> Result<String, ReportError> {
@@ -134,13 +194,13 @@ impl HubReporter {
         }
         Ok(format!(
             "{}/v1/worker/deliveries/{delivery_id}/{action}",
-            self.hub_url.trim_end_matches('/')
+            self.base_url()
         ))
     }
 
-    fn classify(&self, delivery_id: &DeliveryId, status: u16, body: &[u8]) -> ReportError {
+    fn classify(&self, id: &str, status: u16, body: &[u8]) -> ReportError {
         match status {
-            409 => ReportError::StaleDelivery(delivery_id.clone()),
+            409 => ReportError::StaleDelivery(id.to_owned()),
             401 | 403 => ReportError::Unauthorized,
             _ => ReportError::Response {
                 status,
@@ -152,11 +212,11 @@ impl HubReporter {
     }
 }
 
-/// Progress/Finish reporting failures.
+/// Progress/Finish/Result reporting failures.
 #[derive(Debug, thiserror::Error)]
 pub enum ReportError {
     #[error("delivery {0} is fenced to a different connection epoch")]
-    StaleDelivery(DeliveryId),
+    StaleDelivery(String),
     #[error("Hub rejected the Worker credential")]
     Unauthorized,
     #[error("delivery id {0:?} is not a safe path segment")]

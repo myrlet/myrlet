@@ -118,8 +118,8 @@ Published by [`.github/workflows/docker.yml`](../../.github/workflows/docker.yml
 
 ## Backup and Rollback
 
-For the [proposed synchronization model](../architecture/hub-api.md#proposed-reporting-semantics), restore the Worker’s Delivery registry and its local content before reconciliation. A missing volume, failed read, or incomplete restore cannot establish that an operator cleared a Result. Only confirmed absence or emptiness after recovery clears the Hub copy. The commands in this guide operate the current binaries.
+Restore the Worker’s Delivery registry and its local Progress/Result content before reconciliation. A missing volume, failed read, or incomplete restore cannot establish that an operator cleared a Result, so it preserves the Hub copy; only confirmed absence or emptiness after recovery clears it. See [reporting semantics](../architecture/hub-api.md#result-and-progress-convergence).
 
 Use SQLite's online backup (`sqlite3 /var/lib/myrlet/hub/hub.sqlite ".backup '/path/to/backup.sqlite'"`) and back up `hub/credentials.json` and each Worker's `worker/credentials.json` separately with mode `0600`. Treat database backups as sensitive (they contain token verifiers).
 
-Upgrade Hub and Workers together on wire changes (no mixed-version compatibility in pre-release): stop Workers, stop Hub, back up `hub.sqlite` + credentials, deploy new binaries, start Hub then Workers, and verify handshake + one Task dispatch.
+Upgrade Hub and Workers together on wire changes (no mixed-version compatibility in pre-release): stop Workers, stop Hub, back up `hub.sqlite` + credentials, deploy new binaries, start Hub then Workers, and verify handshake + one submitted Task being claimed to `finished`.

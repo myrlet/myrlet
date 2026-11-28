@@ -76,13 +76,14 @@ pub trait ExecutorAdapter: Send + Sync {
     async fn cancel(&self, execution_ref: &ExecutionRef) -> CancelState;
 }
 
-/// Minimal startup prompt: Task identification, the Progress and result file paths, and
-/// the prompt. Everything else the Harness fetches itself through the `myrlet` CLI.
+/// Minimal startup prompt: Task identification, the Progress and result file paths, the
+/// concrete `done` command, and the prompt. Everything else the Harness fetches itself
+/// through the `myrlet` CLI.
 pub fn build_startup_prompt(req: &SubmitRequest) -> String {
     format!(
         "Myrlet Task ID: {task}\nDelivery ID: {delivery}\nWrite optional JSON progress \
          {{\"text\":\"...\"}} to {progress}\nOptionally write the final Markdown result (private mode 0600, up to 64 KiB) to \
-         {result}\n\n{prompt}",
+         {result}\nBefore exiting, run: myrlet done {delivery}\n\n{prompt}",
         task = req.task_id,
         delivery = req.delivery_id,
         progress = req.progress_path.display(),

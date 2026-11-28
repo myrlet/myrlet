@@ -26,44 +26,176 @@ async fn authentication_precedes_body_parsing_and_separates_principals() {
     assert_eq!(malformed.1["error"], "BadRequest");
 
     let (_, credential) = hub.pair().await;
+    // A Worker credential may read the fleet but may never manage it.
     let listed = hub
         .request("GET", "/v1/workers", Some(&credential), None, None)
         .await;
-    assert_eq!(listed.0, 401);
+    assert_eq!(listed.0, 200);
+    let rotate = format!(
+        "/v1/workers/{}/rotate",
+        listed.1["workers"][0]["workerId"].as_str().unwrap()
+    );
+    let denied = hub
+        .request("POST", &rotate, Some(&credential), None, None)
+        .await;
+    assert_eq!(denied.0, 401, "a Worker read credential must not rotate");
     let progress = "/v1/worker/deliveries/delivery_x/progress";
     assert_eq!(hub.post_admin(progress, None, Some("{}")).await.0, 401);
     assert_eq!(hub.get_admin("/v1/workers/connect").await.0, 401);
 }
 
 #[tokio::test]
-async fn pairing_wss_handshake_and_reported_inventory() {
+async fn workers_can_read_tasks_trees_workers_and_events_without_the_admin_token() {
     let hub = start(10_000).await;
     let (worker_id, credential) = hub.pair().await;
-    let (_socket, epoch) = hub.connect(&worker_id, &credential).await;
-    assert!(epoch >= 1);
+    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
+    let definition = json!({ "title": "Readable", "prompt": "p" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("read-1"), Some(&definition))
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let task_id = created.1["task"]["id"].as_str().unwrap().to_string();
 
-    let listed = hub.get_admin("/v1/workers").await;
-    assert_eq!(listed.0, 200);
-    let worker = &listed.1["workers"][0];
-    assert_eq!(worker["workerId"], worker_id);
-    assert_eq!(worker["online"], true);
-    assert_eq!(worker["inventory"]["slots"][0]["slotId"], "slot-a");
-    assert_eq!(
-        worker["inventory"]["slots"][0]["executors"][0]["id"],
-        "exec-claude"
-    );
-
-    let snapshot = hub.get_admin("/v1/snapshot").await;
-    assert_eq!(snapshot.1["schemaVersion"], SNAPSHOT_SCHEMA_VERSION);
-    assert_eq!(snapshot.1["workers"][0]["online"], true);
+    for path in [
+        "/v1/tasks".to_string(),
+        format!("/v1/tasks/{task_id}"),
+        format!("/v1/tasks/{task_id}/tree"),
+        format!("/v1/tasks/{task_id}/eligibility"),
+        "/v1/workers".to_string(),
+        format!("/v1/workers/{worker_id}"),
+    ] {
+        let (status, _) = hub
+            .request("GET", &path, Some(&credential), None, None)
+            .await;
+        assert_eq!(status, 200, "a Worker credential may read {path}");
+    }
+    // A read credential cannot perform management writes.
+    let cancel = json!({ "expectedTaskVersion": created.1["task"]["version"] }).to_string();
+    let denied = hub
+        .request(
+            "POST",
+            &format!("/v1/tasks/{task_id}/cancel"),
+            Some(&credential),
+            Some("read-cancel"),
+            Some(&cancel),
+        )
+        .await;
+    assert_eq!(denied.0, 401);
 }
 
 #[tokio::test]
-async fn match_dispatch_progress_and_finish_drive_the_task_to_finished() {
+async fn submit_authorizes_ready_work_and_holds_blocked_work() {
+    let hub = start(10_000).await;
+    let root = json!({ "title": "Root", "prompt": "p" }).to_string();
+    let created = hub.post_admin("/v1/tasks", Some("root"), Some(&root)).await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    assert_eq!(created.1["task"]["status"], "queued");
+    assert_eq!(created.1["eligible"], true);
+    let root_id = created.1["task"]["id"].as_str().unwrap().to_string();
+
+    let first = json!({ "title": "First", "prompt": "p", "parentTaskId": root_id }).to_string();
+    let first = hub
+        .post_admin("/v1/tasks", Some("first"), Some(&first))
+        .await;
+    assert_eq!(first.1["task"]["status"], "queued");
+    let first_id = first.1["task"]["id"].as_str().unwrap().to_string();
+
+    let blocked = json!({
+        "title": "Blocked",
+        "prompt": "p",
+        "parentTaskId": root_id,
+        "dependencies": [first_id],
+    })
+    .to_string();
+    let blocked = hub
+        .post_admin("/v1/tasks", Some("blocked"), Some(&blocked))
+        .await;
+    assert_eq!(blocked.0, 201, "{}", blocked.1);
+    assert_eq!(blocked.1["task"]["status"], "held");
+    assert_eq!(blocked.1["eligible"], false);
+    assert_eq!(blocked.1["task"]["blockedBy"][0]["taskId"], first_id);
+}
+
+#[tokio::test]
+async fn waking_a_worker_creates_no_delivery_and_a_claim_commits_one() {
     let hub = start(10_000).await;
     let (worker_id, credential) = hub.pair().await;
     let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
-    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "flow").await;
+
+    let definition = json!({ "title": "Wake", "prompt": "p" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("wake"), Some(&definition))
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let task_id = created.1["task"]["id"].as_str().unwrap().to_string();
+
+    // The Hub wakes the eligible Worker, but the hint reserves nothing.
+    let wakeup = read_frame(&mut socket).await;
+    assert_eq!(wakeup["kind"], "hub.wakeup");
+    assert_eq!(wakeup["payload"]["taskId"], task_id);
+    let shown = hub.get_admin(&format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(shown.1["status"], "queued");
+    assert!(
+        shown.1["currentDelivery"].is_null(),
+        "a wakeup is only a hint"
+    );
+
+    // The Worker claims by Task ID and Slot ID; the Hub commits the sole Delivery.
+    let claim = json!({
+        "taskId": task_id,
+        "slotId": "slot-a",
+        "connectionEpoch": epoch,
+    })
+    .to_string();
+    let claimed = hub
+        .post_worker("/v1/workers/claim", &credential, &claim)
+        .await;
+    assert_eq!(claimed.0, 200, "{}", claimed.1);
+    assert_eq!(claimed.1["task"]["status"], "dispatched");
+    assert_eq!(claimed.1["delivery"]["state"], "accepted");
+    assert_eq!(claimed.1["delivery"]["slotId"], "slot-a");
+
+    // A second claim for the same Task loses: exactly one Delivery exists.
+    let losing = hub
+        .post_worker("/v1/workers/claim", &credential, &claim)
+        .await;
+    assert_eq!(losing.0, 409, "{}", losing.1);
+    let shown = hub.get_admin(&format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(
+        shown.1["currentDelivery"]["id"],
+        claimed.1["delivery"]["id"]
+    );
+}
+
+#[tokio::test]
+async fn a_stale_epoch_cannot_claim() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (_socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let definition = json!({ "title": "Epoch", "prompt": "p" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("epoch"), Some(&definition))
+        .await;
+    let task_id = created.1["task"]["id"].as_str().unwrap().to_string();
+    let claim = json!({
+        "taskId": task_id,
+        "slotId": "slot-a",
+        "connectionEpoch": epoch + 1,
+    })
+    .to_string();
+    let stale = hub
+        .post_worker("/v1/workers/claim", &credential, &claim)
+        .await;
+    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(stale.1["error"], "StaleDelivery");
+}
+
+#[tokio::test]
+async fn claim_hold_finish_and_progress_drive_the_task_to_finished() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
+    let (task_id, delivery_id) = hub.claim_one(&mut socket, &credential, epoch, "flow").await;
 
     let progress = json!({ "epoch": epoch, "observedAtMs": 1_000, "text": "started" });
     let path = format!("/v1/worker/deliveries/{delivery_id}/progress");
@@ -87,91 +219,20 @@ async fn match_dispatch_progress_and_finish_drive_the_task_to_finished() {
 }
 
 #[tokio::test]
-async fn dispatch_idempotency_replays_after_version_bump_and_rejects_cross_payload() {
-    let hub = start(10_000).await;
-    let (worker_id, credential) = hub.pair().await;
-    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
-
-    let definition = json!({ "title": "Idempotent", "prompt": "replay me" }).to_string();
-    let created = hub
-        .post_admin("/v1/tasks", Some("idem-create"), Some(&definition))
-        .await;
-    assert_eq!(created.0, 201, "{}", created.1);
-    let task_id = created.1["id"].as_str().unwrap().to_string();
-    let path = format!("/v1/tasks/{task_id}/dispatch");
-    let dispatch = json!({
-        "expectedTaskVersion": created.1["version"],
-        "selection": { "mode": "match" },
-    })
-    .to_string();
-
-    let first = hub
-        .post_admin(&path, Some("k-disp-1"), Some(&dispatch))
-        .await;
-    assert_eq!(first.0, 200, "{}", first.1);
-    assert_eq!(first.1["status"], "dispatched");
-    let delivery_id = first.1["delivery"]["id"].as_str().unwrap().to_string();
-
-    let replay = hub
-        .post_admin(&path, Some("k-disp-1"), Some(&dispatch))
-        .await;
-    assert_eq!(replay.0, 200, "{}", replay.1);
-    assert_eq!(replay.1["delivery"]["id"], delivery_id);
-    assert_eq!(replay.1["version"], first.1["version"]);
-
-    let changed = json!({
-        "expectedTaskVersion": created.1["version"],
-        "selection": { "mode": "match" },
-        "queue": true,
-    })
-    .to_string();
-    let conflict = hub
-        .post_admin(&path, Some("k-disp-1"), Some(&changed))
-        .await;
-    assert_eq!(conflict.0, 409, "{}", conflict.1);
-    assert_eq!(conflict.1["error"], "IdempotencyConflict");
-
-    let queued_task = json!({ "title": "Queued", "prompt": "wait" }).to_string();
-    let queued = hub
-        .post_admin("/v1/tasks", Some("idem-create-queue"), Some(&queued_task))
-        .await;
-    assert_eq!(queued.0, 201, "{}", queued.1);
-    let queued_id = queued.1["id"].as_str().unwrap().to_string();
-    let queued_path = format!("/v1/tasks/{queued_id}/dispatch");
-    let queue_dispatch = json!({
-        "expectedTaskVersion": queued.1["version"],
-        "selection": {
-            "mode": "targeted",
-            "workerId": "wkr_ZZZZZZZZZZZZ",
-            "slotId": "slot-a",
-        },
-        "queue": true,
-    })
-    .to_string();
-    let accepted = hub
-        .post_admin(&queued_path, Some("k-disp-queue"), Some(&queue_dispatch))
-        .await;
-    assert_eq!(accepted.0, 202, "{}", accepted.1);
-    assert_eq!(accepted.1["status"], "queued");
-    assert_eq!(accepted.1["delivery"], serde_json::Value::Null);
-    let queued_replay = hub
-        .post_admin(&queued_path, Some("k-disp-queue"), Some(&queue_dispatch))
-        .await;
-    assert_eq!(queued_replay.0, 202, "{}", queued_replay.1);
-    assert_eq!(queued_replay.1["version"], accepted.1["version"]);
-    assert_eq!(queued_replay.1["delivery"], serde_json::Value::Null);
-}
-
-#[tokio::test]
 async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
     let hub = start(10_000).await;
     let (worker_id, credential) = hub.pair().await;
     let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
-    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "cancel").await;
+    let (task_id, delivery_id) = hub
+        .claim_one(&mut socket, &credential, epoch, "cancel")
+        .await;
 
     let task_path = format!("/v1/tasks/{task_id}");
     let detail = hub.get_admin(&task_path).await;
-    let cancel = json!({ "expectedTaskVersion": detail.1["version"], "reason": "operator" });
+    let cancel = json!({
+        "expectedTaskVersion": detail.1["version"],
+        "reason": "operator",
+    });
     let path = format!("/v1/tasks/{task_id}/cancel");
     let cancelled = hub
         .post_admin(&path, Some("cancel-key"), Some(&cancel.to_string()))
@@ -192,27 +253,18 @@ async fn cancellation_fences_the_worker_and_survives_a_late_finish() {
 }
 
 #[tokio::test]
-async fn result_is_write_once_bounded_and_survives_late_sync_after_finish() {
+async fn result_reconciles_latest_content_and_clears_when_absent() {
     let hub = start(10_000).await;
     let (worker_id, credential) = hub.pair().await;
     let (mut socket, epoch) = hub.connect(&worker_id, &credential).await;
-    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "result").await;
+    let (task_id, delivery_id) = hub
+        .claim_one(&mut socket, &credential, epoch, "result")
+        .await;
     let path = format!("/v1/worker/deliveries/{delivery_id}/result");
 
-    // A Worker credential is required, and the task detail has no result yet.
     assert_eq!(hub.post_admin(&path, None, Some("{}")).await.0, 401);
     let task_path = format!("/v1/tasks/{task_id}");
-    let detail = hub.get_admin(&task_path).await;
-    assert!(detail.1["resultMarkdown"].is_null());
-
-    let progress = json!({ "epoch": epoch, "observedAtMs": 1_000, "text": "started" });
-    let progress_path = format!("/v1/worker/deliveries/{delivery_id}/progress");
-    assert_eq!(
-        hub.post_worker(&progress_path, &credential, &progress.to_string())
-            .await
-            .0,
-        200
-    );
+    assert!(hub.get_admin(&task_path).await.1["resultMarkdown"].is_null());
 
     let report = json!({ "epoch": epoch, "text": "# Findings\n\n- one" });
     let recorded = hub
@@ -220,64 +272,148 @@ async fn result_is_write_once_bounded_and_survives_late_sync_after_finish() {
         .await;
     assert_eq!(recorded.0, 200, "{}", recorded.1);
     assert_eq!(recorded.1["duplicate"], false);
+    assert_eq!(recorded.1["cleared"], false);
+    assert_eq!(recorded.1["resultSha256"].as_str().unwrap().len(), 64);
 
-    // Identical replay is idempotent; different content is refused (write-once).
+    // Equal content needs no write; different content replaces it.
     let replay = hub
         .post_worker(&path, &credential, &report.to_string())
         .await;
-    assert_eq!(replay.0, 200, "{}", replay.1);
     assert_eq!(replay.1["duplicate"], true);
     let changed = json!({ "epoch": epoch, "text": "# Different" });
-    let refused = hub
+    let replaced = hub
         .post_worker(&path, &credential, &changed.to_string())
         .await;
-    assert_eq!(refused.0, 409, "{}", refused.1);
+    assert_eq!(replaced.0, 200, "{}", replaced.1);
+    assert_eq!(
+        hub.get_admin(&task_path).await.1["resultMarkdown"],
+        "# Different"
+    );
 
-    // Oversized and blank text are rejected without touching the stored result.
-    let oversized = json!({ "epoch": epoch, "text": "x".repeat(64 * 1024 + 1) });
-    let too_large = hub
-        .post_worker(&path, &credential, &oversized.to_string())
+    // The Worker can read its own copy back for comparison without writing.
+    let read_back = hub
+        .request("GET", &path, Some(&credential), None, None)
         .await;
-    assert_eq!(too_large.0, 400, "{}", too_large.1);
+    assert_eq!(read_back.0, 200, "{}", read_back.1);
+    assert_eq!(read_back.1["text"], "# Different");
 
-    // Finish is independent, and a late sync after finish still lands in Task detail.
+    // Finish is independent, and an explicit absence clears the stored value.
     let finish = json!({ "epoch": epoch }).to_string();
     let finish_path = format!("/v1/worker/deliveries/{delivery_id}/finish");
     assert_eq!(
         hub.post_worker(&finish_path, &credential, &finish).await.0,
         200
     );
-    let (task_id, delivery_id) = hub.dispatch_one(&mut socket, "late").await;
-    let finish_path = format!("/v1/worker/deliveries/{delivery_id}/finish");
+    let cleared = json!({ "epoch": epoch, "text": null });
+    let cleared = hub
+        .post_worker(&path, &credential, &cleared.to_string())
+        .await;
+    assert_eq!(cleared.0, 200, "{}", cleared.1);
+    assert_eq!(cleared.1["cleared"], true);
+    assert!(hub.get_admin(&task_path).await.1["resultMarkdown"].is_null());
+    let repeat = hub
+        .post_worker(
+            &path,
+            &credential,
+            &json!({ "epoch": epoch, "text": null }).to_string(),
+        )
+        .await;
+    assert_eq!(repeat.1["duplicate"], true, "repeating a clear is harmless");
+}
+
+#[tokio::test]
+async fn a_delayed_old_epoch_result_cannot_overwrite_a_newer_value() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (mut socket, epoch1) = hub.connect(&worker_id, &credential).await;
+    let (task_id, delivery_id) = hub
+        .claim_one(&mut socket, &credential, epoch1, "late")
+        .await;
+    let path = format!("/v1/worker/deliveries/{delivery_id}/result");
+    let v1 = json!({ "epoch": epoch1, "text": "# v1" });
     assert_eq!(
-        hub.post_worker(&finish_path, &credential, &finish).await.0,
+        hub.post_worker(&path, &credential, &v1.to_string()).await.0,
         200
     );
-    let late_path = format!("/v1/worker/deliveries/{delivery_id}/result");
-    drop(socket);
-    let (_reconnected, new_epoch) = hub.connect(&worker_id, &credential).await;
-    assert!(new_epoch > epoch);
-    let late = json!({ "epoch": new_epoch, "text": "late result" });
-    let accepted = hub
-        .post_worker(&late_path, &credential, &late.to_string())
-        .await;
-    assert_eq!(accepted.0, 200, "{}", accepted.1);
-    let late_task = format!("/v1/tasks/{task_id}");
-    let shown = hub.get_admin(&late_task).await;
-    assert_eq!(shown.1["status"], "finished");
-    assert_eq!(shown.1["resultMarkdown"], "late result");
 
-    // A stale epoch never records a result.
-    let stale = json!({ "epoch": epoch, "text": "stale" });
-    let stale_path = format!("/v1/worker/deliveries/{delivery_id}/result");
+    drop(socket);
+    let (_socket, epoch2) = hub.connect(&worker_id, &credential).await;
+    assert!(epoch2 > epoch1);
+    let v2 = json!({ "epoch": epoch2, "text": "# v2" });
+    assert_eq!(
+        hub.post_worker(&path, &credential, &v2.to_string()).await.0,
+        200
+    );
+    // The stale request arrives after the reconnect and is refused at the boundary.
+    let stale = json!({ "epoch": epoch1, "text": "# v1 delayed" });
     let refused = hub
-        .post_worker(&stale_path, &credential, &stale.to_string())
+        .post_worker(&path, &credential, &stale.to_string())
         .await;
     assert_eq!(refused.0, 409, "{}", refused.1);
-    assert_eq!(
-        hub.get_admin(&late_task).await.1["resultMarkdown"],
-        "late result"
-    );
+    let task_path = format!("/v1/tasks/{task_id}");
+    assert_eq!(hub.get_admin(&task_path).await.1["resultMarkdown"], "# v2");
+}
+
+#[tokio::test]
+async fn a_finished_prerequisite_releases_only_ready_dependents() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
+
+    let root = json!({ "title": "Root", "prompt": "p" }).to_string();
+    let root = hub.post_admin("/v1/tasks", Some("r"), Some(&root)).await;
+    let root_id = root.1["task"]["id"].as_str().unwrap().to_string();
+    let first = json!({ "title": "First", "prompt": "p", "parentTaskId": root_id }).to_string();
+    let first = hub.post_admin("/v1/tasks", Some("f"), Some(&first)).await;
+    let first_id = first.1["task"]["id"].as_str().unwrap().to_string();
+    let second = json!({
+        "title": "Second",
+        "prompt": "p",
+        "parentTaskId": root_id,
+        "dependencies": [first_id],
+    })
+    .to_string();
+    let second = hub.post_admin("/v1/tasks", Some("s"), Some(&second)).await;
+    let second_id = second.1["task"]["id"].as_str().unwrap().to_string();
+    assert_eq!(second.1["task"]["status"], "held");
+
+    // Finish the coordination-only prerequisite; its dependent becomes eligible.
+    let finish = json!({ "expectedTaskVersion": first.1["task"]["version"] }).to_string();
+    let closed = hub
+        .post_admin(
+            &format!("/v1/tasks/{first_id}/finish"),
+            Some("close-first"),
+            Some(&finish),
+        )
+        .await;
+    assert_eq!(closed.0, 200, "{}", closed.1);
+    let released = hub.get_admin(&format!("/v1/tasks/{second_id}")).await;
+    assert_eq!(released.1["status"], "queued");
+    assert_eq!(released.1["blockedBy"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn dispatch_idempotency_replays_after_version_bump_and_rejects_cross_payload() {
+    let hub = start(10_000).await;
+    let (worker_id, credential) = hub.pair().await;
+    let (_socket, _epoch) = hub.connect(&worker_id, &credential).await;
+
+    let definition = json!({ "title": "Idempotent", "prompt": "replay me" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("idem-create"), Some(&definition))
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let replay = hub
+        .post_admin("/v1/tasks", Some("idem-create"), Some(&definition))
+        .await;
+    assert_eq!(replay.0, 201, "{}", replay.1);
+    assert_eq!(replay.1["task"]["id"], created.1["task"]["id"]);
+    let changed = json!({ "title": "Different", "prompt": "replay me" }).to_string();
+    let conflict = hub
+        .post_admin("/v1/tasks", Some("idem-create"), Some(&changed))
+        .await;
+    assert_eq!(conflict.0, 409, "{}", conflict.1);
+    assert_eq!(conflict.1["error"], "IdempotencyConflict");
 }
 
 #[tokio::test]
@@ -344,6 +480,25 @@ async fn rotation_and_revocation_fence_the_live_worker_session() {
     let listed = hub.get_admin("/v1/workers").await;
     assert_eq!(listed.1["workers"][0]["revoked"], true);
     assert_eq!(listed.1["workers"][0]["online"], false);
+}
+
+#[tokio::test]
+async fn snapshot_and_task_list_stay_bounded_and_camel_case() {
+    let hub = start(10_000).await;
+    let definition = json!({ "title": "t", "prompt": "p" }).to_string();
+    let created = hub
+        .post_admin("/v1/tasks", Some("list-1"), Some(&definition))
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+
+    let snapshot = hub.get_admin("/v1/snapshot").await;
+    assert_eq!(snapshot.1["schemaVersion"], SNAPSHOT_SCHEMA_VERSION);
+    assert!(snapshot.1["tasks"][0]["blockedBy"].is_array());
+    let listed = hub.get_admin("/v1/tasks?limit=1").await;
+    assert_eq!(listed.0, 200, "{}", listed.1);
+    assert_eq!(listed.1["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(listed.1["totalTasks"], 1);
+    assert_eq!(listed.1["truncated"], false);
 }
 
 #[tokio::test]

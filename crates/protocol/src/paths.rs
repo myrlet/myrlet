@@ -113,6 +113,8 @@ impl MyrletHome {
         worker_progress_dir => "worker"."progress";
         /// `worker/results/`.
         worker_results_dir => "worker"."results";
+        /// `worker/control.sock` (owner-only local CLI channel).
+        worker_control_socket => "worker"."control.sock";
     }
 
     /// `worker/progress/<delivery_id>.json`; the Delivery ID must be one safe path segment.

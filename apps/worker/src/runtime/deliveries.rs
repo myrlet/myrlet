@@ -1,12 +1,12 @@
-//! Delivery admission, cancellation relay, and restart-safe pending-report flushes.
+//! Wakeup handling, explicit claims, cancellation relay, and restart-safe drains.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use myrlet_protocol::{
-    CancelState, DeliveryId, ExecutorId, RejectionCode, SlotId, TaskCancelPayload,
-    TaskCancelledPayload, TaskId, TaskOfferPayload, TaskRejectedPayload, WorkerWireKind,
+    CancelState, ClaimTaskRequest, ClaimTaskResponse, DeliveryId, ExecutorId, SlotId,
+    TaskCancelPayload, TaskCancelledPayload, TaskId, WorkerWireKind,
 };
 use myrlet_worker::{ExecutorAdapter, LocalDeliveryRecord, SubmitRequest};
 
@@ -14,74 +14,138 @@ use super::{RuntimeCore, RuntimeError};
 use crate::wss::HubSink;
 
 impl RuntimeCore {
-    /// Admit one offered Delivery: persist first, then submit at most once.
-    pub(super) async fn handle_offer(
-        &self,
-        sink: &mut HubSink,
-        offer: TaskOfferPayload,
-    ) -> Result<(), RuntimeError> {
-        let shutting_down = self.shutting_down.load(Ordering::SeqCst);
-        let adapter = if shutting_down {
-            None
-        } else {
-            self.adapter_for(&offer.slot_id, offer.executor_id.as_ref())
+    /// React to one wakeup hint by trying to claim the named Task for a local Slot.
+    ///
+    /// The hint reserves nothing: this Worker picks a free eligible Slot, asks the Hub to
+    /// commit the claim, and only then launches the Harness. Losing the race is normal.
+    pub(super) async fn handle_wakeup(&self, task_id: &TaskId) -> Result<(), RuntimeError> {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let Some(slot) = self.claimable_slot() else {
+            return Ok(());
         };
-        let rejection = if shutting_down {
-            Some(RejectionCode::WorkerShuttingDown)
-        } else if adapter.is_none() {
-            Some(RejectionCode::ExecutorUnavailable)
-        } else {
-            None
+        let epoch = self.epoch();
+        if epoch == 0 {
+            return Ok(());
+        }
+        let executor_id = self.config.default_executor(&slot.slot_id);
+        let request = ClaimTaskRequest {
+            task_id: task_id.clone(),
+            slot_id: slot.slot_id.clone(),
+            connection_epoch: epoch,
+            // The Hub resolves the Task's own preferred Executor; the Worker only names
+            // the Slot it is claiming, so it never has to second-guess the definition.
+            executor_id: None,
         };
+        let Some(response) = self.reporter.claim(&request).await? else {
+            return Ok(());
+        };
+        self.admit_claim(response, slot.slot_id, executor_id).await;
+        Ok(())
+    }
 
-        let progress_path = self.home.worker_progress_file(&offer.delivery_id)?;
-        let result_path = self.home.worker_result_file(&offer.delivery_id)?;
+    /// Durably register the committed Delivery, then submit exactly once.
+    async fn admit_claim(
+        &self,
+        response: ClaimTaskResponse,
+        slot_id: SlotId,
+        executor_id: Option<ExecutorId>,
+    ) {
+        let delivery = response.delivery;
+        let progress_path = match self.home.worker_progress_file(&delivery.id) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(%error, delivery = %delivery.id, "progress path is unusable");
+                return;
+            }
+        };
+        let result_path = match self.home.worker_result_file(&delivery.id) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(%error, delivery = %delivery.id, "result path is unusable");
+                return;
+            }
+        };
         let mut record = LocalDeliveryRecord::new(
-            offer.delivery_id.clone(),
-            offer.task_id.clone(),
-            offer.slot_id.clone(),
+            delivery.id.clone(),
+            delivery.task_id.clone(),
+            slot_id.clone(),
             progress_path.clone(),
             result_path.clone(),
         );
-        record.executor_id = offer
+        record.executor_id = delivery
             .executor_id
             .clone()
-            .or_else(|| self.config.default_executor(&offer.slot_id));
-        record.rejected = rejection;
-        // Durable registration happens before any submission, so a replayed offer for a
-        // known `deliveryId` is ignored instead of executed twice.
-        if !self.registry.register_if_absent(&record)? {
-            tracing::debug!(delivery = %offer.delivery_id, "replayed task.offer ignored");
-            return Ok(());
+            .or(executor_id)
+            .or_else(|| self.config.default_executor(&slot_id));
+        // The claim is already committed at the Hub, so registration before submission
+        // is what makes a replayed claim reply safe: a known `deliveryId` is never run twice.
+        match self.registry.register_if_absent(&record) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!(delivery = %delivery.id, "replayed claim reply ignored");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, delivery = %delivery.id, "delivery could not be registered");
+                return;
+            }
         }
-        if let Some(code) = rejection {
-            self.send_rejected(sink, &record, code).await?;
-            return Ok(());
-        }
-        let Some(adapter) = adapter else {
-            return Ok(());
+        let Some(adapter) = self.adapter_for(&slot_id, record.executor_id.as_ref()) else {
+            tracing::warn!(
+                delivery = %delivery.id,
+                slot = %slot_id,
+                "no configured executor handles the claimed slot"
+            );
+            return;
         };
         let request = SubmitRequest {
-            task_id: offer.task_id,
-            delivery_id: offer.delivery_id.clone(),
-            task: offer.task,
+            task_id: delivery.task_id,
+            delivery_id: delivery.id.clone(),
+            task: response.task.task,
             progress_path,
             result_path,
         };
         match adapter.submit(request, self.on_exit.clone()).await {
             Ok(execution_ref) => {
-                self.update(&offer.delivery_id, |record| {
+                self.update(&delivery.id, |record| {
                     record.execution_ref = Some(execution_ref);
                 });
             }
             Err(error) => tracing::warn!(
-                delivery = %offer.delivery_id,
+                delivery = %delivery.id,
                 executor = %adapter.id(),
                 %error,
                 "adapter submission failed after registration; the Delivery stays dispatched"
             ),
         }
-        Ok(())
+    }
+
+    /// The first enabled Slot with no active local execution, if any is free.
+    fn claimable_slot(&self) -> Option<crate::config::SlotConfig> {
+        let busy = self.busy_slots();
+        self.config
+            .slots
+            .iter()
+            .filter(|slot| slot.enabled)
+            .find(|slot| !busy.contains(&slot.slot_id))
+            .cloned()
+    }
+
+    /// Slots holding an unfinished local execution.
+    fn busy_slots(&self) -> Vec<SlotId> {
+        match self.registry.load_all() {
+            Ok(records) => records
+                .into_iter()
+                .filter(|record| !record.finish_acked)
+                .map(|record| record.slot_id)
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "local Delivery registry could not be read");
+                Vec::new()
+            }
+        }
     }
 
     /// Relay a Hub cancellation request and report what the backend answered.
@@ -117,27 +181,6 @@ impl RuntimeCore {
             .await
     }
 
-    pub(super) async fn send_rejected(
-        &self,
-        sink: &mut HubSink,
-        record: &LocalDeliveryRecord,
-        code: RejectionCode,
-    ) -> Result<(), RuntimeError> {
-        let payload = TaskRejectedPayload {
-            task_id: record.task_id.clone(),
-            delivery_id: record.delivery_id.clone(),
-            code,
-            message: Some(rejection_message(code).to_owned()),
-        };
-        self.send_frame(
-            sink,
-            WorkerWireKind::TaskRejected,
-            Some(record.slot_id.clone()),
-            payload,
-        )
-        .await
-    }
-
     pub(super) async fn send_cancelled(
         &self,
         sink: &mut HubSink,
@@ -154,12 +197,6 @@ impl RuntimeCore {
         };
         self.send_frame(sink, WorkerWireKind::TaskCancelled, None, payload)
             .await
-    }
-
-    pub(super) fn mark_rejected_acked(&self, delivery_id: &DeliveryId, recorded: bool) {
-        if recorded {
-            self.update(delivery_id, |record| record.rejected_acked = true);
-        }
     }
 
     pub(super) fn mark_cancel_acked(&self, delivery_id: &DeliveryId, recorded: bool) {
@@ -197,12 +234,12 @@ impl RuntimeCore {
         Some(record)
     }
 
-    /// Deliveries still bound to this Worker: non-rejected and not yet finished.
+    /// Deliveries still bound to this Worker: not yet finished.
     pub(super) fn active_delivery_ids(&self) -> Vec<DeliveryId> {
         match self.registry.load_all() {
             Ok(records) => records
                 .into_iter()
-                .filter(|record| record.rejected.is_none() && !record.finish_acked)
+                .filter(|record| !record.finish_acked)
                 .map(|record| record.delivery_id)
                 .collect(),
             Err(error) => {
@@ -235,11 +272,7 @@ impl RuntimeCore {
         match self.registry.load_all() {
             Ok(records) => records
                 .into_iter()
-                .filter(|record| {
-                    record.rejected.is_none()
-                        && record.execution_ref.is_some()
-                        && !record.finish_acked
-                })
+                .filter(|record| record.execution_ref.is_some() && !record.finish_acked)
                 .collect(),
             Err(error) => {
                 tracing::warn!(%error, "local Delivery registry could not be read while draining");
@@ -261,13 +294,5 @@ impl RuntimeCore {
             ?state,
             "execution signalled while shutting down"
         );
-    }
-}
-
-fn rejection_message(code: RejectionCode) -> &'static str {
-    match code {
-        RejectionCode::ExecutorUnavailable => "no configured executor handles this slot",
-        RejectionCode::WorkerShuttingDown => "the worker is shutting down",
-        RejectionCode::RecoveryIncomplete => "the worker is still recovering local deliveries",
     }
 }

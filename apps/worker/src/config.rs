@@ -237,7 +237,7 @@ impl WorkerConfig {
         adapters
     }
 
-    /// Executor selected when a `task.offer` omits `executorId`.
+    /// Executor selected when a claim omits `executorId`.
     pub fn default_executor(&self, slot_id: &SlotId) -> Option<ExecutorId> {
         let slot = self
             .slots

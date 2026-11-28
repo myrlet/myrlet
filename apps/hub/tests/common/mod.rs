@@ -149,26 +149,39 @@ impl Hub {
         )
     }
 
-    /// Create one Task and dispatch it with Simple Match, consuming its offer.
-    pub async fn dispatch_one(&self, socket: &mut Socket, key: &str) -> (String, String) {
+    /// Submit one Task, consume the wakeup, and claim it for `slot-a`.
+    ///
+    /// Returns the Task ID and the committed Delivery ID.
+    pub async fn claim_one(
+        &self,
+        socket: &mut Socket,
+        credential: &str,
+        epoch: u64,
+        key: &str,
+    ) -> (String, String) {
         let definition = json!({ "title": "Verify", "prompt": "run the suite" }).to_string();
         let created = self
             .post_admin("/v1/tasks", Some(key), Some(&definition))
             .await;
         assert_eq!(created.0, 201, "{}", created.1);
-        let task_id = created.1["id"].as_str().unwrap().to_string();
-        let dispatch = json!({
-            "expectedTaskVersion": created.1["version"],
-            "selection": { "mode": "match" },
+        let task_id = created.1["task"]["id"].as_str().unwrap().to_string();
+        assert_eq!(created.1["task"]["status"], "queued");
+
+        let wakeup = read_frame(socket).await;
+        assert_eq!(wakeup["kind"], "hub.wakeup");
+        assert_eq!(wakeup["payload"]["taskId"], task_id);
+
+        let claim = json!({
+            "taskId": task_id,
+            "slotId": "slot-a",
+            "connectionEpoch": epoch,
         })
         .to_string();
-        let path = format!("/v1/tasks/{task_id}/dispatch");
-        let dispatched = self.post_admin(&path, Some(key), Some(&dispatch)).await;
-        assert_eq!(dispatched.0, 200, "{}", dispatched.1);
-        let offer = read_frame(socket).await;
-        assert_eq!(offer["kind"], "task.offer");
-        let delivery_id = dispatched.1["delivery"]["id"].as_str().unwrap().to_string();
-        assert_eq!(offer["payload"]["deliveryId"], delivery_id);
+        let claimed = self
+            .post_worker("/v1/workers/claim", credential, &claim)
+            .await;
+        assert_eq!(claimed.0, 200, "{}", claimed.1);
+        let delivery_id = claimed.1["delivery"]["id"].as_str().unwrap().to_string();
         (task_id, delivery_id)
     }
 }

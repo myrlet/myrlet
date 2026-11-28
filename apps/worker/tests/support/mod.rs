@@ -12,8 +12,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
 use myrlet_protocol::{
-    DeliveryId, FinishReceipt, FinishReportRequest, ProgressReceipt, ProgressReportRequest,
-    ResultReceipt, ResultReportRequest, TaskId, TaskStatus, WorkerId, WORKER_PROTOCOL_VERSION,
+    ClaimTaskRequest, ClaimTaskResponse, DeliveryId, DeliveryStatus, DeliveryView, FinishReceipt,
+    FinishReportRequest, ProgressReceipt, ProgressReportRequest, ResultReceipt,
+    ResultReportRequest, TaskId, TaskStatus, WorkerId, WORKER_PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -42,7 +43,16 @@ pub enum Report {
     Result {
         delivery_id: String,
         epoch: u64,
-        text: String,
+        text: Option<String>,
+    },
+    /// One `/v1/workers/claim` attempt, whether it won or lost.
+    Claim {
+        task_id: String,
+        connection_epoch: u64,
+    },
+    /// One `GET .../result` comparison read.
+    ReadResult {
+        delivery_id: String,
     },
 }
 
@@ -114,12 +124,16 @@ pub async fn start(stale_epoch: Option<u64>) -> StubHub {
     };
     let router = Router::new()
         .route("/v1/workers/connect", get(ws_handler))
+        .route("/v1/workers/claim", post(claim))
         .route(
             "/v1/worker/deliveries/:delivery_id/progress",
             post(progress),
         )
         .route("/v1/worker/deliveries/:delivery_id/finish", post(finish))
-        .route("/v1/worker/deliveries/:delivery_id/result", post(result))
+        .route(
+            "/v1/worker/deliveries/:delivery_id/result",
+            get(read_result).post(result),
+        )
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -254,7 +268,9 @@ async fn result(
     let receipt = ResultReceipt {
         delivery_id: DeliveryId::new(delivery_id.clone()),
         task_id: TaskId::new("task_stub"),
-        recorded_at_ms: 3,
+        recorded_at_ms: body.text.as_ref().map(|_| 3),
+        result_sha256: body.text.as_deref().map(myrlet_protocol::result_sha256),
+        cleared: body.text.is_none(),
         duplicate: false,
     };
     let _ = state.reports.send(Report::Result {
@@ -266,6 +282,99 @@ async fn result(
         StatusCode::OK,
         Json(serde_json::to_value(receipt).expect("result receipt json")),
     )
+}
+
+/// `POST /v1/workers/claim`: commit one Delivery for the named Task.
+async fn claim(
+    State(state): State<HubState>,
+    headers: HeaderMap,
+    Json(body): Json<ClaimTaskRequest>,
+) -> (StatusCode, Json<Value>) {
+    if !bearer_ok(&headers) {
+        return unauthorized();
+    }
+    let _ = state.reports.send(Report::Claim {
+        task_id: body.task_id.to_string(),
+        connection_epoch: body.connection_epoch,
+    });
+    if body.connection_epoch != EPOCH {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "StaleDelivery", "message": "stale epoch" })),
+        );
+    }
+    let delivery_id = format!("delivery_{}", body.task_id);
+    let delivery = DeliveryView {
+        id: DeliveryId::new(delivery_id.clone()),
+        task_id: body.task_id.clone(),
+        worker_id: WorkerId::new(WORKER_ID),
+        slot_id: body.slot_id.clone(),
+        executor_id: body.executor_id.clone(),
+        connection_epoch: body.connection_epoch,
+        state: DeliveryStatus::Accepted,
+        cancel_state: None,
+        cancel_reason: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        progress: None,
+    };
+    let response = ClaimTaskResponse {
+        task: stub_task(&body.task_id),
+        delivery,
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).expect("claim response json")),
+    )
+}
+
+/// `GET /v1/worker/deliveries/{id}/result`: the current Hub copy for a comparison.
+async fn read_result(
+    State(state): State<HubState>,
+    Path(delivery_id): Path<String>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<Value>) {
+    if !bearer_ok(&headers) {
+        return unauthorized();
+    }
+    let _ = state.reports.send(Report::ReadResult {
+        delivery_id: delivery_id.clone(),
+    });
+    let view = myrlet_protocol::DeliveryResultView {
+        delivery_id: DeliveryId::new(delivery_id),
+        task_id: TaskId::new("task_stub"),
+        text: None,
+        recorded_at_ms: None,
+        result_sha256: None,
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(view).expect("result view json")),
+    )
+}
+
+fn stub_task(task_id: &TaskId) -> myrlet_protocol::TaskRecord {
+    let definition: myrlet_protocol::TaskDefinition = serde_json::from_value(json!({
+        "title": "Stub task",
+        "prompt": "Write progress, then stop.",
+    }))
+    .expect("task definition");
+    myrlet_protocol::TaskRecord {
+        id: task_id.clone(),
+        root_task_id: task_id.clone(),
+        depth: 1,
+        status: TaskStatus::Dispatched,
+        version: 2,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        finished_at_ms: None,
+        task: definition,
+        current_delivery: None,
+        blocked_by: Vec::new(),
+        result_markdown: None,
+        result_recorded_at_ms: None,
+        subtree: Default::default(),
+    }
 }
 
 /// One Hub control frame with the canonical envelope.
@@ -296,18 +405,9 @@ pub fn welcome_frame() -> Value {
     )
 }
 
-/// `task.offer` for one Delivery and Executor.
-pub fn offer_frame(delivery_id: &str, executor_id: &str) -> Value {
-    hub_frame(
-        "task.offer",
-        json!({
-            "taskId": format!("task_{delivery_id}"),
-            "deliveryId": delivery_id,
-            "slotId": SLOT_ID,
-            "executorId": executor_id,
-            "task": { "title": "Stub task", "prompt": "Write progress, then stop." },
-        }),
-    )
+/// `hub.wakeup`: one queued Task the Worker may claim.
+pub fn wakeup_frame(task_id: &str) -> Value {
+    hub_frame("hub.wakeup", json!({ "taskId": task_id }))
 }
 
 /// Credential document matching [`WORKER_ID`] and [`CREDENTIAL`].

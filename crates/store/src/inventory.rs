@@ -83,7 +83,7 @@ pub fn touch_worker_seen(
 
 fn active_deliveries(conn: &Connection, worker_id: &WorkerId) -> Result<u64, StoreError> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM deliveries WHERE worker_id = ?1 AND state IN ('offered', 'accepted')",
+        "SELECT COUNT(*) FROM deliveries WHERE worker_id = ?1 AND state = 'accepted'",
         params![worker_id.as_str()],
         |row| row.get(0),
     )?;

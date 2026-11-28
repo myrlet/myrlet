@@ -7,13 +7,13 @@ Myrlet tests drive real HTTP/WSS/CLI interfaces over disposable temporary `MYRLE
 | Layer | Scope |
 | --- | --- |
 | **Protocol & Store** | DTO round-trips, SQLite schema invariants, idempotency, version/epoch fencing, event backfill |
-| **Hub API & WSS** | Auth, pairing, Task CRUD/Tree/Bundle, dispatch/FIFO queue, cancel, SSE resume, HTTP Progress/Finish |
+| **Hub API & WSS** | Auth, pairing, Task submit/Tree/Bundle, wakeup and claim, cancel, SSE resume, HTTP Progress/Result/Finish |
 | **Worker & Adapters** | Local Delivery registry idempotency, Progress file watch, Process/Harness adapter launch & cancel |
 | **Integration E2E** | Real `hub` + `worker` + `myrlet` CLI end-to-end over WSS/HTTP, including reconnect & restart |
 
-## Proposed workflow acceptance
+## Submission, claim, and Result acceptance
 
-Use the [review scenarios](../design/agent-workflow.md#acceptance-scenarios) for dispatch replacement and mutable Result work. Cover an unclaimed wakeup, two racing claims, a lost claim acknowledgment, stale writes following reconnect, and recovered empty/deleted Result files. Check global reads and denied administrative writes separately. These are implementation acceptance cases; the current baseline tests exercise the offer and write-once protocols.
+The [scenarios](../design/agent-workflow.md#acceptance-scenarios) cover an unclaimed wakeup, two racing claims, a lost claim acknowledgment, stale writes following reconnect, and recovered empty or deleted Result files, plus global reads and denied administrative writes. These are the implemented behaviors the suite exercises.
 
 ## Evidence Boundaries
 

@@ -1,17 +1,16 @@
-//! Inbound Worker WSS frames: heartbeats, inventory, refusals, cancel reports, and resync.
+//! Inbound Worker WSS frames: heartbeats, inventory, cancel reports, and resync.
 
 use axum::extract::ws::WebSocket;
 use myrlet_protocol::{
     DeliveryId, HubHeartbeatAckPayload, TaskCancelPayload, TaskCancelledAckPayload,
-    TaskCancelledPayload, TaskRejectedAckPayload, TaskRejectedPayload, WorkerId, WorkerInventory,
-    WorkerInventoryAckPayload, WorkerResyncPayload, WorkerWireEnvelope, WorkerWireKind,
-    WORKER_PROTOCOL_VERSION,
+    TaskCancelledPayload, WorkerId, WorkerInventory, WorkerInventoryAckPayload,
+    WorkerResyncPayload, WorkerWireEnvelope, WorkerWireKind, WORKER_PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 
 use super::send_frame;
-use crate::queue::spawn_drain;
 use crate::state::{now_ms, HubState};
+use crate::wakeup::spawn_wakeup;
 
 /// Outcome of handling one inbound Worker WSS frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +67,6 @@ impl Session<'_> {
         match kind {
             WorkerWireKind::WorkerHeartbeat => self.heartbeat(now).await,
             WorkerWireKind::WorkerInventory => self.inventory(payload, now).await,
-            WorkerWireKind::TaskRejected => self.rejected(payload, now).await,
             WorkerWireKind::TaskCancelled => self.cancelled(payload, now).await,
             WorkerWireKind::WorkerResync => self.resync(payload, now).await,
             WorkerWireKind::WorkerBye => false,
@@ -126,30 +124,8 @@ impl Session<'_> {
         )
         .await;
         if accepted {
-            spawn_drain(self.state);
+            spawn_wakeup(self.state);
         }
-        true
-    }
-
-    async fn rejected(mut self, payload: serde_json::Value, now: i64) -> bool {
-        let Some(rejected) = decode::<TaskRejectedPayload>(payload) else {
-            return true;
-        };
-        let record = self
-            .state
-            .store
-            .record_rejection(self.worker_id.clone(), self.epoch, rejected.clone(), now)
-            .await;
-        let (recorded, event) = record.unwrap_or((false, None));
-        self.state.publish_event(event);
-        self.reply(
-            WorkerWireKind::TaskRejectedAck,
-            TaskRejectedAckPayload {
-                delivery_id: rejected.delivery_id,
-                recorded,
-            },
-        )
-        .await;
         true
     }
 
@@ -190,13 +166,13 @@ impl Session<'_> {
             )
             .await;
         let needs_cancel = rebind.unwrap_or_default();
-        self.replay_cancels(needs_cancel, now).await;
-        spawn_drain(self.state);
+        self.replay_cancels(needs_cancel).await;
+        spawn_wakeup(self.state);
         true
     }
 
     /// Replay `task.cancel` for Deliveries whose cancellation is still unacknowledged.
-    async fn replay_cancels(&mut self, delivery_ids: Vec<DeliveryId>, _now: i64) {
+    async fn replay_cancels(&mut self, delivery_ids: Vec<DeliveryId>) {
         for delivery_id in delivery_ids {
             let Ok(delivery) = self.state.store.get_delivery(delivery_id).await else {
                 continue;

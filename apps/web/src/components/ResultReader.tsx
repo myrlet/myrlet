@@ -7,7 +7,7 @@
  * position; closing restores the trigger's focus and the scroll offset the
  * caller recorded before opening.
  *
- * The rendered Markdown is the complete immutable result text. Tables and
+ * The rendered Markdown is the complete current result text. Tables and
  * fenced code scroll horizontally inside their own containers so the dialog
  * itself never scrolls sideways.
  */

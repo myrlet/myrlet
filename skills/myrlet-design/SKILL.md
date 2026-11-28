@@ -37,7 +37,7 @@ Impeccable (https://github.com/pbakaus/impeccable) can provide optional critique
 
 ## Product truth
 
-Use the [UI data semantics](../../docs/design/ui-system.md#reading-proposed-workflow-facts) when designing for the proposed agent workflow. A wakeup leaves the Task queued. Only a committed Delivery establishes an assignment, and the Hub copy may lag the Worker.
+Use the [UI data semantics](../../docs/design/ui-system.md#reading-workflow-facts) when designing for the agent workflow. A wakeup leaves the Task queued. Only a committed Delivery establishes an assignment, and the Hub copy may lag the Worker.
 
 Never invent or infer Task, Delivery, Execution, Worker, progress, authorization, or process-lifecycle facts. Preserve stale, missing, and uncertain states explicitly. Do not turn missing progress into a percentage or `finished` / `cancelled` into a success/failure verdict.
 

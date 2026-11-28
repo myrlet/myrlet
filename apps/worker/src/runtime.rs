@@ -1,10 +1,12 @@
 //! Worker daemon runtime: outbound WSS session, local Delivery registry, HTTP reporting.
 //!
-//! Invariants: a Delivery is registered durably **before** it is submitted, replayed
-//! offers never double-submit, a post-registration submit failure stays unreported, no
-//! terminal verdict is ever fabricated, and the Progress file is never written here.
+//! Invariants: a claimed Delivery is registered durably **before** the Harness starts, a
+//! replayed claim reply never runs twice, a post-registration submit failure stays
+//! unreported, no terminal verdict is ever fabricated, and no Harness-owned file is ever
+//! written here.
 
 mod deliveries;
+mod local;
 mod reports;
 mod session;
 
@@ -15,7 +17,7 @@ use std::time::Duration;
 
 use myrlet_protocol::inventory::WorkerInventory;
 use myrlet_protocol::paths::{ensure_private_dir, MyrletHome, PathError};
-use myrlet_protocol::{DeliveryId, ExecutorId, SlotId, WorkerId};
+use myrlet_protocol::{ExecutorId, SlotId, WorkerId};
 use myrlet_worker::{ExecutorAdapter, HandlingEnded, LocalRegistry, RegistryError};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::watch;
@@ -26,8 +28,8 @@ use crate::reporting::HubReporter;
 use crate::tls::{self, TlsError};
 use crate::wss::WssError;
 
-/// Progress file poll interval.
-const PROGRESS_POLL: Duration = Duration::from_millis(500);
+/// Progress and Result file poll interval.
+const REPORT_POLL: Duration = Duration::from_millis(500);
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
@@ -47,10 +49,8 @@ struct RuntimeCore {
     tls: Arc<rustls::ClientConfig>,
     /// Current non-zero `connectionEpoch`; `0` marks "no live session".
     epoch: AtomicU64,
-    /// Last text hash relayed per Delivery, so unchanged Progress is not re-posted.
-    progress: Mutex<HashMap<DeliveryId, [u8; 32]>>,
     shutting_down: AtomicBool,
-    /// Serializes read-modify-write cycles on local Delivery records.
+    /// Serializes read-modify-write cycles and per-Delivery reconciliation.
     gate: Mutex<()>,
     on_exit: UnboundedSender<HandlingEnded>,
     on_exit_rx: Mutex<Option<UnboundedReceiver<HandlingEnded>>>,
@@ -87,7 +87,6 @@ impl WorkerRuntime {
                 reporter: Arc::new(reporter),
                 tls: tls_config,
                 epoch: AtomicU64::new(0),
-                progress: Mutex::new(HashMap::new()),
                 shutting_down: AtomicBool::new(false),
                 gate: Mutex::new(()),
                 on_exit,
@@ -101,13 +100,19 @@ impl WorkerRuntime {
         ensure_home(&self.core.home)?;
         let retained = self.core.registry.load_all()?;
         tracing::info!(retained = retained.len(), "worker runtime starting");
-        let (exit_task, progress_task) = Arc::clone(&self.core).spawn_reports();
+        let (exit_task, report_task) = Arc::clone(&self.core).spawn_reports();
+        let socket_path = self.core.home.worker_control_socket();
+        let control = tokio::spawn({
+            let core = Arc::clone(&self.core);
+            async move { local::serve(core, &socket_path).await }
+        });
         let result = self.core.connect_loop(&mut shutdown).await;
         if result.is_ok() {
             self.core.drain().await;
         }
+        control.abort();
         exit_task.abort();
-        progress_task.abort();
+        report_task.abort();
         result
     }
 
@@ -148,6 +153,11 @@ pub async fn wait_for_shutdown_signal() {
 }
 
 impl RuntimeCore {
+    /// The live connection epoch, or `0` when no session is established.
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Connect, serve one session, and back off before reconnecting.
     async fn connect_loop(&self, shutdown: &mut watch::Receiver<bool>) -> Result<(), RuntimeError> {
         let mut backoff = INITIAL_BACKOFF;
@@ -187,6 +197,8 @@ pub enum RuntimeError {
     Wss(#[from] WssError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Report(#[from] crate::reporting::ReportError),
     #[error("hub.welcome named worker {reported} but this Worker is {expected}")]
     WorkerMismatch {
         reported: WorkerId,

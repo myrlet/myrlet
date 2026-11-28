@@ -76,12 +76,12 @@ impl Cli<'_> {
         serde_json::from_slice(&output.stdout).expect("cli stdout is json")
     }
 
-    /// Create a task pinned to one executor and assert it is `held`.
-    fn create(&self, key: &str, title: &str, prompt: &str, executor: &str) -> String {
-        let created = self.run(&[
+    /// Submit a Task pinned to one executor and assert it is authorized (`queued`).
+    fn submit(&self, key: &str, title: &str, prompt: &str, executor: &str) -> String {
+        let submitted = self.run(&[
             "--json",
             "tasks",
-            "create",
+            "submit",
             "--idempotency-key",
             key,
             "--title",
@@ -93,23 +93,11 @@ impl Cli<'_> {
             "--preferred-executor-id",
             executor,
         ]);
-        assert_eq!(status(&created), "held", "create {key}: {created}");
-        field(&created, "id")
+        assert_eq!(status(&submitted), "queued", "submit {key}: {submitted}");
+        field(&submitted, "id")
             .and_then(serde_json::Value::as_str)
             .expect("task id")
             .to_owned()
-    }
-
-    /// Dispatch a task with `--match` and assert it left the held state.
-    fn dispatch(&self, id: &str, extra: &[&str]) {
-        let mut args = vec!["--json", "tasks", "dispatch", id];
-        args.extend_from_slice(extra);
-        let dispatched = self.run(&args);
-        assert_eq!(
-            status(&dispatched),
-            "dispatched",
-            "dispatch {id}: {dispatched}"
-        );
     }
 }
 
@@ -271,17 +259,9 @@ async fn cross_process_hub_worker_cli_end_to_end() {
         (listed["workers"][0]["online"] == serde_json::json!(true)).then_some(())
     });
 
-    // 6. Create -> matched dispatch -> progress -> finish.
-    let first = cli.create("e2e-1", "E2E progress", "Write progress", "exec-progress");
-    let dispatch = [
-        "--expected-version",
-        "1",
-        "--idempotency-key",
-        "e2e-d1",
-        "--match",
-    ];
-    cli.dispatch(&first, &dispatch);
-    let shown = poll("the progress task to finish", || {
+    // 6. Submit authorizes work; the Worker claims it after a wakeup and runs it.
+    let first = cli.submit("e2e-1", "E2E progress", "Write progress", "exec-progress");
+    let shown = poll("the submitted task to finish", || {
         let shown = cli.run(&["--json", "tasks", "show", &first]);
         (status(&shown) == "finished").then_some(shown)
     });
@@ -296,18 +276,11 @@ async fn cross_process_hub_worker_cli_end_to_end() {
         "progress timestamp: {finished}"
     );
 
-    // 7. Create -> dispatch -> cancel.
-    let second = cli.create("e2e-2", "E2E cancel", "Sleep", "exec-slow");
-    cli.dispatch(
-        &second,
-        &[
-            "--expected-version",
-            "1",
-            "--idempotency-key",
-            "e2e-d2",
-            "--match",
-        ],
-    );
+    // 7. Submit -> claim -> cancel while the Harness sleeps.
+    let second = cli.submit("e2e-2", "E2E cancel", "Sleep", "exec-slow");
+    poll("the second task to be claimed", || {
+        (status(&cli.run(&["--json", "tasks", "show", &second])) == "dispatched").then_some(())
+    });
     let cancel = ["--json", "tasks", "cancel", &second, "--reason", "stop e2e"];
     let cancelled = cli.run(&cancel);
     assert_eq!(status(&cancelled), "cancelled", "cancel: {cancelled}");
@@ -324,5 +297,115 @@ async fn cross_process_hub_worker_cli_end_to_end() {
         cli.run(&["--json", "tasks", "show", &first])["resultMarkdown"],
         "# Findings\n"
     );
+    shutdown(&mut hub_guard.0, "hub");
+}
+
+/// A Harness-style worker that writes a Result and calls `myrlet done` before exiting.
+fn done_yaml(hub_url: &str, cli: &Path) -> String {
+    let document = r#"hubUrl: 'HUB_URL'
+slots:
+  - slotId: e2e-slot
+    capabilities:
+      - name: shell
+        state: available
+    executors:
+      - id: exec-done
+        kind: process
+        program: /bin/sh
+        args:
+          - -c
+          - |
+            umask 077
+            delivery=""
+            result=""
+            while IFS= read -r line; do
+              case "$line" in
+                'Delivery ID: '*) delivery="${line#Delivery ID: }" ;;
+                'Optionally write the final Markdown result '*) result="${line##* to }" ;;
+              esac
+            done
+            printf '# Harness result\n\n- done via CLI\n' > "$result"
+            "$MYRLET_CLI" done "$delivery" > /dev/null 2>&1 || printf 'done command failed\n' >> "$result"
+"#;
+    document
+        .replace("HUB_URL", hub_url)
+        .replace("$MYRLET_CLI", &cli.display().to_string())
+}
+
+#[tokio::test]
+async fn a_harness_can_call_done_and_clear_its_result_after_finish() {
+    let (hub_bin, worker_bin, cli_bin) = binaries();
+    let directory = tempfile::tempdir().expect("temp dir");
+    let home = directory.path().join("home");
+    myrlet_protocol::ensure_private_dir(&home).expect("create home");
+
+    let port = free_port();
+    let hub_url = format!("http://127.0.0.1:{port}");
+    let bind = format!("127.0.0.1:{port}");
+    let mut hub_guard = spawn_daemon(
+        &hub_bin,
+        &[
+            ("MYRLET_HOME", home.to_str().expect("utf-8 home")),
+            ("MYRLET_ADMIN_TOKEN", ADMIN_TOKEN),
+            ("MYRLET_HUB_BIND", &bind),
+        ],
+    );
+    wait_healthy(&hub_url).await;
+
+    let cli = Cli {
+        bin: &cli_bin,
+        home: &home,
+        hub_url: &hub_url,
+    };
+    let enrolled = cli.run(&["--json", "workers", "enroll"]);
+    let code = field(&enrolled, "enrollmentCode")
+        .and_then(|code| code.as_str())
+        .expect("enrollment code");
+    run_worker(
+        &worker_bin,
+        &home,
+        &["pair", "--hub-url", &hub_url, "--code", code],
+    );
+    std::fs::write(
+        home.join("worker/worker.yaml"),
+        done_yaml(&hub_url, &cli_bin),
+    )
+    .expect("write worker.yaml");
+    let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", home.to_str().unwrap())]);
+    poll("the worker to come online", || {
+        let listed = cli.run(&["--json", "workers", "list"]);
+        (listed["workers"][0]["online"] == serde_json::json!(true)).then_some(())
+    });
+
+    let task = cli.submit("done-1", "Done via CLI", "Write the result", "exec-done");
+    // `done` syncs the Result independently of Finish, so the Result can arrive while
+    // the Task is still `dispatched`; wait for the Worker-observed exit separately.
+    poll("the harness result to reach the Hub", || {
+        let shown = cli.run(&["--json", "tasks", "show", &task]);
+        (shown["resultMarkdown"] == "# Harness result\n\n- done via CLI\n").then_some(())
+    });
+    let shown = poll("worker exit to finish the Task", || {
+        let shown = cli.run(&["--json", "tasks", "show", &task]);
+        (status(&shown) == "finished").then_some(shown)
+    });
+
+    // The Harness deleted its file; a later sync after Finish clears the Hub copy.
+    let delivery_id = shown["currentDelivery"]["id"].as_str().expect("delivery");
+    let result_path = home
+        .join("worker/results")
+        .join(format!("{delivery_id}.md"));
+    assert!(result_path.exists(), "harness wrote its result file");
+    std::fs::remove_file(&result_path).expect("delete result file");
+    let cleared = cli.run(&["result", "sync", delivery_id, "--json"]);
+    assert!(
+        cleared["hubConfirmed"].as_bool() == Some(true),
+        "sync confirmed: {cleared}"
+    );
+    poll("the Hub result to clear", || {
+        (cli.run(&["--json", "tasks", "show", &task])["resultMarkdown"] == serde_json::Value::Null)
+            .then_some(())
+    });
+
+    shutdown(&mut worker_guard.0, "worker");
     shutdown(&mut hub_guard.0, "hub");
 }

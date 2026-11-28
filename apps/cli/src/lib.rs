@@ -24,10 +24,31 @@ const HELP: &str = "\
 myrlet - Myrlet Hub CLI
 
 USAGE: myrlet [--json] <group> <command> [options]
-tasks: list | show | tree | create | dispatch | submit | bundle-import | cancel | finish
-workers: list | show | enroll | rotate | revoke
-events: watch [--cursor <seq>] [--limit <n>]
-env: MYRLET_HUB_URL (default http://127.0.0.1:4140), MYRLET_ADMIN_TOKEN (required)
+
+Hub reads (Owner or Worker credential):
+  tasks list [--limit <n>]                 Bounded newest-first Task summaries
+  tasks show <id>                          One Task with its Delivery and Result
+  tasks tree <id> [--direction ancestors|descendants] [--max-depth <n>] [--limit <n>]
+  workers list                             Enrolled Workers and connectivity
+  workers show <id>                        One Worker, inventory, and claimable Tasks
+  events watch [--cursor <seq>] [--limit <n>]
+
+Owner writes (Admin credential):
+  tasks submit --file <def.json> | --title <t> --prompt <p> [--idempotency-key <k>]
+               [--parent-task-id <id>] [--depends-on <id>]... [--capability <name>]...
+  tasks import --file <bundle.json> [--idempotency-key <k>]
+  tasks update <id> --expected-version <n> [--depends-on <id>]... [--idempotency-key <k>]
+  tasks cancel <id> [--expected-version <n>] [--reason <text>]
+  tasks finish <id> [--expected-version <n>]   Coordination-only Task with no Delivery
+
+Execution-local (no Hub credential; uses the local Worker control socket):
+  done <delivery-id>                       Harness finished its work
+  result check <delivery-id>               Advisory Markdown feedback
+  result sync <delivery-id>                Request one Result reconciliation
+  result status <delivery-id>              Compare local and Hub Result content
+
+env: MYRLET_HUB_URL (default http://127.0.0.1:4140), MYRLET_ADMIN_TOKEN (Owner writes),
+     MYRLET_HOME (execution-local commands)
 ";
 
 pub async fn run_with_io<W: Write, E: Write, F: Fn(&str) -> Option<String>>(
@@ -36,7 +57,7 @@ pub async fn run_with_io<W: Write, E: Write, F: Fn(&str) -> Option<String>>(
     stdout: &mut W,
     stderr: &mut E,
 ) -> ExitCode {
-    match dispatch(args, env, stdout).await {
+    match dispatch(args, &env, stdout).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let message = match &error {
@@ -50,7 +71,7 @@ pub async fn run_with_io<W: Write, E: Write, F: Fn(&str) -> Option<String>>(
 
 async fn dispatch<W: Write, F: Fn(&str) -> Option<String>>(
     args: &[String],
-    env: F,
+    env: &F,
     stdout: &mut W,
 ) -> Result<(), CliError> {
     let parsed = args::parse_args(args)?;
@@ -62,10 +83,18 @@ async fn dispatch<W: Write, F: Fn(&str) -> Option<String>>(
     let hub_url = env("MYRLET_HUB_URL")
         .filter(|url| !url.trim().is_empty())
         .unwrap_or_else(|| args::DEFAULT_HUB_URL.to_string());
-    let token = env("MYRLET_ADMIN_TOKEN")
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| CliError::Usage("MYRLET_ADMIN_TOKEN is not set".to_string()))?;
-    let client = myrlet_client::Client::new(hub_url, token)
-        .map_err(|error| CliError::Runtime(error.to_string()))?;
-    commands::execute(&client, parsed.command, parsed.json, stdout).await
+    let admin_token = env("MYRLET_ADMIN_TOKEN").filter(|token| !token.is_empty());
+    let worker_socket = env("MYRLET_HOME")
+        .filter(|home| !home.trim().is_empty())
+        .map(|home| {
+            commands::control_socket(&home)
+                .to_string_lossy()
+                .into_owned()
+        });
+    let environment = commands::Env {
+        hub_url: &hub_url,
+        admin_token: admin_token.as_deref(),
+        worker_socket: worker_socket.as_deref(),
+    };
+    commands::execute(&environment, parsed.command, parsed.json, stdout).await
 }

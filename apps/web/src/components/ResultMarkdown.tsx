@@ -1,5 +1,5 @@
 /**
- * Read-only rendering of the immutable Harness-written Markdown result.
+ * Read-only rendering of the latest Harness-written Markdown result.
  *
  * Text only: headings, lists, tables, fenced code, and links render through
  * `react-markdown` + `remark-gfm`. Raw HTML is never rendered, images are not

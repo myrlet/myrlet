@@ -5,7 +5,6 @@ Index of maintained documentation in Myrlet. Each durable fact has one authorita
 ## Product and Architecture
 
 - [Product brief](../PRODUCT.md) — product purpose, users, and V1 scope.
-- [Agent workflow under review](architecture/README.md#contract-under-review) — proposed changes by owning document; [cross-component scenarios](design/agent-workflow.md).
 - [Architecture contract](architecture/README.md) — **normative V1 source of truth**:
   - [Task model](architecture/task-model.md)
   - [Hub API](architecture/hub-api.md)
@@ -16,7 +15,7 @@ Index of maintained documentation in Myrlet. Each durable fact has one authorita
 
 ## Develop and Operate
 
-- [Developer quickstart](development/getting-started.md) — run the current binaries through create and dispatch.
+- [Developer quickstart](development/getting-started.md) — build, start local Hub and Worker, and submit a Task.
 - [Contributing](../CONTRIBUTING.md) — naming, simplicity policy, pre-release rules, review, and verification.
 - [Owner Agent integration](development/agent-integration.md) — recommended workflow for external Owner Agents.
 - [CI and verification](development/ci.md) — GitHub Actions workflow and local checks.

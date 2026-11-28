@@ -12,10 +12,10 @@ use myrlet_protocol::{
 use crate::auth;
 use crate::error::ApiError;
 use crate::http::{read_bounded_json, run_bounded};
-use crate::queue::spawn_drain;
 use crate::state::{now_ms, HubState};
+use crate::wakeup::spawn_wakeup;
 
-/// `POST /v1/worker/deliveries/{delivery_id}/progress`: latest-state Progress only.
+/// `POST /v1/worker/deliveries/{delivery_id}/progress`: latest-value Progress only.
 pub async fn report_progress(
     State(state): State<HubState>,
     headers: HeaderMap,
@@ -54,13 +54,13 @@ pub async fn report_finish(
             .await?;
         let (receipt, event) = recorded;
         state.publish_event(event);
-        spawn_drain(&state);
+        spawn_wakeup(&state);
         Ok(Json(receipt).into_response())
     })
     .await
 }
 
-/// `POST /v1/worker/deliveries/{delivery_id}/result`: final bounded Markdown, once.
+/// `POST /v1/worker/deliveries/{delivery_id}/result`: reconcile the latest Markdown.
 pub async fn report_result(
     State(state): State<HubState>,
     headers: HeaderMap,
@@ -83,4 +83,20 @@ pub async fn report_result(
         Ok(Json(receipt).into_response())
     })
     .await
+}
+
+/// `GET /v1/worker/deliveries/{delivery_id}/result`: current Hub copy for a comparison.
+///
+/// Only the Delivery's own Worker may read it back, and reading never writes.
+pub async fn read_result(
+    State(state): State<HubState>,
+    headers: HeaderMap,
+    Path(delivery_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let worker_id = auth::require_worker(&state, &headers).await?;
+    let view = state
+        .store
+        .worker_delivery_result(worker_id, DeliveryId::new(delivery_id))
+        .await?;
+    Ok(Json(view).into_response())
 }

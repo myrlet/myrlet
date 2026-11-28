@@ -2,10 +2,7 @@
 
 use std::io::{self, Write};
 
-use myrlet_protocol::{
-    CreateEnrollmentCodeResponse, RotateWorkerCredentialResponse, SnapshotWorker, WorkerId,
-    WorkerListResponse,
-};
+use myrlet_protocol::{SnapshotWorker, WorkerDetail, WorkerListResponse};
 
 use super::{optional, to_json};
 
@@ -33,11 +30,16 @@ pub fn worker_list<W: Write>(
     Ok(())
 }
 
-/// Print one Worker's detail.
-pub fn worker<W: Write>(out: &mut W, worker: &SnapshotWorker, as_json: bool) -> io::Result<()> {
+/// Print one Worker's detail, including Slots the Worker could claim for.
+pub fn worker_detail<W: Write>(
+    out: &mut W,
+    detail: &WorkerDetail,
+    as_json: bool,
+) -> io::Result<()> {
     if as_json {
-        return to_json(out, worker);
+        return to_json(out, detail);
     }
+    let worker = &detail.worker;
     writeln!(out, "Worker: {}", worker.worker_id)?;
     writeln!(out, "Online: {}", worker.online)?;
     writeln!(out, "Revoked: {}", worker.revoked)?;
@@ -48,7 +50,21 @@ pub fn worker<W: Write>(out: &mut W, worker: &SnapshotWorker, as_json: bool) -> 
         "LastSeenAtMs: {}",
         optional(worker.last_seen_at_ms.as_ref())
     )?;
-    writeln!(out, "Slots: {}", slot_count(worker))
+    writeln!(out, "Slots: {}", slot_count(worker))?;
+    writeln!(
+        out,
+        "ClaimableTasks: {}",
+        if detail.claimable_task_ids.is_empty() {
+            "none".to_string()
+        } else {
+            detail
+                .claimable_task_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    )
 }
 
 fn slot_count(worker: &SnapshotWorker) -> usize {
@@ -58,10 +74,10 @@ fn slot_count(worker: &SnapshotWorker) -> usize {
         .map_or(0, |inventory| inventory.slots.len())
 }
 
-/// Print a newly issued enrollment code.
+/// Print a newly issued enrollment code (operator bootstrap).
 pub fn enrollment<W: Write>(
     out: &mut W,
-    response: &CreateEnrollmentCodeResponse,
+    response: &myrlet_protocol::CreateEnrollmentCodeResponse,
     as_json: bool,
 ) -> io::Result<()> {
     if as_json {
@@ -79,7 +95,7 @@ pub fn enrollment<W: Write>(
 /// Print a rotated Worker credential.
 pub fn rotate<W: Write>(
     out: &mut W,
-    response: &RotateWorkerCredentialResponse,
+    response: &myrlet_protocol::RotateWorkerCredentialResponse,
     as_json: bool,
 ) -> io::Result<()> {
     if as_json {
@@ -91,7 +107,11 @@ pub fn rotate<W: Write>(
 }
 
 /// Print a revocation acknowledgement.
-pub fn revoked<W: Write>(out: &mut W, worker_id: &WorkerId, as_json: bool) -> io::Result<()> {
+pub fn revoked<W: Write>(
+    out: &mut W,
+    worker_id: &myrlet_protocol::WorkerId,
+    as_json: bool,
+) -> io::Result<()> {
     if as_json {
         let payload = serde_json::json!({ "workerId": worker_id, "revoked": true });
         return to_json(out, &payload);

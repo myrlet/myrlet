@@ -16,7 +16,7 @@ pub use myrlet_protocol::inventory::HostFacts;
 pub use myrlet_protocol::WORKER_PROTOCOL_VERSION;
 pub use progress_watch::{read_progress_if_changed, ObservedProgress};
 pub use registry::{LocalDeliveryRecord, LocalRegistry, RegistryError};
-pub use result_watch::read_result;
+pub use result_watch::{read_result, LocalResult, LocalResultError};
 
 /// Basic Host facts only: OS, architecture, and whether the Worker runs in a container.
 /// Worker Core never probes, installs, or manages toolchains or Harness binaries.

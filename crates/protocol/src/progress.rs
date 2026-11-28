@@ -1,4 +1,4 @@
-//! Progress and Finish reporting: bounded latest-state Progress, never a Result model.
+//! Progress and Finish reporting: bounded latest-value Progress, never a Result model.
 
 use crate::id::{DeliveryId, TaskId};
 use crate::task::TaskStatus;
@@ -33,6 +33,10 @@ impl ProgressFileDocument {
 }
 
 /// Worker HTTP Progress report; the epoch fences it to the current connection.
+///
+/// The Worker is the Delivery's single Progress writer: each accepted report replaces the
+/// Hub's one stored value. There is no Progress history and no separate clear operation,
+/// because a stored Progress row is execution-start evidence that never becomes absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProgressReportRequest {
@@ -54,7 +58,7 @@ impl ProgressReportRequest {
     }
 }
 
-/// Acknowledgement of an accepted Progress report; `duplicate` marks a replay.
+/// Acknowledgement of an accepted Progress report; `duplicate` marks an equal replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressReceipt {

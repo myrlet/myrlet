@@ -1,6 +1,6 @@
 ---
 name: myrlet
-description: Create, dispatch, inspect, cancel, and monitor Myrlet Hub Tasks through the headless Myrlet CLI.
+description: Submit, inspect, claim, and monitor Myrlet Hub Tasks, and report done or read results through the headless Myrlet CLI.
 ---
 
 # Myrlet Tasks
@@ -8,72 +8,77 @@ description: Create, dispatch, inspect, cancel, and monitor Myrlet Hub Tasks thr
 Use the `myrlet` CLI (built on `myrlet-client`). Do not build another HTTP client, scheduler, or Worker loop.
 See [references/cli.md](references/cli.md) for exact command syntax and [docs/architecture/README.md](../../docs/architecture/README.md) for the canonical V1 contract.
 
-## Choose the supported workflow
-
-Check `myrlet --help` for the installed command set. The commands below operate the current binary. The [proposed CLI](../../docs/architecture/local-runtime.md#proposed-agent-commands) has separate Hub queries, Owner writes, and Delivery-local reports. Use `done` only when the Worker startup prompt and installed CLI support it. Current prompts supply a file path for handing the result to the Worker on exit.
-
-## Authenticate as an Owner
+## Authenticate
 
 ```bash
 export MYRLET_HUB_URL='http://127.0.0.1:4140'
-export MYRLET_ADMIN_TOKEN='<hub-admin-token>'
+export MYRLET_ADMIN_TOKEN='<hub-admin-token>'   # Owner writes only
 ```
 
 Never place tokens in command arguments, committed files, Task prompts, or logs.
 
-## Create and Dispatch
+## Submit and Inspect
 
-Creation persists a `held` Task; dispatch is always an explicit step.
+Submission authorizes execution. A Task with unfinished prerequisites stays `held`; one whose prerequisites are all `finished` becomes `queued` and waits for a Worker to claim it. You never dispatch.
 
 ```bash
-# Create a held Task
-myrlet --json tasks create \
+# Submit one Task (authorizes it)
+myrlet --json tasks submit \
   --idempotency-key issue-42-fix-1 \
   --title 'Fix issue 42' \
   --prompt 'Implement the requested fix and run verification'
 
-# Dispatch via Simple Match
-myrlet --json tasks dispatch '<task-id>' \
-  --expected-version 1 \
-  --idempotency-key issue-42-dispatch-1 \
-  --match
+# Or submit a full TaskDefinition JSON file
+myrlet --json tasks submit --file task.json --idempotency-key issue-42-1
 
-# Or create + dispatch from a full TaskDefinition JSON file
-myrlet --json tasks submit \
-  --file task.json \
-  --idempotency-key issue-42-submit-1
+# Or atomically submit a Bundle (up to 100 Tasks, local clientRef references)
+myrlet --json tasks import --file bundle.json --idempotency-key issue-42-bundle-1
 
-# Or atomically import held Tasks from a Bundle (never dispatches)
-myrlet --json tasks bundle-import \
-  --file bundle.json \
-  --idempotency-key issue-42-bundle-1
-```
-
-Targeted Dispatch requires explicit `--worker-id` and `--slot-id` (`--executor-id` is optional).
-
-## Inspect, Watch, and Cancel
-
-```bash
+# Inspect every Task, tree, blocker, Worker, and event (Admin or Worker credential)
 myrlet --json tasks list
 myrlet --json tasks show '<task-id>'
+myrlet --json tasks tree '<task-id>'
 myrlet --json workers list
+myrlet --json workers show '<worker-id>'
 myrlet --json events watch
-myrlet --json tasks cancel '<task-id>'
 ```
 
-- `tasks list` shows the Snapshot Task summary page (`metadata.tasksTruncated` indicates if truncated). Use `tasks show` for one authoritative Task record, including any immutable Harness result Markdown.
-- `events watch` outputs NDJSON snapshots and SSE invalidation hints; re-read `tasks show` when making decisions.
-- A Harness may write its final Markdown result to the `result.md` path given in its startup prompt (owner-only, up to 64 KiB). It appears as `resultMarkdown` after the Worker syncs it and is never a success verdict.
+`tasks show` includes `blockedBy` (the dependencies keeping a Task `held`), the current Delivery, latest Progress, and the latest result Markdown.
+
+## Change Pending Work and Cancel
+
+Before a Task is claimed you may change its dependencies; the Hub recomputes `held`/`queued`.
+
+```bash
+myrlet --json tasks update '<task-id>' --expected-version '<n>' --depends-on '<other-id>'
+myrlet --json tasks cancel '<task-id>'
+myrlet --json tasks finish '<task-id>'   # coordination-only Task with no Delivery
+```
+
+Cancelling a prerequisite does **not** change its dependents: they stay `held` until you edit their dependencies or cancel them.
+
+## Report from a Harness
+
+Every execution-local command names its real Delivery ID (from the startup prompt) and uses only `MYRLET_HOME`; it needs no Hub token. A Delivery ID from an old execution never affects a newer one on the same Slot.
+
+```bash
+myrlet done '<delivery-id>'              # last command before exit; requests sync and finish
+myrlet result check '<delivery-id>'      # advisory Markdown feedback; warnings never block
+myrlet result sync '<delivery-id>'       # reconcile the Hub copy now
+myrlet result status '<delivery-id>'     # compare local and Hub copies; never writes
+```
+
+The reply separates local receipt from Hub confirmation. `done` is optional and repeatable: Worker-observed exit still triggers the final sync and Finish.
 
 ## Interpret Task Status Honestly
 
-- `held`: durable intent exists; not dispatched.
-- `queued`: waiting in Hub's FIFO queue; no Delivery offered and no capacity reserved.
-- `dispatched`: Hub offered a Delivery; execution appears started only after Hub accepts a Harness-authored Progress report (`firstReceivedAtMs`).
-- `finished`: assigned Worker reported its handling ended. **Not a success or failure verdict.**
-- `cancelled`: explicitly cancelled on Hub. Terminal (`finished` never overwrites `cancelled`), and **not** proof that a remote process or side effect stopped.
+- `held`: submitted, but a named prerequisite is not `finished`.
+- `queued`: authorized and ready; waiting for an eligible Worker to claim it.
+- `dispatched`: a Worker claimed the Task; a Delivery exists. Execution appears started only after Hub accepts a Progress report (`firstReceivedAtMs`).
+- `finished`: the Delivery's Worker reported handling ended. **Not a success or failure verdict.**
+- `cancelled`: explicitly cancelled. Terminal (`finished` never overwrites `cancelled`), and **not** proof that a remote process or side effect stopped.
 
 ## Retry Safely
 
-- Repeat a lost create/dispatch request with the **same `--idempotency-key`** and unchanged payload.
-- Never assume a disconnected Worker stopped executing. A business retry creates a **new `held` Task** linked via `sourceTaskId` and dispatches it explicitly.
+- Repeat a lost request with the **same `--idempotency-key`** and unchanged payload.
+- Never assume a disconnected Worker stopped executing. A business retry creates a **new** Task linked via `sourceTaskId` and submits it explicitly.

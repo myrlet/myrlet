@@ -1,4 +1,4 @@
-//! Async `HubStore` facade for Worker, Delivery-report, Progress, and Finish operations.
+//! Async `HubStore` facade for Worker enrollment, inventory, and Delivery reporting.
 
 use std::collections::HashMap;
 
@@ -6,24 +6,12 @@ use myrlet_protocol::{
     CreateEnrollmentCodeResponse, DeliveryId, DeliveryView, FinishReceipt, FinishReportRequest,
     HubEventEnvelope, PairWorkerRequest, PairWorkerResponse, ProgressReceipt,
     ProgressReportRequest, ResultReceipt, ResultReportRequest, RotateWorkerCredentialResponse,
-    SnapshotWorker, TaskCancelledPayload, TaskRejectedPayload, WorkerId, WorkerInventory,
+    SnapshotWorker, TaskCancelledPayload, WorkerDetail, WorkerId, WorkerInventory,
 };
 
 use crate::{deliveries, inventory, progress, reports, result, workers, HubStore, StoreError};
 
 impl HubStore {
-    pub async fn record_rejection(
-        &self,
-        worker_id: WorkerId,
-        epoch: u64,
-        payload: TaskRejectedPayload,
-        now_ms: i64,
-    ) -> Result<(bool, Option<HubEventEnvelope>), StoreError> {
-        self.db
-            .call(move |conn| reports::record_rejection(conn, &worker_id, epoch, &payload, now_ms))
-            .await
-    }
-
     pub async fn record_cancellation_report(
         &self,
         worker_id: WorkerId,
@@ -219,6 +207,42 @@ impl HubStore {
     ) -> Result<SnapshotWorker, StoreError> {
         self.db
             .call(move |conn| inventory::get_worker(conn, &worker_id, &online_map))
+            .await
+    }
+
+    pub async fn worker_detail(
+        &self,
+        worker_id: WorkerId,
+        online_map: HashMap<WorkerId, u64>,
+        claimable_limit: usize,
+    ) -> Result<WorkerDetail, StoreError> {
+        self.db
+            .call(move |conn| {
+                let worker = inventory::get_worker(conn, &worker_id, &online_map)?;
+                let claimable_task_ids = crate::reads::claimable_for_worker(
+                    conn,
+                    worker.inventory.as_ref(),
+                    claimable_limit,
+                )?;
+                Ok(WorkerDetail {
+                    worker,
+                    claimable_task_ids,
+                })
+            })
+            .await
+    }
+
+    /// One Delivery's current Hub result, after verifying Worker ownership.
+    pub async fn worker_delivery_result(
+        &self,
+        worker_id: WorkerId,
+        delivery_id: DeliveryId,
+    ) -> Result<myrlet_protocol::DeliveryResultView, StoreError> {
+        self.db
+            .call(move |conn| {
+                result::worker_delivery(conn, &worker_id, &delivery_id)?;
+                result::delivery_result_view(conn, &delivery_id)?.ok_or(StoreError::NotFound)
+            })
             .await
     }
 }

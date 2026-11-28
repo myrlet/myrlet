@@ -1,4 +1,4 @@
-//! Hub SQLite schema: eight tables, the query indexes, and no triggers.
+//! Hub SQLite schema: seven tables, the query indexes, and no triggers.
 
 use rusqlite::Connection;
 
@@ -36,8 +36,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     category           TEXT NOT NULL,
     title              TEXT NOT NULL,
     definition_json    TEXT NOT NULL,
-    queue_request_json TEXT,
-    queued_at_ms       INTEGER,
     created_at_ms      INTEGER NOT NULL,
     updated_at_ms      INTEGER NOT NULL,
     finished_at_ms     INTEGER
@@ -77,14 +75,17 @@ CREATE TABLE IF NOT EXISTS deliveries (
     executor_id      TEXT,
     connection_epoch INTEGER NOT NULL,
     state            TEXT NOT NULL,
-    rejection_code   TEXT,
     cancel_state     TEXT,
     cancel_reason    TEXT,
     created_at_ms    INTEGER NOT NULL,
     updated_at_ms    INTEGER NOT NULL,
     result_markdown  TEXT,
+    result_sha256    TEXT,
     result_recorded_at_ms INTEGER
 );
+
+-- One Task has at most one Delivery for its whole life; a claim is the only creator.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deliveries_task_unique ON deliveries(task_id);
 
 CREATE TABLE IF NOT EXISTS delivery_progress (
     delivery_id         TEXT PRIMARY KEY NOT NULL,
@@ -114,7 +115,6 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(root_task_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_status_queued ON tasks(status, queued_at_ms);
-CREATE INDEX IF NOT EXISTS idx_deliveries_task ON deliveries(task_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_deliveries_worker_state ON deliveries(worker_id, state);
 "#;

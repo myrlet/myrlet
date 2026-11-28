@@ -9,7 +9,11 @@ use thiserror::Error;
 pub const MAX_BUNDLE_TASKS: usize = 100;
 pub const MAX_TREE_DEPTH: u8 = 5;
 
-/// Bundle import request; creates every Task in one transaction and never dispatches.
+/// Bundle import request; creates and submit-authorizes every Task in one transaction.
+///
+/// Each Task lands in `queued`, or stays `held` while any prerequisite would not be
+/// `finished` after this transaction. Import never picks a Worker and never creates a
+/// Delivery.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskBundleImportRequest {
@@ -22,6 +26,9 @@ pub struct TaskBundleImportRequest {
 pub struct TaskBundleImportResponse {
     pub client_ref_to_task_id: BTreeMap<String, TaskId>,
     pub tasks: Vec<TaskRecord>,
+    /// Task IDs that are `queued` and claimable immediately.
+    #[serde(default)]
+    pub eligible_task_ids: Vec<TaskId>,
 }
 
 impl TaskBundleImportRequest {

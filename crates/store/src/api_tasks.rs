@@ -1,16 +1,16 @@
-//! Async `HubStore` facade for Task, bundle, dispatch, read, and event operations.
+//! Async `HubStore` facade for Task, bundle, claim, read, and event operations.
 
 use std::collections::HashMap;
 
 use myrlet_protocol::{
-    CancelTaskRequest, DeliveryId, DispatchTaskRequest, DispatchTaskResponse, FinishTaskRequest,
-    GlobalSnapshot, HubEventEnvelope, TaskBundleImportRequest, TaskDefinition, TaskId, TaskRecord,
-    TaskTreeDirection, TaskTreeResponse, WorkerId,
+    CancelTaskRequest, ClaimTaskRequest, ClaimTaskResponse, FinishTaskRequest, GlobalSnapshot,
+    HubEventEnvelope, TaskBundleImportRequest, TaskDefinition, TaskId, TaskListResponse,
+    TaskRecord, TaskTreeDirection, TaskTreeResponse, UpdateTaskRequest, WorkerId,
 };
 
 use crate::{
-    bundle, commands, dispatch, events, reads, tasks, BundleOutcome, CancellationOutcome,
-    DeliveryTarget, DispatchIdempotency, DispatchOutcome, HubStore, StoreError, TaskMutation,
+    bundle, claim, commands, events, reads, tasks, BundleOutcome, CancellationOutcome, HubStore,
+    StoreError, TaskMutation,
 };
 
 impl HubStore {
@@ -40,6 +40,20 @@ impl HubStore {
             .await
     }
 
+    pub async fn update_task(
+        &self,
+        idempotency_key: String,
+        task_id: TaskId,
+        request: UpdateTaskRequest,
+        now_ms: i64,
+    ) -> Result<TaskMutation, StoreError> {
+        self.db
+            .call(move |conn| {
+                commands::update_task(conn, &idempotency_key, &task_id, &request, now_ms)
+            })
+            .await
+    }
+
     pub async fn import_bundle(
         &self,
         idempotency_key: String,
@@ -54,6 +68,12 @@ impl HubStore {
     pub async fn get_task(&self, task_id: TaskId) -> Result<TaskRecord, StoreError> {
         self.db
             .call(move |conn| reads::get_task(conn, &task_id))
+            .await
+    }
+
+    pub async fn list_tasks(&self, limit: usize) -> Result<TaskListResponse, StoreError> {
+        self.db
+            .call(move |conn| reads::list_tasks(conn, limit))
             .await
     }
 
@@ -114,78 +134,54 @@ impl HubStore {
             .await
     }
 
-    pub async fn are_dependencies_satisfied(&self, task_id: TaskId) -> Result<bool, StoreError> {
+    pub async fn claim_task(
+        &self,
+        worker_id: WorkerId,
+        request: ClaimTaskRequest,
+        now_ms: i64,
+    ) -> Result<(ClaimTaskResponse, HubEventEnvelope), StoreError> {
         self.db
-            .call(move |conn| tasks::are_dependencies_satisfied(conn, &task_id))
+            .call(move |conn| claim::claim_task(conn, &worker_id, &request, now_ms))
+            .await
+    }
+
+    /// Claimability of one Task, used for diagnostic reads.
+    pub async fn task_eligibility(
+        &self,
+        task_id: TaskId,
+    ) -> Result<myrlet_protocol::TaskEligibility, StoreError> {
+        self.db
+            .call(move |conn| reads::eligibility(conn, &task_id))
+            .await
+    }
+
+    /// Oldest claimable Task IDs for one Worker's advertised Slots.
+    pub async fn claimable_for_worker(
+        &self,
+        worker_id: WorkerId,
+        limit: usize,
+        online_map: HashMap<WorkerId, u64>,
+    ) -> Result<Vec<TaskId>, StoreError> {
+        self.db
+            .call(move |conn| {
+                let worker = crate::inventory::get_worker(conn, &worker_id, &online_map)?;
+                reads::claimable_for_worker(conn, worker.inventory.as_ref(), limit)
+            })
             .await
     }
 
     pub async fn list_queued_tasks(
         &self,
         limit: usize,
-    ) -> Result<Vec<(TaskId, u64, TaskDefinition, DispatchTaskRequest)>, StoreError> {
+    ) -> Result<Vec<(TaskId, TaskDefinition)>, StoreError> {
         self.db
             .call(move |conn| reads::list_queued_tasks(conn, limit))
             .await
     }
 
-    pub async fn enqueue_task(
-        &self,
-        idempotency_key: String,
-        task_id: TaskId,
-        request: DispatchTaskRequest,
-        now_ms: i64,
-    ) -> Result<DispatchOutcome, StoreError> {
+    pub async fn are_dependencies_satisfied(&self, task_id: TaskId) -> Result<bool, StoreError> {
         self.db
-            .call(move |conn| {
-                dispatch::enqueue_task(conn, &idempotency_key, &task_id, &request, now_ms)
-            })
-            .await
-    }
-
-    pub async fn lookup_dispatch_replay(
-        &self,
-        idempotency_key: String,
-        task_id: TaskId,
-        request: DispatchTaskRequest,
-    ) -> Result<Option<(u16, DispatchTaskResponse)>, StoreError> {
-        self.db
-            .call(move |conn| {
-                dispatch::lookup_dispatch_replay(conn, &idempotency_key, &task_id, &request)
-            })
-            .await
-    }
-
-    pub async fn create_delivery(
-        &self,
-        idempotency: Option<DispatchIdempotency>,
-        task_id: TaskId,
-        expected_version: u64,
-        target: DeliveryTarget,
-        now_ms: i64,
-    ) -> Result<DispatchOutcome, StoreError> {
-        self.db
-            .call(move |conn| {
-                dispatch::create_delivery(
-                    conn,
-                    idempotency.as_ref(),
-                    &task_id,
-                    expected_version,
-                    &target,
-                    now_ms,
-                )
-            })
-            .await
-    }
-
-    pub async fn release_delivery(
-        &self,
-        delivery_id: DeliveryId,
-        requeue: bool,
-        now_ms: i64,
-    ) -> Result<Option<HubEventEnvelope>, StoreError> {
-        self.db
-            .call(move |conn| dispatch::release_delivery(conn, &delivery_id, requeue, now_ms))
+            .call(move |conn| tasks::are_dependencies_satisfied(conn, &task_id))
             .await
     }
 }

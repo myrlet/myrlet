@@ -100,7 +100,7 @@ async fn create_task(State(captured): State<Captured>, headers: HeaderMap) -> im
         .lock()
         .unwrap()
         .push((header("authorization"), header("idempotency-key")));
-    Json(task_record())
+    Json(json!({ "task": task_record(), "eligible": true }))
 }
 
 #[tokio::test]

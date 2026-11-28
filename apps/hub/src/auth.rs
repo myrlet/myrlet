@@ -10,6 +10,15 @@ use crate::state::HubState;
 
 const BEARER_PREFIX: &str = "Bearer ";
 
+/// One authenticated caller of an ordinary read route.
+///
+/// Reads are open to either principal; management routes still demand `Admin`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Principal {
+    Admin,
+    Worker(WorkerId),
+}
+
 /// SHA-256 verifier of `MYRLET_ADMIN_TOKEN`; the plaintext is never retained.
 #[derive(Clone)]
 pub struct AdminVerifier {

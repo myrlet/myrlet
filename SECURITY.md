@@ -29,6 +29,6 @@ The maintainers will acknowledge and assess reports, coordinate remediation, and
 
 ## Scope and security boundaries
 
-The architecture and trust assumptions are documented in [Security Architecture](docs/architecture/security.md). Its credential matrix describes the current binary. The [proposed global read boundary](docs/architecture/security.md#proposed-agent-access) requires separate approval and implementation. Operators provide isolation for Workers and execution backends. Report a vulnerability if an implementation violates a documented boundary or exposes credentials, data, or authority beyond the intended Scope.
+The architecture and trust assumptions are documented in [Security Architecture](docs/architecture/security.md). Its credential matrix and [read visibility](docs/architecture/security.md#read-visibility) describe the current binary. Operators provide isolation for Workers and execution backends. Report a vulnerability if an implementation violates a documented boundary or exposes credentials, data, or authority beyond the intended Scope.
 
 Please distinguish a security vulnerability from a general bug or hardening suggestion. For non-sensitive bugs, use the public [Bug Report issue form](https://github.com/myrlet/myrlet/issues/new/choose).

@@ -7,12 +7,11 @@ use std::time::Duration;
 
 use futures::SinkExt;
 use myrlet_protocol::HubHeartbeatAckPayload;
+use myrlet_protocol::HubWakeupPayload;
 use myrlet_protocol::HubWelcomePayload;
 use myrlet_protocol::SlotId;
 use myrlet_protocol::TaskCancelPayload;
 use myrlet_protocol::TaskCancelledAckPayload;
-use myrlet_protocol::TaskOfferPayload;
-use myrlet_protocol::TaskRejectedAckPayload;
 use myrlet_protocol::WorkerByePayload;
 use myrlet_protocol::WorkerHeartbeatPayload;
 use myrlet_protocol::WorkerHelloPayload;
@@ -165,17 +164,13 @@ impl RuntimeCore {
             WorkerWireKind::WorkerInventoryAck => {
                 let _: WorkerInventoryAckPayload = serde_json::from_value(payload)?;
             }
-            WorkerWireKind::TaskRejectedAck => {
-                let ack: TaskRejectedAckPayload = serde_json::from_value(payload)?;
-                self.mark_rejected_acked(&ack.delivery_id, ack.recorded);
-            }
             WorkerWireKind::TaskCancelledAck => {
                 let ack: TaskCancelledAckPayload = serde_json::from_value(payload)?;
                 self.mark_cancel_acked(&ack.delivery_id, ack.recorded);
             }
-            WorkerWireKind::TaskOffer => {
-                let offer: TaskOfferPayload = serde_json::from_value(payload)?;
-                self.handle_offer(sink, offer).await?;
+            WorkerWireKind::HubWakeup => {
+                let wakeup: HubWakeupPayload = serde_json::from_value(payload)?;
+                self.handle_wakeup(&wakeup.task_id).await?;
             }
             WorkerWireKind::TaskCancel => {
                 let cancel: TaskCancelPayload = serde_json::from_value(payload)?;

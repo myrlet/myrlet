@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::delivery::DeliveryView;
 use crate::id::{TaskId, WorkerId};
 use crate::inventory::WorkerInventory;
-use crate::task::{SubtreeCounts, TaskStatus};
+use crate::task::{BlockingDependency, SubtreeCounts, TaskStatus};
 
 /// One Worker's connectivity and last reported inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +32,9 @@ pub struct SnapshotTaskSummary {
     pub source_task_id: Option<TaskId>,
     #[serde(default)]
     pub dependencies: Vec<TaskId>,
+    /// Dependencies that are not `finished`, so the reason a Task is still `held` is visible.
+    #[serde(default)]
+    pub blocked_by: Vec<BlockingDependency>,
     pub category: String,
     pub title: String,
     pub status: TaskStatus,

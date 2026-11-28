@@ -1,11 +1,10 @@
-//! Worker WSS frame envelope and typed payloads for the 14 closed V1 kinds.
+//! Worker WSS frame envelope and typed payloads for the closed V1 kinds.
 
 use serde::{Deserialize, Serialize};
 
-use crate::delivery::{CancelState, RejectionCode};
-use crate::id::{DeliveryId, ExecutorId, SlotId, TaskId, WorkerId};
+use crate::delivery::CancelState;
+use crate::id::{DeliveryId, SlotId, TaskId, WorkerId};
 use crate::inventory::WorkerInventory;
-use crate::task::TaskDefinition;
 
 /// Maximum accepted WSS frame size (512 KiB).
 pub const MAX_WS_FRAME_BYTES: usize = 512 * 1024;
@@ -25,12 +24,8 @@ pub enum WorkerWireKind {
     WorkerInventory,
     #[serde(rename = "worker.inventory_ack")]
     WorkerInventoryAck,
-    #[serde(rename = "task.offer")]
-    TaskOffer,
-    #[serde(rename = "task.rejected")]
-    TaskRejected,
-    #[serde(rename = "task.rejected_ack")]
-    TaskRejectedAck,
+    #[serde(rename = "hub.wakeup")]
+    HubWakeup,
     #[serde(rename = "task.cancel")]
     TaskCancel,
     #[serde(rename = "task.cancelled")]
@@ -102,31 +97,12 @@ pub struct WorkerInventoryAckPayload {
     pub accepted: bool,
 }
 
-/// `task.offer`: one committed Delivery with its immutable definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TaskOfferPayload {
-    pub task_id: TaskId,
-    pub delivery_id: DeliveryId,
-    pub slot_id: SlotId,
-    pub executor_id: Option<ExecutorId>,
-    pub task: TaskDefinition,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TaskRejectedPayload {
-    pub task_id: TaskId,
-    pub delivery_id: DeliveryId,
-    pub code: RejectionCode,
-    pub message: Option<String>,
-}
-
+/// `hub.wakeup`: one queued Task this Worker may claim. The hint reserves nothing and
+/// creates no Delivery; claiming is a separate, explicit Worker decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TaskRejectedAckPayload {
-    pub delivery_id: DeliveryId,
-    pub recorded: bool,
+pub struct HubWakeupPayload {
+    pub task_id: TaskId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,16 +147,14 @@ pub struct WorkerByePayload {
 mod tests {
     use super::*;
 
-    const KINDS: [(WorkerWireKind, &str); 14] = [
+    const KINDS: [(WorkerWireKind, &str); 12] = [
         (WorkerWireKind::WorkerHello, "worker.hello"),
         (WorkerWireKind::HubWelcome, "hub.welcome"),
         (WorkerWireKind::WorkerHeartbeat, "worker.heartbeat"),
         (WorkerWireKind::HubHeartbeatAck, "hub.heartbeat_ack"),
         (WorkerWireKind::WorkerInventory, "worker.inventory"),
         (WorkerWireKind::WorkerInventoryAck, "worker.inventory_ack"),
-        (WorkerWireKind::TaskOffer, "task.offer"),
-        (WorkerWireKind::TaskRejected, "task.rejected"),
-        (WorkerWireKind::TaskRejectedAck, "task.rejected_ack"),
+        (WorkerWireKind::HubWakeup, "hub.wakeup"),
         (WorkerWireKind::TaskCancel, "task.cancel"),
         (WorkerWireKind::TaskCancelled, "task.cancelled"),
         (WorkerWireKind::TaskCancelledAck, "task.cancelled_ack"),
@@ -198,9 +172,11 @@ mod tests {
             );
         }
         for closed in [
+            "task.offer",
+            "task.rejected",
+            "task.rejected_ack",
             "task.finished",
             "worker.reconciliation_query",
-            "hub.reconciliation",
         ] {
             assert!(serde_json::from_str::<WorkerWireKind>(&format!("\"{closed}\"")).is_err());
         }
@@ -255,5 +231,7 @@ mod tests {
         assert!(
             serde_json::from_str::<WorkerByePayload>(r#"{"reason":"done","extra":1}"#).is_err()
         );
+        let wakeup: HubWakeupPayload = serde_json::from_str(r#"{"taskId":"task_1"}"#).unwrap();
+        assert_eq!(wakeup.task_id.as_str(), "task_1");
     }
 }
