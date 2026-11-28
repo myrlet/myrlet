@@ -10,30 +10,25 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { HubApiError } from "../api/client";
-import type { UpdateSecurityTrustRequest } from "../api/types";
 import { TASK_STATUS_META } from "../format";
 import { isWorkerOnline } from "../model/workerPresence";
 import type { Theme } from "../state/useAppearance";
-import {
-  INSPECTOR_MAX_WIDTH,
-  INSPECTOR_MIN_WIDTH,
-  useInspectorPanel,
-} from "../state/useInspectorPanel";
+import { useInspectorPanel } from "../state/useInspectorPanel";
 import type { useHub } from "../state/useHub";
 import { useWorkspaceOutline } from "../state/useWorkspaceOutline";
 import { useWorkspaceShortcuts } from "../state/useWorkspaceShortcuts";
 import { CommandPalette } from "./CommandPalette";
+import { InspectorSlot } from "./InspectorSlot";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { StatusBar } from "./StatusBar";
-import { TaskDetailPanel } from "./TaskDetailPanel";
+
 import { TaskGraphView } from "./TaskGraphView";
 import type { AtlasBoardMeta, TaskGraphControls } from "./TaskGraphView";
 import { TaskTreeTable } from "./TaskTreeTable";
 import { TopBar } from "./TopBar";
 import type { WorkspaceMode } from "./TopBar";
 import { WorkersDrawer } from "./WorkersDrawer";
-import { WorkspaceInspector } from "./WorkspaceInspector";
+import { useWorkerCommandNotices } from "./useWorkerCommandNotices";
 
 const INITIAL_ATLAS_META: AtlasBoardMeta = {
   zoomPercent: 100,
@@ -46,20 +41,9 @@ type WorkspaceHub = Pick<ReturnType<typeof useHub>,
   | "selectedTaskId" | "selectedTask" | "selectedTree" | "detailLoading" | "detailError"
   | "selectTask" | "retrySelected" | "clearDetailError" | "refresh" | "disconnect"
   | "enrollmentCode" | "issuingCode" | "createEnrollmentCode" | "rotateWorker" | "revokeWorker"
-  | "approveWorker" | "applyWorkerConfig" | "reportedConfigs" | "loadReportedConfig"
+  | "approveWorker" | "applyWorkerConfig" | "fetchReportedConfig"
   | "settings" | "updateSecurityTrust"
 >;
-
-/** One Hub failure as short operator-facing text. */
-function describeHubError(error: unknown): string {
-  if (error instanceof HubApiError) {
-    return error.message;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "The Hub command could not be completed.";
-}
 
 interface AuthenticatedWorkspaceProps {
   readonly hub: WorkspaceHub;
@@ -83,8 +67,6 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /* Phone layout: the five status counters collapse into one filter menu. */
   const [compactStatusBar, setCompactStatusBar] = useState(false);
-  const [settingsBusy, setSettingsBusy] = useState(false);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const workspaceRef = useRef<HTMLDivElement>(null);
   const atlasRef = useRef<TaskGraphControls | null>(null);
@@ -153,58 +135,16 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
 
   /* ----------------------------- Worker ops --------------------------- */
 
-  const refresh = useCallback(() => {
-    void hub.refresh();
-  }, [hub.refresh]);
-
-  const rotateWorker = useCallback(
-    async (workerId: string) => {
-      const response = await hub.rotateWorker(workerId);
-      notify("Credential rotated");
-      return response;
-    },
-    [hub.rotateWorker, notify],
-  );
-
-  const revokeWorker = useCallback(
-    async (workerId: string): Promise<void> => {
-      await hub.revokeWorker(workerId);
-      notify("Worker revoked");
-    },
-    [hub.revokeWorker, notify],
-  );
-
-  const approveWorker = useCallback(
-    async (workerId: string): Promise<void> => {
-      await hub.approveWorker(workerId);
-      notify("Worker approved");
-    },
-    [hub.approveWorker, notify],
-  );
-
-  const applyWorkerConfig = useCallback(
-    async (workerId: string, revision: number): Promise<void> => {
-      await hub.applyWorkerConfig(workerId, revision);
-      notify(`Applied revision ${revision}`);
-    },
-    [hub.applyWorkerConfig, notify],
-  );
-
-  const changeSecurityTrust = useCallback(
-    async (request: UpdateSecurityTrustRequest): Promise<void> => {
-      setSettingsBusy(true);
-      setSettingsError(null);
-      try {
-        await hub.updateSecurityTrust(request);
-      } catch (trustError) {
-        setSettingsError(describeHubError(trustError));
-        throw trustError;
-      } finally {
-        setSettingsBusy(false);
-      }
-    },
-    [hub.updateSecurityTrust],
-  );
+  const {
+    refresh,
+    rotateWorker,
+    revokeWorker,
+    approveWorker,
+    applyWorkerConfig,
+    changeSecurityTrust,
+    settingsBusy,
+    settingsError,
+  } = useWorkerCommandNotices(hub, notify);
 
   /* ---------------------------- Responsiveness ------------------------- */
 
@@ -354,66 +294,25 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
           )}
         </div>
 
-        {inspector.open ? (
-          <>
-            <div
-              className="resize-handle"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize inspector"
-              aria-valuemin={INSPECTOR_MIN_WIDTH}
-              aria-valuemax={INSPECTOR_MAX_WIDTH}
-              aria-valuenow={Math.round(inspector.width)}
-              tabIndex={0}
-              onPointerDown={inspector.beginResize}
-              onKeyDown={inspector.resizeKeyDown}
-            />
-            {/* Narrow screens: a sibling scrim behind the panel, never a child
-                that could swallow the panel's own close button. Pointer-only;
-                keyboard users close with the panel's close button or Escape. */}
-            <button
-              type="button"
-              className="inspector-scrim"
-              tabIndex={-1}
-              aria-hidden="true"
-              onClick={
-                hub.selectedTaskId !== null ? clearSelection : inspector.close
-              }
-            />
-            <div
-              ref={inspector.panelRef}
-              className="inspector-slot"
-              style={{ width: `${inspector.width}px` }}
-              tabIndex={-1}
-            >
-              {hub.selectedTaskId !== null ? (
-                <TaskDetailPanel
-                  selectedTaskId={hub.selectedTaskId}
-                  summary={selectedSummary}
-                  task={hub.selectedTask}
-                  tree={hub.selectedTree}
-                  loading={hub.detailLoading}
-                  error={hub.detailError}
-                  onClose={clearSelection}
-                  onSelectTask={selectTaskAndReveal}
-                  onCopyText={copyText}
-                  onRetry={() => {
-                    void hub.retrySelected();
-                  }}
-                  onDismissError={hub.clearDetailError}
-                />
-              ) : (
-                <WorkspaceInspector
-                  tasks={tasks}
-                  workers={workers}
-                  onSelectTask={selectTaskAndReveal}
-                  onOpenWorkers={openWorkers}
-                  onClose={inspector.close}
-                />
-              )}
-            </div>
-          </>
-        ) : null}
+        <InspectorSlot
+          inspector={inspector}
+          selectedTaskId={hub.selectedTaskId}
+          selectedSummary={selectedSummary}
+          selectedTask={hub.selectedTask}
+          selectedTree={hub.selectedTree}
+          loading={hub.detailLoading}
+          error={hub.detailError}
+          tasks={tasks}
+          workers={workers}
+          onSelectTask={selectTaskAndReveal}
+          onClearSelection={clearSelection}
+          onCopyText={copyText}
+          onRetrySelected={() => {
+            void hub.retrySelected();
+          }}
+          onDismissError={hub.clearDetailError}
+          onOpenWorkers={openWorkers}
+        />
       </div>
 
       <StatusBar
@@ -435,13 +334,12 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
           onlineWorkerCount={onlineWorkerCount}
           baseUrl={baseUrl}
           workers={workers}
-          reported={hub.reportedConfigs}
+          fetchReportedConfig={hub.fetchReportedConfig}
           issued={hub.enrollmentCode}
           busy={hub.issuingCode}
           onRefresh={refresh}
           onClose={() => setWorkersOpen(false)}
           onCreateEnrollmentCode={hub.createEnrollmentCode}
-          onLoadReported={hub.loadReportedConfig}
           onApproveWorker={approveWorker}
           onApplyWorkerConfig={applyWorkerConfig}
           onRotateWorker={rotateWorker}

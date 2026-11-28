@@ -321,3 +321,69 @@ async fn socket_send(socket: &mut common::Socket, frame: &serde_json::Value) {
         .await
         .expect("send frame");
 }
+
+/// Applying a reviewed revision is visible to a second connected client through the
+/// durable event stream, not only by polling the Snapshot again.
+#[tokio::test]
+async fn an_apply_is_observable_by_another_connected_client() {
+    let hub = start(10_000).await;
+    let (worker_id, _credential, mut socket, _epoch) = pending_worker(&hub).await;
+
+    // Subscribe before the Apply so no committed event can fall between the two.
+    let mut stream = reqwest::Client::new()
+        .get(format!("{}/v1/events", hub.base))
+        .header("Authorization", format!("Bearer {ADMIN}"))
+        .send()
+        .await
+        .expect("open the event stream");
+    assert_eq!(stream.status(), 200);
+
+    let applied = hub
+        .post_admin(
+            &format!("/v1/workers/{worker_id}/config/apply"),
+            None,
+            Some(r#"{"revision":1}"#),
+        )
+        .await;
+    assert_eq!(applied.0, 200, "{}", applied.1);
+
+    // The stream replays from the start; the committed Apply is the newest event.
+    let event = loop {
+        let event = common::next_sse_event(&mut stream).await;
+        if event["kind"] == "worker.config_applied" {
+            break event;
+        }
+    };
+    assert_eq!(event["payload"]["workerId"], worker_id);
+    assert_eq!(event["payload"]["workerId"], worker_id);
+    assert_eq!(event["payload"]["revision"], 1);
+
+    // The Worker's own `worker.inventory_ack` is unaffected by the extra subscriber.
+    socket_send(
+        &mut socket,
+        &json!({
+            "v": myrlet_protocol::WORKER_PROTOCOL_VERSION,
+            "kind": "worker.inventory",
+            "messageId": "msg_repeat",
+            "workerId": worker_id,
+            "sentAtMs": 3,
+            "payload": {
+                "revision": 1,
+                "observedAtMs": 2,
+                "host": { "os": "linux", "arch": "x86_64", "deploymentMode": "native" },
+                "slots": [{
+                    "slotId": "slot-a",
+                    "enabled": true,
+                    "advisoryCapacity": 2,
+                    "roles": ["general"],
+                    "capabilities": [{ "name": "shell", "state": "available" }],
+                    "executors": [{ "id": "exec-claude", "kind": "claude" }],
+                }],
+            },
+        }),
+    )
+    .await;
+    let ack = read_frame(&mut socket).await;
+    assert_eq!(ack["kind"], "worker.inventory_ack");
+    assert_eq!(ack["payload"]["accepted"], true);
+}

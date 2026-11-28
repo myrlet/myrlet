@@ -8,7 +8,6 @@
 
 // The shared stub Hub carries the whole Worker-facing surface; this binary drives only
 // the claim path, so the remaining helpers are legitimately unused here.
-#[allow(dead_code)]
 mod support;
 
 use std::time::{Duration, Instant};

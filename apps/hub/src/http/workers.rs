@@ -187,10 +187,12 @@ pub async fn apply_worker_config(
     run_bounded(state.clone(), async move {
         let request: ApplyWorkerConfigRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
-        let applied_revision = state
+        let (applied_revision, event) = state
             .store
             .apply_worker_config(WorkerId::new(worker_id), request.revision, now_ms())
             .await?;
+        // Other clients observe the new applied snapshot without polling.
+        state.publish_event(event);
         spawn_wakeup(&state);
         Ok(Json(ApplyWorkerConfigResponse { applied_revision }).into_response())
     })

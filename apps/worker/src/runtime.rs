@@ -10,6 +10,7 @@
 //! committed Delivery keeps the adapter that admitted it, so a config change never loses a
 //! running execution, its cancellation path, or its reporting path.
 
+mod claims;
 mod config_watch;
 mod deliveries;
 mod local;
@@ -40,6 +41,10 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
 /// Owns one Worker's configuration, credentials, adapters, and reporting tasks.
+///
+/// The handle is cloneable so an observer (tests, or a future local status surface) can
+/// inspect the same runtime the run loop owns without a second copy.
+#[derive(Clone)]
 pub struct WorkerRuntime {
     core: Arc<RuntimeCore>,
 }
@@ -50,10 +55,18 @@ impl WorkerRuntime {
 }
 
 /// The live, reloadable half of the runtime: current config, reported inventory, adapters.
+///
+/// Claim admission reads this one snapshot, so the Slot selected for a claim and the
+/// adapters used to admit it always come from the same configuration. Activation swaps
+/// all four fields under one write guard, and a pending report pauses admission in the
+/// same commit.
 pub(super) struct RuntimeState {
     pub(super) config: WorkerConfig,
     pub(super) inventory: WorkerInventory,
     pub(super) adapters: HashMap<(SlotId, ExecutorId), Arc<dyn ExecutorAdapter>>,
+    /// A locally reloaded inventory still awaits a Hub acknowledgement. While set, no
+    /// new claim is started; a report already in flight still completes.
+    pub(super) inventory_pending: bool,
 }
 
 /// Adapters pinned when a Claim is sent, before a possible reload.
@@ -84,10 +97,6 @@ pub(super) struct RuntimeCore {
     reconnect: Notify,
     /// Signals the session to send the current inventory after a local reload.
     pub(super) inventory_changed: Notify,
-    /// While set, no new claim is started; a report already in flight still completes.
-    pub(super) claims_paused: AtomicBool,
-    /// A locally reloaded inventory still awaits a Hub acknowledgement.
-    pub(super) inventory_pending: AtomicBool,
     shutting_down: AtomicBool,
     /// Serializes local registry read-modify-write cycles.
     gate: Mutex<()>,
@@ -134,6 +143,7 @@ impl WorkerRuntime {
                     config,
                     inventory,
                     adapters,
+                    inventory_pending: false,
                 }),
                 creds: credentials,
                 registry: Arc::new(registry),
@@ -142,8 +152,6 @@ impl WorkerRuntime {
                 epoch: AtomicU64::new(0),
                 reconnect: Notify::new(),
                 inventory_changed: Notify::new(),
-                claims_paused: AtomicBool::new(false),
-                inventory_pending: AtomicBool::new(false),
                 shutting_down: AtomicBool::new(false),
                 gate: Mutex::new(()),
                 reconciliation: Mutex::new(HashMap::new()),
@@ -186,6 +194,27 @@ impl WorkerRuntime {
     /// Operator-configured graceful shutdown drain bound.
     pub fn shutdown_timeout_ms(&self) -> u64 {
         self.core.shutdown_timeout_ms()
+    }
+
+    /// Number of adapters still pinned to committed Deliveries (observability + tests).
+    #[doc(hidden)]
+    pub fn pinned_adapter_count(&self) -> usize {
+        self.core
+            .delivery_adapters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Number of adapters pinned with the outstanding claim, if one is unresolved.
+    #[doc(hidden)]
+    pub fn pending_adapter_count(&self) -> usize {
+        self.core
+            .pending_adapters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |adapters| adapters.adapters.len())
     }
 }
 

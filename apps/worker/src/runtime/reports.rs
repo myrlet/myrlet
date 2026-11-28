@@ -136,6 +136,9 @@ impl RuntimeCore {
         match self.reporter.post_finish(delivery_id, epoch).await {
             Ok(Some(_)) => {
                 self.update(delivery_id, |record| record.finish_acked = true);
+                // Handling ended and the Hub accepted the Finish: no execution remains to
+                // cancel, so the pinned adapter is no longer needed.
+                self.release_finished_adapter(delivery_id);
             }
             Ok(None) => {}
             Err(error) => tracing::warn!(

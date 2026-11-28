@@ -59,6 +59,14 @@ myrlet --json workers config apply '<worker-id>' --revision '<revision>'
 
 Approval and Apply are independent and may happen in either order. If Apply answers `ConfigRevisionMismatch`, re-read the Worker; the report changed since you looked. These commands never change an existing Worker retroactively.
 
+To automate both decisions for a trusted fleet, an Admin may instead enable the Hub policies; each switch is independent and only affects later Pair/report decisions:
+
+```bash
+myrlet --json policy show
+myrlet --json policy set --auto-approve true     # approve every later Pair
+myrlet --json policy set --auto-apply true       # apply every later changed report
+```
+
 ## Change Pending Work and Cancel
 
 Before a Task is claimed you may change its dependencies; the Hub recomputes `held`/`queued`.

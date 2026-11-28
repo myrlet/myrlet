@@ -99,7 +99,7 @@ function Harness({
           onlineWorkerCount={workers.filter((record) => record.online).length}
           baseUrl=""
           workers={workers}
-          reported={{}}
+          fetchReportedConfig={async () => null}
           issued={null}
           busy={false}
           onRefresh={() => undefined}
@@ -110,7 +110,6 @@ function Harness({
           onCreateEnrollmentCode={
             onCreateEnrollmentCode ?? (async () => undefined)
           }
-          onLoadReported={async () => undefined}
           onApproveWorker={async () => undefined}
           onApplyWorkerConfig={async () => undefined}
           onOpenPairing={() => undefined}

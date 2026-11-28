@@ -156,12 +156,13 @@ describe("Worker trust", () => {
 
     const review = drawer.querySelector<HTMLElement>(".config-review");
     expect(review).not.toBeNull();
-    expect(review?.textContent ?? "").toMatch(/Reported rev 3/);
+    // The reported side is labeled with the revision of the body it loaded.
+    await waitFor(() => expect(review?.textContent ?? "").toMatch(/Reported rev 3/));
     expect(review?.textContent ?? "").toMatch(/Applied rev 2/);
     await waitFor(() =>
       expect(review?.textContent ?? "").toMatch(/changed Slot mac-default/),
     );
-    fireEvent.click(within(drawer).getByRole("button", { name: /review & apply/i }));
+    // The report under review is loaded automatically, so Apply targets its exact revision.
     const apply = await within(drawer).findByRole("button", { name: /apply revision 3/i });
     fireEvent.click(apply);
     await waitFor(() => {

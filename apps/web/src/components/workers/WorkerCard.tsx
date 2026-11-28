@@ -2,11 +2,11 @@
  * One enrolled Worker: live trust state, credential lifecycle, and its Slots.
  *
  * The card is the presentation surface for `useWorkerActions`, which owns the
- * armed confirmation, the in-flight flag, honest error wording, the reviewed
- * revision, and the once-shown rotated credential. Apply is offered only while
- * the Hub reports a newer revision than the one it schedules with; its report is
- * loaded as soon as the Snapshot says one is pending, so the review is ready
- * before an Admin can act on it.
+ * armed confirmation, the in-flight flag, honest error wording, and the once-shown
+ * rotated credential. The report under review comes from `useWorkerConfigReview`,
+ * which binds the displayed body to the exact revision Apply submits. The review is
+ * loaded as soon as the Snapshot says a report is pending, so it is ready before an
+ * Admin can act on it.
  */
 
 import { useEffect } from "react";
@@ -17,6 +17,7 @@ import type {
   WorkerSchedulingConfig,
 } from "../../api/types";
 import { formatRelativeTime } from "../../format";
+import { useWorkerConfigReview } from "../../state/useWorkerConfigReview";
 import { WorkerStatusBadge } from "../StatusBadge";
 import { ConfigReview } from "./ConfigReview";
 import { SlotTable } from "./WorkerInventory";
@@ -25,8 +26,7 @@ import { applyPending } from "./workerFilters";
 
 export interface WorkerCardProps {
   readonly worker: WorkerRecord;
-  readonly reported: WorkerSchedulingConfig | null;
-  readonly onLoadReported: (workerId: string) => Promise<void>;
+  readonly fetchReportedConfig: (workerId: string) => Promise<WorkerSchedulingConfig | null>;
   readonly onApproveWorker: (workerId: string) => Promise<void>;
   readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
@@ -37,8 +37,7 @@ export interface WorkerCardProps {
 
 export function WorkerCard({
   worker,
-  reported,
-  onLoadReported,
+  fetchReportedConfig,
   onApproveWorker,
   onApplyWorkerConfig,
   onRotateWorker,
@@ -46,23 +45,28 @@ export function WorkerCard({
   onOpenPairing,
   onCopyText,
 }: WorkerCardProps) {
+  const review = useWorkerConfigReview({
+    workerId: worker.workerId,
+    reportedRevision: worker.reportedRevision,
+    fetchReported: fetchReportedConfig,
+  });
+
   const {
     pending,
     busy,
     error,
     rotatedCredential,
-    reviewedRevision,
     request,
     cancel,
     rotate,
     revoke,
     approve,
-    review,
+    review: reloadReview,
     apply,
   } = useWorkerActions({
     workerId: worker.workerId,
     reportedRevision: worker.reportedRevision,
-    onLoadReported,
+    review,
     onApproveWorker,
     onApplyWorkerConfig,
     onRotateWorker,
@@ -72,18 +76,18 @@ export function WorkerCard({
   const host = worker.host;
   const pendingApply = applyPending(worker);
   const canApprove = !worker.revoked && worker.approval === "pending";
+  const reviewedRevision = review.reviewed?.revision ?? null;
 
-  // Load the report under review whenever the Snapshot says one is pending. The
-  // card still shows the pending state if the read fails; Apply stays armed for
-  // the exact revision only after `review` succeeds.
+  // Load the report under review as soon as the Snapshot says one is pending, so the
+  // Admin sees the exact body (and revision) they would apply. A failed read leaves the
+  // card in its pending state; Apply stays disabled until a report is showing.
+  const { load: loadReview } = review;
   useEffect(() => {
-    if (!pendingApply) {
+    if (!pendingApply || worker.reportedRevision === null) {
       return;
     }
-    void onLoadReported(worker.workerId).catch(() => {
-      // Apply stays unavailable without the report the Admin is entitled to see.
-    });
-  }, [onLoadReported, pendingApply, worker.reportedRevision, worker.workerId]);
+    void loadReview(worker.reportedRevision);
+  }, [loadReview, pendingApply, worker.reportedRevision]);
 
   return (
     <article className="worker-card" data-worker-id={worker.workerId}>
@@ -114,35 +118,29 @@ export function WorkerCard({
               </button>
             ) : null}
             {pendingApply || pending === "apply" ? (
-              pending === "apply" ? (
-                <>
-                  <button type="button" className="button button-sm" disabled={busy} onClick={cancel}>
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-sm button-primary"
-                    aria-busy={busy ? "true" : undefined}
-                    disabled={busy || reviewedRevision === null}
-                    onClick={() => {
-                      void apply();
-                    }}
-                  >
-                    {busy ? "Applying…" : `Apply revision ${reviewedRevision ?? "?"}`}
-                  </button>
-                </>
-              ) : (
+              <>
                 <button
                   type="button"
                   className="button button-sm"
-                  disabled={busy}
+                  disabled={busy || review.loading}
                   onClick={() => {
-                    void review();
+                    void reloadReview();
                   }}
                 >
-                  Review &amp; apply
+                  {review.loading ? "Reloading…" : "Reload report"}
                 </button>
-              )
+                <button
+                  type="button"
+                  className="button button-sm button-primary"
+                  aria-busy={busy ? "true" : undefined}
+                  disabled={busy || reviewedRevision === null}
+                  onClick={() => {
+                    void apply();
+                  }}
+                >
+                  {busy ? "Applying…" : `Apply revision ${reviewedRevision ?? "?"}`}
+                </button>
+              </>
             ) : null}
             {pending === "rotate" ? (
               <>
@@ -211,9 +209,9 @@ export function WorkerCard({
         </div>
       ) : null}
 
-      {error ? (
+      {error ?? review.error ? (
         <div className="alert alert-error" role="alert">
-          <span>{error}</span>
+          <span>{error ?? review.error}</span>
         </div>
       ) : null}
 
@@ -280,7 +278,11 @@ export function WorkerCard({
       </div>
 
       {applyPending(worker) || pending === "apply" ? (
-        <ConfigReview worker={worker} reported={reported} />
+        <ConfigReview
+          worker={worker}
+          reviewed={review.reviewed}
+          loading={review.loading}
+        />
       ) : (
         <SlotTable
           slots={worker.appliedConfig?.slots ?? []}

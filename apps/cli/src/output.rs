@@ -11,7 +11,7 @@ use serde::Serialize;
 mod workers;
 
 pub use workers::{
-    approved, config_applied, enrollment, revoked, rotate, worker_config, worker_detail,
+    approved, config_applied, enrollment, policy, revoked, rotate, worker_config, worker_detail,
     worker_list,
 };
 

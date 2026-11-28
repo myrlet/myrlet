@@ -116,6 +116,28 @@ fn router(hub: Hub) -> Router {
             "/v1/workers/:id/config/apply",
             post(|| async { Json(json!({ "appliedRevision": 1 })) }),
         )
+        .route(
+            "/v1/settings/security-trust",
+            get(|| async {
+                Json(json!({
+                    "requireWorkerApproval": true,
+                    "requireConfigurationApply": false,
+                }))
+            })
+            .patch(|Json(body): Json<Value>| async move {
+                let stored = json!({
+                    "requireWorkerApproval": body
+                        .get("requireWorkerApproval")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    "requireConfigurationApply": body
+                        .get("requireConfigurationApply")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                });
+                Json(stored)
+            }),
+        )
         .route("/v1/events", get(events_route))
         .layer(axum::middleware::from_fn_with_state(hub, capture))
 }
@@ -425,6 +447,28 @@ async fn list_import_workers_show_and_events_watch() {
     .await;
     assert_eq!(code, ExitCode::from(2u8));
     assert!(err.contains("--revision"), "{err}");
+
+    let (policies, _) = ok(&["--json", "policy", "show"], &url).await;
+    let policies: Value = serde_json::from_str(&policies).unwrap();
+    assert_eq!(policies["requireWorkerApproval"], true);
+    assert_eq!(policies["requireConfigurationApply"], false);
+
+    let (changed, _) = ok(&["--json", "policy", "set", "--auto-approve", "true"], &url).await;
+    let changed: Value = serde_json::from_str(&changed).unwrap();
+    assert_eq!(changed["requireWorkerApproval"], false);
+    let patch = hub.all().pop().unwrap();
+    assert_eq!(patch.method, "PATCH");
+    assert_eq!(patch.path, "/v1/settings/security-trust");
+    assert_eq!(patch.body["requireWorkerApproval"], false);
+    // The untouched policy is never set to a value: absent or null both leave it stored.
+    assert!(patch
+        .body
+        .get("requireConfigurationApply")
+        .is_none_or(Value::is_null));
+
+    let (code, _, err) = run(&["policy", "set"], Some(url.as_str()), Some("admin-token")).await;
+    assert_eq!(code, ExitCode::from(2u8));
+    assert!(err.contains("--auto-approve"), "{err}");
 
     let (events, _) = ok(&["events", "watch", "--limit", "1", "--json"], &url).await;
     let lines: Vec<&str> = events.lines().collect();

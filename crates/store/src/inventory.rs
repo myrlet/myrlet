@@ -4,24 +4,42 @@ use std::collections::HashMap;
 
 use rusqlite::{params, Connection, Transaction};
 
-use myrlet_protocol::{SnapshotWorker, WorkerId, WorkerInventory, WorkerSchedulingConfig};
+use myrlet_protocol::{
+    HubEventEnvelope, SnapshotWorker, WorkerId, WorkerInventory, WorkerSchedulingConfig,
+};
 
 use crate::error::StoreError;
+use crate::events::insert_event;
 use crate::settings::load_settings;
 use crate::workers::{list_worker_rows, load_worker, WorkerRow};
+
+/// A changed report makes the Worker's reported snapshot visible to other clients.
+pub const EVENT_WORKER_INVENTORY_REPORTED: &str = "worker.inventory_reported";
+/// The applied scheduling snapshot changed, so Slot matching is different from now on.
+pub const EVENT_WORKER_CONFIG_APPLIED: &str = "worker.config_applied";
+
+/// What one accepted report changed, and the events committed with it.
+struct ReportOutcome {
+    events: Vec<HubEventEnvelope>,
+}
+
+fn report_event(row: &WorkerRow, revision: u64) -> serde_json::Value {
+    serde_json::json!({ "workerId": row.worker_id.as_str(), "revision": revision })
+}
 
 /// Store one accepted scheduling report and decide whether it takes effect now.
 ///
 /// The Hub assigns its own increasing revision when the reviewable content changes and
 /// keeps the revision for a repeated report. With manual Apply the previous snapshot
-/// stays in force; with Apply disabled the report is applied in the same transaction.
-/// Returns whether Applied changed.
+/// stays in force; with Apply disabled a **changed** report is applied in the same
+/// transaction. A repeated report never applies an existing pending configuration just
+/// because the policy was turned off afterwards.
 fn record_report(
     tx: &Transaction<'_>,
     row: &WorkerRow,
     inventory: &WorkerInventory,
     now_ms: i64,
-) -> Result<bool, StoreError> {
+) -> Result<ReportOutcome, StoreError> {
     inventory
         .validate()
         .map_err(|source| StoreError::invalid(source.to_string()))?;
@@ -52,7 +70,20 @@ fn record_report(
             row.worker_id.as_str()
         ],
     )?;
-    if !settings.require_configuration_apply && row.applied_revision != Some(reported_revision) {
+
+    let mut events = Vec::new();
+    if changed {
+        events.push(insert_event(
+            tx,
+            EVENT_WORKER_INVENTORY_REPORTED,
+            &report_event(row, reported_revision),
+            now_ms,
+        )?);
+    }
+    let applied_changed = !settings.require_configuration_apply
+        && changed
+        && row.applied_revision != Some(reported_revision);
+    if applied_changed {
         tx.execute(
             "UPDATE workers SET applied_revision = ?1, applied_config_json = ?2 \
              WHERE worker_id = ?3",
@@ -62,18 +93,25 @@ fn record_report(
                 row.worker_id.as_str()
             ],
         )?;
-        return Ok(true);
+        events.push(insert_event(
+            tx,
+            EVENT_WORKER_CONFIG_APPLIED,
+            &report_event(row, reported_revision),
+            now_ms,
+        )?);
     }
-    Ok(false)
+    Ok(ReportOutcome { events })
 }
 
 /// Open a newer WSS connection: fence older epochs, then record the reported inventory.
+///
+/// Returns the new epoch and any events committed with the report.
 pub fn open_worker_connection(
     conn: &mut Connection,
     worker_id: &WorkerId,
     inventory: &WorkerInventory,
     now_ms: i64,
-) -> Result<u64, StoreError> {
+) -> Result<(u64, Vec<HubEventEnvelope>), StoreError> {
     let tx = conn.transaction()?;
     let worker = load_worker(&tx, worker_id)?;
     if worker.revoked {
@@ -83,37 +121,39 @@ pub fn open_worker_connection(
         "UPDATE workers SET connection_epoch = connection_epoch + 1 WHERE worker_id = ?1",
         params![worker_id.as_str()],
     )?;
-    record_report(&tx, &worker, inventory, now_ms)?;
+    let outcome = record_report(&tx, &worker, inventory, now_ms)?;
     let epoch = load_worker(&tx, worker_id)?.connection_epoch;
     tx.commit()?;
-    Ok(epoch)
+    Ok((epoch, outcome.events))
 }
 
-/// Persist a newer inventory report; a stale epoch is ignored and reports `false`.
+/// Persist a newer inventory report; a stale epoch is ignored and reports `(false, [])`.
 pub fn update_worker_inventory(
     conn: &mut Connection,
     worker_id: &WorkerId,
     epoch: u64,
     inventory: &WorkerInventory,
     now_ms: i64,
-) -> Result<bool, StoreError> {
+) -> Result<(bool, Vec<HubEventEnvelope>), StoreError> {
     let tx = conn.transaction()?;
     let worker = load_worker(&tx, worker_id)?;
     if worker.connection_epoch != epoch {
-        return Ok(false); // a stale epoch can change neither snapshot
+        return Ok((false, Vec::new())); // a stale epoch can change neither snapshot
     }
-    record_report(&tx, &worker, inventory, now_ms)?;
+    let outcome = record_report(&tx, &worker, inventory, now_ms)?;
     tx.commit()?;
-    Ok(true)
+    Ok((true, outcome.events))
 }
 
 /// Apply the latest pending report at the revision the Admin reviewed.
+///
+/// Returns the applied revision and the event committed with the change, if any.
 pub fn apply_worker_config(
     conn: &mut Connection,
     worker_id: &WorkerId,
     revision: u64,
-    _now_ms: i64,
-) -> Result<u64, StoreError> {
+    now_ms: i64,
+) -> Result<(u64, Option<HubEventEnvelope>), StoreError> {
     let tx = conn.transaction()?;
     let worker = load_worker(&tx, worker_id)?;
     if worker.revoked {
@@ -125,6 +165,7 @@ pub fn apply_worker_config(
     if reported != revision {
         return Err(StoreError::ConfigRevisionMismatch);
     }
+    let mut event = None;
     if worker.applied_revision != Some(reported) {
         tx.execute(
             "UPDATE workers SET applied_revision = ?1, applied_config_json = ?2 \
@@ -135,9 +176,15 @@ pub fn apply_worker_config(
                 worker_id.as_str()
             ],
         )?;
+        event = Some(insert_event(
+            &tx,
+            EVENT_WORKER_CONFIG_APPLIED,
+            &report_event(&worker, reported),
+            now_ms,
+        )?);
     }
     tx.commit()?;
-    Ok(reported)
+    Ok((reported, event))
 }
 
 /// Refresh liveness for the current connection epoch; older epochs are ignored.

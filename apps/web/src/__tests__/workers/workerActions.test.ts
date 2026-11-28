@@ -10,9 +10,14 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HubApiError } from "../../api/client";
-import type { RotateWorkerResponse, WorkerRecord } from "../../api/types";
+import type {
+  RotateWorkerResponse,
+  WorkerRecord,
+  WorkerSchedulingConfig,
+} from "../../api/types";
 import { describeError, describeIssueError } from "../../components/workers/workerErrors";
 import { useWorkerActions } from "../../components/workers/useWorkerActions";
+import { useWorkerConfigReview } from "../../state/useWorkerConfigReview";
 import {
   applyPending,
   workerCounts,
@@ -107,6 +112,21 @@ describe("worker error wording", () => {
 });
 
 describe("useWorkerActions", () => {
+  function report(capability: string): WorkerSchedulingConfig {
+    return {
+      slots: [
+        {
+          slotId: "gpu-1",
+          enabled: true,
+          advisoryCapacity: null,
+          roles: ["build"],
+          capabilities: [{ name: capability, state: "available" }],
+          executors: [{ id: "codex-cli", kind: "codex" }],
+        },
+      ],
+    };
+  }
+
   function setup(
     rotate: (workerId: string) => Promise<RotateWorkerResponse> = async () => ({
       hubId: "hub_test",
@@ -116,7 +136,9 @@ describe("useWorkerActions", () => {
     revoke: (workerId: string) => Promise<void> = async () => undefined,
     options: {
       readonly reportedRevision?: number | null;
-      readonly onLoadReported?: (workerId: string) => Promise<void>;
+      readonly onFetchReported?: (
+        workerId: string,
+      ) => Promise<WorkerSchedulingConfig | null>;
       readonly onApproveWorker?: (workerId: string) => Promise<void>;
       readonly onApplyWorkerConfig?: (
         workerId: string,
@@ -126,27 +148,36 @@ describe("useWorkerActions", () => {
   ) {
     const onRotateWorker = vi.fn(rotate);
     const onRevokeWorker = vi.fn(revoke);
-    const onLoadReported = vi.fn(options.onLoadReported ?? (async () => undefined));
+    const onFetchReported = vi.fn(
+      options.onFetchReported ?? (async () => report("cuda")),
+    );
     const onApproveWorker = vi.fn(options.onApproveWorker ?? (async () => undefined));
     const onApplyWorkerConfig = vi.fn(
       options.onApplyWorkerConfig ?? (async () => undefined),
     );
-    const hook = renderHook(() =>
-      useWorkerActions({
+    const reportedRevision =
+      options.reportedRevision === undefined ? 2 : options.reportedRevision;
+    const hook = renderHook(() => {
+      const review = useWorkerConfigReview({
         workerId: "wkr_00000000000a",
-        reportedRevision:
-          options.reportedRevision === undefined ? 2 : options.reportedRevision,
-        onLoadReported,
+        reportedRevision,
+        fetchReported: onFetchReported,
+      });
+      const actions = useWorkerActions({
+        workerId: "wkr_00000000000a",
+        reportedRevision,
+        review,
         onApproveWorker,
         onApplyWorkerConfig,
         onRotateWorker,
         onRevokeWorker,
-      }),
-    );
+      });
+      return { review, actions };
+    });
     return {
       onRotateWorker,
       onRevokeWorker,
-      onLoadReported,
+      onFetchReported,
       onApproveWorker,
       onApplyWorkerConfig,
       ...hook,
@@ -155,24 +186,24 @@ describe("useWorkerActions", () => {
 
   it("arms a confirmation without calling the Hub, then rotates and keeps the once-shown credential", async () => {
     const { result, onRotateWorker } = setup();
-    expect(result.current.pending).toBeNull();
+    expect(result.current.actions.pending).toBeNull();
 
-    act(() => result.current.request("rotate"));
-    expect(result.current.pending).toBe("rotate");
+    act(() => result.current.actions.request("rotate"));
+    expect(result.current.actions.pending).toBe("rotate");
     expect(onRotateWorker).not.toHaveBeenCalled();
 
-    await act(async () => result.current.rotate());
+    await act(async () => result.current.actions.rotate());
     expect(onRotateWorker).toHaveBeenCalledWith("wkr_00000000000a");
-    expect(result.current.pending).toBeNull();
-    expect(result.current.busy).toBe(false);
-    expect(result.current.rotatedCredential).toBe("cred-once");
+    expect(result.current.actions.pending).toBeNull();
+    expect(result.current.actions.busy).toBe(false);
+    expect(result.current.actions.rotatedCredential).toBe("cred-once");
   });
 
   it("cancels an armed confirmation without a request", () => {
     const { result, onRevokeWorker } = setup();
-    act(() => result.current.request("revoke"));
-    act(() => result.current.cancel());
-    expect(result.current.pending).toBeNull();
+    act(() => result.current.actions.request("revoke"));
+    act(() => result.current.actions.cancel());
+    expect(result.current.actions.pending).toBeNull();
     expect(onRevokeWorker).not.toHaveBeenCalled();
   });
 
@@ -181,25 +212,25 @@ describe("useWorkerActions", () => {
     const { result } = setup(undefined, async () => {
       throw failure;
     });
-    act(() => result.current.request("revoke"));
-    await act(async () => result.current.revoke());
+    act(() => result.current.actions.request("revoke"));
+    await act(async () => result.current.actions.revoke());
 
-    expect(result.current.pending).toBe("revoke");
-    expect(result.current.error).toBe("The Hub returned status 500.");
-    expect(result.current.busy).toBe(false);
-    expect(result.current.rotatedCredential).toBeNull();
+    expect(result.current.actions.pending).toBe("revoke");
+    expect(result.current.actions.error).toBe("The Hub returned status 500.");
+    expect(result.current.actions.busy).toBe(false);
+    expect(result.current.actions.rotatedCredential).toBeNull();
   });
 
   it("clears a previously shown credential once revoke succeeds", async () => {
     const { result } = setup();
-    act(() => result.current.request("rotate"));
-    await act(async () => result.current.rotate());
-    expect(result.current.rotatedCredential).toBe("cred-once");
+    act(() => result.current.actions.request("rotate"));
+    await act(async () => result.current.actions.rotate());
+    expect(result.current.actions.rotatedCredential).toBe("cred-once");
 
-    act(() => result.current.request("revoke"));
-    await act(async () => result.current.revoke());
-    expect(result.current.rotatedCredential).toBeNull();
-    expect(result.current.pending).toBeNull();
+    act(() => result.current.actions.request("revoke"));
+    await act(async () => result.current.actions.revoke());
+    expect(result.current.actions.rotatedCredential).toBeNull();
+    expect(result.current.actions.pending).toBeNull();
   });
 
   it("drops a response that lands after the card unmounts", async () => {
@@ -212,10 +243,10 @@ describe("useWorkerActions", () => {
       });
     });
     const { result, unmount } = setup(() => gate);
-    act(() => result.current.request("rotate"));
+    act(() => result.current.actions.request("rotate"));
     let rotation!: Promise<void>;
     act(() => {
-      rotation = result.current.rotate();
+      rotation = result.current.actions.rotate();
     });
     unmount();
     await act(async () => {
@@ -224,43 +255,96 @@ describe("useWorkerActions", () => {
     });
     // No state update after unmount: React would warn and the credential would
     // be lost with the card anyway.
-    expect(result.current.rotatedCredential).toBeNull();
+    expect(result.current.actions.rotatedCredential).toBeNull();
   });
 
-  it("arms Apply only after the report under review loads, and pins its revision", async () => {
-    let releaseReport!: () => void;
-    const reportGate = new Promise<void>((resolve) => {
-      releaseReport = resolve;
-    });
+  it("loads the report and submits exactly the revision it belongs to", async () => {
     const applied: { workerId: string; revision: number }[] = [];
-    const { result, onLoadReported, onApplyWorkerConfig } = setup(undefined, undefined, {
+    const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
       reportedRevision: 3,
-      onLoadReported: () => reportGate,
       onApplyWorkerConfig: async (workerId, revision) => {
         applied.push({ workerId, revision });
       },
     });
 
+    // Reviewing reads the report and arms Apply for exactly the revision it was reported at.
+    await act(async () => result.current.actions.review());
+    expect(result.current.review.reviewed).toEqual({
+      revision: 3,
+      config: report("cuda"),
+    });
+    expect(result.current.actions.pending).toBe("apply");
+    expect(result.current.review.reviewed?.revision).toBe(3);
+
+    await act(async () => result.current.actions.apply());
+    expect(onApplyWorkerConfig).toHaveBeenCalledWith("wkr_00000000000a", 3);
+    expect(applied).toEqual([{ workerId: "wkr_00000000000a", revision: 3 }]);
+    expect(result.current.actions.pending).toBeNull();
+    expect(result.current.review.reviewed).toBeNull();
+  });
+
+  it("submits the revision of the displayed body, not a newer Snapshot revision", async () => {
+    let releaseReport!: () => void;
+    const reportGate = new Promise<void>((resolve) => {
+      releaseReport = resolve;
+    });
+    const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
+      reportedRevision: 3,
+      onFetchReported: async () => {
+        await reportGate;
+        return report("cuda");
+      },
+    });
+
     let reviewing!: Promise<void>;
     act(() => {
-      reviewing = result.current.review();
+      reviewing = result.current.actions.review();
     });
-    expect(onLoadReported).toHaveBeenCalledWith("wkr_00000000000a");
-    expect(result.current.pending).toBeNull();
-    expect(onApplyWorkerConfig).not.toHaveBeenCalled();
-
     await act(async () => {
       releaseReport();
       await reviewing;
     });
-    expect(result.current.pending).toBe("apply");
-    expect(result.current.reviewedRevision).toBe(3);
+    expect(result.current.review.reviewed?.revision).toBe(3);
 
-    await act(async () => result.current.apply());
+    await act(async () => result.current.actions.apply());
+    // The submitted revision is the one the reviewed body carries.
     expect(onApplyWorkerConfig).toHaveBeenCalledWith("wkr_00000000000a", 3);
-    expect(applied).toEqual([{ workerId: "wkr_00000000000a", revision: 3 }]);
-    expect(result.current.pending).toBeNull();
-    expect(result.current.reviewedRevision).toBeNull();
+  });
+
+  it("drops a stale report response instead of replacing newer reviewed content", async () => {
+    let releaseFirst!: () => void;
+    const firstRead = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let call = 0;
+    const { result } = setup(undefined, undefined, {
+      reportedRevision: 3,
+      onFetchReported: async () => {
+        call += 1;
+        if (call === 1) {
+          await firstRead;
+          return report("old");
+        }
+        return report("new");
+      },
+    });
+
+    // The first read is slow; a manual reload is the second, faster one.
+    let firstReadPromise!: Promise<unknown>;
+    act(() => {
+      firstReadPromise = result.current.review.load(3);
+    });
+    await act(async () => {
+      await result.current.review.load(3);
+    });
+    expect(result.current.review.reviewed?.config.slots[0].capabilities[0].name).toBe("new");
+
+    // The older response lands last and must not overwrite the newer reviewed body.
+    await act(async () => {
+      releaseFirst();
+      await firstReadPromise;
+    });
+    expect(result.current.review.reviewed?.config.slots[0].capabilities[0].name).toBe("new");
   });
 
   it("keeps the reviewed revision visible when Apply is refused", async () => {
@@ -270,23 +354,24 @@ describe("useWorkerActions", () => {
         throw new HubApiError(409, "Conflict", "The revision changed.");
       },
     });
-    await act(async () => result.current.review());
-    expect(result.current.reviewedRevision).toBe(3);
+    await act(async () => result.current.actions.review());
+    expect(result.current.review.reviewed?.revision).toBe(3);
 
-    await act(async () => result.current.apply());
-    expect(result.current.error).toBe("The revision changed.");
-    expect(result.current.pending).toBe("apply");
-    expect(result.current.reviewedRevision).toBe(3);
+    await act(async () => result.current.actions.apply());
+    expect(result.current.actions.error).toBe("The revision changed.");
+    expect(result.current.actions.pending).toBe("apply");
+    expect(result.current.review.reviewed?.revision).toBe(3);
   });
 
   it("never arms Apply without a reported revision", async () => {
-    const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
+    const { result, onApplyWorkerConfig, onFetchReported } = setup(undefined, undefined, {
       reportedRevision: null,
     });
-    await act(async () => result.current.review());
-    expect(result.current.pending).toBeNull();
-    expect(result.current.reviewedRevision).toBeNull();
-    await act(async () => result.current.apply());
+    await act(async () => result.current.actions.review());
+    expect(result.current.actions.pending).toBeNull();
+    expect(result.current.review.reviewed).toBeNull();
+    expect(onFetchReported).not.toHaveBeenCalled();
+    await act(async () => result.current.actions.apply());
     expect(onApplyWorkerConfig).not.toHaveBeenCalled();
   });
 
@@ -296,9 +381,9 @@ describe("useWorkerActions", () => {
         throw new HubApiError(503, "Unavailable", "The Hub is restarting.");
       },
     });
-    await act(async () => result.current.approve());
+    await act(async () => result.current.actions.approve());
     expect(onApproveWorker).toHaveBeenCalledWith("wkr_00000000000a");
-    expect(result.current.error).toBe("The Hub is restarting.");
-    expect(result.current.busy).toBe(false);
+    expect(result.current.actions.error).toBe("The Hub is restarting.");
+    expect(result.current.actions.busy).toBe(false);
   });
 });

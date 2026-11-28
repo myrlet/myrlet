@@ -68,6 +68,7 @@ impl RuntimeCore {
             );
         }
         let fingerprint = config.inventory_fingerprint();
+        let scheduling_changed = self.state().config.inventory_fingerprint() != fingerprint;
         // The persisted revision changes only when the scheduling fingerprint does.
         let revision = match self.registry.load_or_bump_inventory_revision(&fingerprint) {
             Ok(revision) => revision,
@@ -80,19 +81,24 @@ impl RuntimeCore {
         let adapters = config.build_adapters();
         let mut next_config = config;
         next_config.hub_url = current_hub; // the live connection target never moves
-        let scheduling_changed = {
+        {
+            // Swap the whole live snapshot in one commit; a scheduling change pauses new
+            // claims in the same commit so a wakeup cannot read the new Slots as claimable
+            // before the Hub acknowledges the report.
             let mut state = self
                 .state
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let changed = state.inventory.revision != revision
-                || state.config.inventory_fingerprint() != fingerprint;
             state.config = next_config;
             state.inventory = inventory;
             state.adapters = adapters;
-            changed
-        };
+            if scheduling_changed {
+                state.inventory_pending = true;
+            }
+        }
         if !scheduling_changed {
+            // A telemetry-only edit (e.g. hubUrl, timeout) keeps the reviewed inventory and
+            // never pauses claims or reports an unchanged schedule.
             tracing::info!("worker.yaml reloaded; the reviewed inventory is unchanged");
             return;
         }
@@ -106,24 +112,29 @@ impl RuntimeCore {
                 "worker.yaml changed while a claim is in flight; the response will use the claimed adapter"
             );
         }
-        self.claims_paused.store(true, Ordering::SeqCst);
-        self.inventory_pending.store(true, Ordering::SeqCst);
         self.inventory_changed.notify_one();
     }
 
     /// The Hub acknowledged the inventory this Worker currently reports.
+    ///
+    /// An acknowledgement for any other revision is stale — including an older revision
+    /// arriving while a newer report is pending — so it can neither clear the pending flag
+    /// nor resume claims early. Resuming and the version check happen under the same write
+    /// guard activation uses, so a report cannot slip in between them.
     pub(super) fn inventory_acknowledged(&self, revision: u64) {
-        if revision != self.inventory().revision {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if revision != state.inventory.revision || !state.inventory_pending {
             return;
         }
-        self.inventory_pending.store(false, Ordering::SeqCst);
-        if self.claims_paused.swap(false, Ordering::SeqCst) {
-            tracing::info!(revision, "Hub acknowledged the inventory; resuming claims");
-        }
+        state.inventory_pending = false;
+        tracing::info!(revision, "Hub acknowledged the inventory; resuming claims");
     }
 
     /// Whether a locally reloaded inventory still awaits acknowledgement.
     pub(super) fn inventory_pending(&self) -> bool {
-        self.inventory_pending.load(Ordering::SeqCst)
+        self.state().inventory_pending
     }
 }

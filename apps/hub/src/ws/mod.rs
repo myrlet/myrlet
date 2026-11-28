@@ -87,18 +87,21 @@ async fn run(state: HubState, worker_id: WorkerId, mut socket: WebSocket) {
         close(&mut socket, 1008, "expected a valid worker.hello").await;
         return;
     };
-    let epoch = match state
+    let (epoch, events) = match state
         .store
         .open_worker_connection(worker_id.clone(), hello.inventory, now_ms())
         .await
     {
-        Ok(epoch) => epoch,
+        Ok(outcome) => outcome,
         Err(error) => {
             tracing::warn!(%error, %worker_id, "worker connection refused");
             close(&mut socket, 1011, "connection refused").await;
             return;
         }
     };
+    for event in events {
+        state.publish_event(Some(event));
+    }
     let connection_id = format!("conn_{}", Uuid::new_v4().simple());
     let (tx, mut rx) = mpsc::channel(CONNECTION_QUEUE);
     state.register_connection(
