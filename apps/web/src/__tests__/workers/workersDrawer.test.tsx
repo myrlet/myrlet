@@ -29,20 +29,7 @@ function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     lastSeenAtMs: 1_700_000_000_000,
     activeDeliveries: 1,
     host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
-    reportedRevision: 2,
-    appliedRevision: 2,
-    appliedConfig: {
-      slots: [
-        {
-          slotId: "mac-default",
-          enabled: true,
-          advisoryCapacity: null,
-          roles: ["coding"],
-          capabilities: [{ name: "rust", state: "available" }],
-          executors: [{ id: "claude-code", kind: "claude" }],
-        },
-      ],
-    },
+    configurationPending: false,
     ...overrides,
   };
 }
@@ -100,7 +87,9 @@ function Harness({
           onlineWorkerCount={workers.filter((record) => record.online).length}
           baseUrl=""
           workers={workers}
-          fetchReportedConfig={async () => null}
+          fetchWorkerDetail={async () => {
+            throw new Error("detail is not read in these focus tests");
+          }}
           issued={null}
           busy={false}
           onRefresh={() => undefined}

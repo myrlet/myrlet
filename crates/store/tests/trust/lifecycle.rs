@@ -69,7 +69,7 @@ async fn concurrent_reports_and_applies_serialize_without_regressions() {
     let epoch = connect(&store, inventory(1, "shell", "exec-a")).await;
     store.approve_worker(worker(), T0).await.unwrap();
     let reported = store
-        .get_worker(worker(), HashMap::new())
+        .get_worker_snapshot(worker(), HashMap::new())
         .await
         .unwrap()
         .reported_revision
@@ -93,7 +93,10 @@ async fn concurrent_reports_and_applies_serialize_without_regressions() {
     // report landed first, both Applies must refuse rather than apply a newer snapshot
     // that no Admin reviewed.
     let outcomes = [first.unwrap(), second.unwrap()];
-    let row = store.get_worker(worker(), HashMap::new()).await.unwrap();
+    let row = store
+        .get_worker_snapshot(worker(), HashMap::new())
+        .await
+        .unwrap();
     assert_eq!(row.reported_revision, Some(2));
     for outcome in outcomes {
         match outcome {

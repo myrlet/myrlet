@@ -9,7 +9,14 @@ use crate::inventory::HostFacts;
 use crate::task::{BlockingDependency, SubtreeCounts, TaskStatus};
 use crate::trust::{PermissionTier, WorkerApprovalStatus, WorkerSchedulingConfig};
 
-/// One Worker's connectivity, approval, permission tier, and applied scheduling inventory.
+/// One Worker as it appears in the Global Snapshot and the Worker list: connectivity,
+/// approval, permission tier, and whether its configuration still awaits Apply.
+///
+/// The Snapshot is a bounded, potentially stale read model for observation and
+/// presentation; it is not an authority for concurrency control. It therefore carries no
+/// configuration revision fields or configuration bodies. The authoritative revision and
+/// content pair lives only in the Worker Detail read (`WorkerDetailView`), and Apply
+/// validates against live Hub state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotWorker {
@@ -24,12 +31,55 @@ pub struct SnapshotWorker {
     pub active_deliveries: u64,
     /// Host facts from the latest accepted report; ordinary telemetry, never a gate.
     pub host: Option<HostFacts>,
-    /// Hub-assigned revision of the latest accepted report, or `null` before one arrives.
+    /// The latest accepted report is newer than the applied configuration, so an Admin
+    /// must apply it before the Worker receives new work. Derived by the Hub.
+    pub configuration_pending: bool,
+}
+
+impl SnapshotWorker {
+    /// Approved and scheduling an applied configuration that matches its latest report.
+    ///
+    /// This is the scheduling gate independent of connectivity: a claim or a wakeup adds
+    /// the online check on top, while an administrative "claimable" preview does not.
+    pub fn is_schedulable(&self) -> bool {
+        !self.revoked
+            && self.approval == WorkerApprovalStatus::Approved
+            && !self.configuration_pending
+    }
+
+    /// Whether this Worker may receive a new Delivery right now: schedulable and online.
+    pub fn may_receive_work(&self) -> bool {
+        self.online && self.is_schedulable()
+    }
+}
+
+/// The Hub's authoritative view of one Worker, for scheduling and administrative review.
+///
+/// Unlike [`SnapshotWorker`], this is not a bounded or stale projection: it carries the
+/// applied configuration the Hub schedules with and the exact reported/applied revisions.
+/// It is never serialized to a client; the wire surfaces are the Global Snapshot
+/// ([`SnapshotWorker`]) and the Worker Detail ([`crate::api::WorkerDetailView`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerSnapshot {
+    pub summary: SnapshotWorker,
+    /// Hub-assigned revision of the latest accepted report, or `None` before one arrives.
     pub reported_revision: Option<u64>,
-    /// Hub-assigned revision the Hub uses for Slot matching, or `null` before Apply.
+    /// Hub-assigned revision of the applied configuration, or `None` before Apply.
     pub applied_revision: Option<u64>,
     /// The scheduling snapshot the Hub uses for Slot matching.
     pub applied_config: Option<WorkerSchedulingConfig>,
+}
+
+impl WorkerSnapshot {
+    /// Approved and scheduling an applied report that matches the latest one.
+    pub fn is_schedulable(&self) -> bool {
+        self.summary.is_schedulable()
+    }
+
+    /// Schedulable and online.
+    pub fn may_receive_work(&self) -> bool {
+        self.summary.may_receive_work()
+    }
 }
 
 /// Bounded read model of one Task and its current Delivery.
@@ -107,9 +157,7 @@ mod tests {
                     arch: "x86_64".into(),
                     deployment_mode: DeploymentMode::Native,
                 }),
-                reported_revision: Some(1),
-                applied_revision: Some(1),
-                applied_config: Some(WorkerSchedulingConfig { slots: Vec::new() }),
+                configuration_pending: true,
             }],
             tasks: Vec::new(),
         };
@@ -121,14 +169,17 @@ mod tests {
         assert_eq!(value["workers"][0]["connectionEpoch"], 7);
         assert_eq!(value["workers"][0]["approval"], "approved");
         assert_eq!(value["workers"][0]["permissionTier"], "worker");
-        assert_eq!(value["workers"][0]["reportedRevision"], 1);
-        assert_eq!(value["workers"][0]["appliedRevision"], 1);
+        assert_eq!(value["workers"][0]["configurationPending"], true);
+        // The Snapshot carries no configuration revision fields or configuration bodies.
+        assert!(value["workers"][0].get("reportedRevision").is_none());
+        assert!(value["workers"][0].get("appliedRevision").is_none());
+        assert!(value["workers"][0].get("appliedConfig").is_none());
         assert!(value["workers"][0]["lastSeenAtMs"].is_null());
         assert_eq!(value["workers"][0]["host"]["deploymentMode"], "native");
 
         let decoded: GlobalSnapshot = serde_json::from_value(value).unwrap();
         assert!(decoded.tasks.is_empty());
-        assert!(decoded.workers[0].applied_config.is_some());
+        assert!(decoded.workers[0].configuration_pending);
     }
 
     #[test]

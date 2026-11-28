@@ -162,10 +162,14 @@ The Delivery's Worker is the single writer of both values. It serializes reconci
 `GET /v1/snapshot` builds a consistent read from Hub SQLite and in-memory Worker connection state without calling Workers synchronously. It returns:
 
 - `schemaVersion` (`"myrlet.snapshot/v1"`), `generatedAt`, `eventCursor`, and `tasksTruncated` (boolean + total count when Task summaries exceed the Snapshot page bound);
-- connected/disconnected Workers with approval status, reported/applied revisions and their applied Slots, capabilities, Executors, observation timestamps, and advisory capacity hints (absent capacity MUST be `null`, never `0`);
+- connected/disconnected Workers with approval status, permission tier, observation timestamps, and a derived `configurationPending` flag (the latest report is newer than the applied configuration). The Snapshot is a bounded, potentially stale **observation** read model, not a concurrency authority: it carries **no** Worker configuration revision fields and no configuration bodies. The authoritative revision/content pair lives only in `GET /v1/workers/{id}` (see [Worker Detail](#worker-detail));
 - Task summaries (status, version, hierarchy, `dependencies`, `blockedBy`, current Delivery, and latest `DeliveryProgressView`).
 
 Snapshot is purely observational and never reserves capacity.
+
+## Worker Detail
+
+`GET /v1/workers/{id}` is the Hub's authoritative administrative view of one Worker. Alongside the Snapshot fields it returns the reported and applied revisions (`reportedRevision`, `appliedRevision`), the applied configuration (`appliedConfig`), the report under review (`reportedConfig`), and the Worker's claimable Task IDs. `reportedRevision` and `reportedConfig` come from the same stored report, so an Admin can submit exactly the revision whose content they reviewed. `POST /v1/workers/{id}/config/apply` validates the submitted revision against the current reported revision in one transaction and rejects a stale one.
 
 ## Event Log and SSE
 

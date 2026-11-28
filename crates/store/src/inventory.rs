@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection, Transaction};
 
 use myrlet_protocol::{
-    HubEventEnvelope, SnapshotWorker, WorkerId, WorkerInventory, WorkerSchedulingConfig,
+    HubEventEnvelope, SnapshotWorker, WorkerDetailView, WorkerId, WorkerInventory,
+    WorkerSchedulingConfig, WorkerSnapshot,
 };
 
 use crate::error::StoreError;
@@ -219,14 +220,22 @@ fn parse_json<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// Build the Hub's authoritative view of one Worker from its stored row.
+///
+/// `configuration_pending` is derived here: a report is pending while one exists and has
+/// not yet been applied. The applied configuration body and both revisions are exposed only
+/// through the administrative detail view, never the Global Snapshot.
 fn into_snapshot(
     row: WorkerRow,
     active: u64,
     online_map: &HashMap<WorkerId, u64>,
-) -> Result<SnapshotWorker, StoreError> {
+) -> Result<WorkerSnapshot, StoreError> {
     let online = !row.revoked && online_map.get(&row.worker_id) == Some(&row.connection_epoch);
     let inventory = parse_json::<WorkerInventory>(&row.inventory_json)?;
-    Ok(SnapshotWorker {
+    let configuration_pending = row
+        .reported_revision
+        .is_some_and(|reported| row.applied_revision != Some(reported));
+    let summary = SnapshotWorker {
         approval: row.status(),
         worker_id: row.worker_id,
         online,
@@ -236,6 +245,10 @@ fn into_snapshot(
         last_seen_at_ms: row.last_seen_at_ms,
         active_deliveries: active,
         host: inventory.map(|inventory| inventory.host),
+        configuration_pending,
+    };
+    Ok(WorkerSnapshot {
+        summary,
         reported_revision: row.reported_revision,
         applied_revision: row.applied_revision,
         applied_config: parse_json::<WorkerSchedulingConfig>(&row.applied_config_json)?,
@@ -247,6 +260,17 @@ pub fn list_workers(
     conn: &Connection,
     online_map: &HashMap<WorkerId, u64>,
 ) -> Result<Vec<SnapshotWorker>, StoreError> {
+    Ok(list_worker_snapshots(conn, online_map)?
+        .into_iter()
+        .map(|snapshot| snapshot.summary)
+        .collect())
+}
+
+/// Every enrolled Worker as the Hub's authoritative view, for internal scheduling.
+pub fn list_worker_snapshots(
+    conn: &Connection,
+    online_map: &HashMap<WorkerId, u64>,
+) -> Result<Vec<WorkerSnapshot>, StoreError> {
     let mut workers = Vec::new();
     for row in list_worker_rows(conn)? {
         let active = active_deliveries(conn, &row.worker_id)?;
@@ -255,15 +279,52 @@ pub fn list_workers(
     Ok(workers)
 }
 
-/// One enrolled Worker with the same derived fields as [`list_workers`].
+/// The Global-Snapshot projection of one Worker (no administrative fields).
 pub fn get_worker(
     conn: &Connection,
     worker_id: &WorkerId,
     online_map: &HashMap<WorkerId, u64>,
 ) -> Result<SnapshotWorker, StoreError> {
+    Ok(get_worker_snapshot(conn, worker_id, online_map)?.summary)
+}
+
+/// The Hub's authoritative view of one Worker.
+pub fn get_worker_snapshot(
+    conn: &Connection,
+    worker_id: &WorkerId,
+    online_map: &HashMap<WorkerId, u64>,
+) -> Result<WorkerSnapshot, StoreError> {
     let worker = load_worker(conn, worker_id)?;
     let active = active_deliveries(conn, worker_id)?;
     into_snapshot(worker, active, online_map)
+}
+
+/// One Worker's administrative detail: authoritative revisions, both the applied and the
+/// reported configuration, and the claimable Task IDs its applied Slots could run.
+pub fn worker_detail_view(
+    conn: &Connection,
+    worker_id: &WorkerId,
+    online_map: &HashMap<WorkerId, u64>,
+    claimable_limit: usize,
+) -> Result<WorkerDetailView, StoreError> {
+    let snapshot = get_worker_snapshot(conn, worker_id, online_map)?;
+    // A detail read does not require the Worker to be online; it previews what its applied
+    // Slots could claim once it is.
+    let claimable_task_ids = if snapshot.is_schedulable() {
+        crate::reads::claimable_for_worker(conn, snapshot.applied_config.as_ref(), claimable_limit)?
+    } else {
+        Vec::new()
+    };
+    Ok(WorkerDetailView {
+        reported_config: parse_json::<WorkerSchedulingConfig>(
+            &load_worker(conn, worker_id)?.reported_config_json,
+        )?,
+        worker: snapshot.summary,
+        reported_revision: snapshot.reported_revision,
+        applied_revision: snapshot.applied_revision,
+        applied_config: snapshot.applied_config,
+        claimable_task_ids,
+    })
 }
 
 /// One Worker's latest report, which may still be pending Apply.

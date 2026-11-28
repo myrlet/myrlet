@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 use crate::state::{now_ms, HubState};
 use crate::ws::build_hub_frame;
 use myrlet_protocol::{
-    HubWakeupPayload, SlotId, SnapshotWorker, TaskDefinition, TaskId, WorkerApprovalStatus,
-    WorkerId, WorkerWireKind,
+    HubWakeupPayload, SlotId, TaskDefinition, TaskId, WorkerId, WorkerSnapshot, WorkerWireKind,
 };
 
 const WAKEUP_SCAN_LIMIT: usize = 100;
@@ -29,21 +28,20 @@ async fn wake_eligible(state: &HubState) {
     if queued.is_empty() {
         return;
     }
-    let mut workers = match state.store.list_workers(state.online_map()).await {
+    let mut workers = match state.store.list_worker_snapshots(state.online_map()).await {
         Ok(workers) => workers,
         Err(error) => {
             tracing::warn!(%error, "could not read worker inventory");
             return;
         }
     };
-    workers.retain(|worker| {
-        worker.online
-            && !worker.revoked
-            && worker.approval == WorkerApprovalStatus::Approved
-            && worker.applied_revision.is_some()
-            && worker.applied_revision == worker.reported_revision
+    workers.retain(|worker| worker.may_receive_work());
+    workers.sort_unstable_by(|a, b| {
+        a.summary
+            .worker_id
+            .as_str()
+            .cmp(b.summary.worker_id.as_str())
     });
-    workers.sort_unstable_by(|a, b| a.worker_id.as_str().cmp(b.worker_id.as_str()));
     for (task_id, definition) in queued {
         if state.is_shutting_down() {
             return;
@@ -59,9 +57,9 @@ async fn wake_eligible(state: &HubState) {
         let next = match last {
             Some((id, _)) => eligible
                 .iter()
-                .position(|(worker, _)| worker.worker_id.as_str() > id.as_str()),
+                .position(|(worker, _)| worker.summary.worker_id.as_str() > id.as_str()),
             None => eligible.iter().position(|(worker, _)| {
-                definition.routing.preferred_worker_id.as_ref() == Some(&worker.worker_id)
+                definition.routing.preferred_worker_id.as_ref() == Some(&worker.summary.worker_id)
             }),
         };
         let Some((worker, eligible_slot_ids)) = eligible.into_iter().nth(next.unwrap_or(0)) else {
@@ -71,16 +69,17 @@ async fn wake_eligible(state: &HubState) {
             task_id: task_id.clone(),
             eligible_slot_ids,
         };
+        let summary = &worker.summary;
         if let Some(frame) = build_hub_frame(
             WorkerWireKind::HubWakeup,
-            &worker.worker_id,
+            &summary.worker_id,
             None,
-            worker.connection_epoch,
+            summary.connection_epoch,
             now_ms(),
             payload,
         ) {
-            let _ = state.send_to_worker(&worker.worker_id, worker.connection_epoch, frame);
-            rotation.insert(task_id, (worker.worker_id.clone(), Instant::now()));
+            let _ = state.send_to_worker(&summary.worker_id, summary.connection_epoch, frame);
+            rotation.insert(task_id, (summary.worker_id.clone(), Instant::now()));
         }
     }
 }
@@ -107,7 +106,7 @@ pub fn spawn_wakeup_loop(state: &HubState) {
     });
 }
 
-fn eligible_slots(worker: &SnapshotWorker, definition: &TaskDefinition) -> Option<Vec<SlotId>> {
+fn eligible_slots(worker: &WorkerSnapshot, definition: &TaskDefinition) -> Option<Vec<SlotId>> {
     let applied = worker.applied_config.as_ref()?;
     let slots: Vec<_> = applied
         .slots

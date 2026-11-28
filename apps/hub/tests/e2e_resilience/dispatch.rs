@@ -139,8 +139,9 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
         online_epoch(&cli).filter(|epoch| *epoch > epoch_one)
     });
     // Rotation and restart preserve approval; only a changed inventory needs an Apply.
+    // The Snapshot exposes `configurationPending` rather than the revision fields.
     let current = worker_json(&cli);
-    if current["reportedRevision"] != current["appliedRevision"] {
+    if current["configurationPending"] == true {
         clear_trust_gates(&cli);
     }
     poll("cancel acknowledged", Duration::from_secs(10), || {

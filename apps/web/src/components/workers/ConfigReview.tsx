@@ -14,7 +14,10 @@ import { SlotTable } from "./WorkerInventory";
 
 export interface ConfigReviewProps {
   readonly worker: WorkerRecord;
-  /** The reviewed report and the exact revision it was reported at. */
+  /**
+   * The reviewed report, its exact revision, and the applied side — all from the same
+   * Worker Detail response, so the reported and applied snapshots describe one moment.
+   */
   readonly reviewed: ReviewedConfig | null;
   /** Whether a fresh report is being loaded. */
   readonly loading: boolean;
@@ -22,7 +25,7 @@ export interface ConfigReviewProps {
 
 export function ConfigReview({ worker, reviewed, loading }: ConfigReviewProps) {
   const reportedSlots = reviewed?.config.slots ?? [];
-  const appliedSlots = worker.appliedConfig?.slots ?? [];
+  const appliedSlots = reviewed?.detail.appliedConfig?.slots ?? [];
   const offered = reportedSlots.filter(
     (slot) => !appliedSlots.some((applied) => applied.slotId === slot.slotId),
   );
@@ -66,7 +69,9 @@ export function ConfigReview({ worker, reviewed, loading }: ConfigReviewProps) {
           <h3 className="config-review-title">
             Applied{" "}
             <span className="tabular">
-              {worker.appliedRevision === null ? "none" : `rev ${worker.appliedRevision}`}
+              {reviewed?.detail.appliedRevision == null
+                ? "none"
+                : `rev ${reviewed.detail.appliedRevision}`}
             </span>
           </h3>
           <SlotTable

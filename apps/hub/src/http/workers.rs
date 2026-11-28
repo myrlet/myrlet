@@ -8,7 +8,7 @@ use axum::Json;
 use myrlet_protocol::{
     ApplyWorkerConfigRequest, ApplyWorkerConfigResponse, ClaimTaskRequest,
     CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest,
-    UpdateWorkerPermissionTierRequest, WorkerDetail, WorkerId, WorkerListResponse,
+    UpdateWorkerPermissionTierRequest, WorkerDetailView, WorkerId, WorkerListResponse,
 };
 
 use crate::auth;
@@ -81,7 +81,7 @@ pub async fn get_worker(
     Path(worker_id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_global_reader(&state, &headers).await?;
-    let detail: WorkerDetail = state
+    let detail: WorkerDetailView = state
         .store
         .worker_detail(
             WorkerId::new(worker_id),

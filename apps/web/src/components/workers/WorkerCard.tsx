@@ -5,17 +5,13 @@
  * armed confirmation, the in-flight flag, honest error wording, and the once-shown
  * rotated credential. The report under review comes from `useWorkerConfigReview`,
  * which binds the displayed body to the exact revision Apply submits. The review is
- * loaded as soon as the Snapshot says a report is pending, so it is ready before an
- * Admin can act on it.
+ * loaded as soon as the Snapshot says configuration is pending. The Snapshot carries no
+ * revision or configuration fields; both come from that Worker Detail read.
  */
 
 import { useEffect } from "react";
 
-import type {
-  RotateWorkerResponse,
-  WorkerRecord,
-  WorkerSchedulingConfig,
-} from "../../api/types";
+import type { RotateWorkerResponse, WorkerDetail, WorkerRecord } from "../../api/types";
 import { formatRelativeTime } from "../../format";
 import { useWorkerConfigReview } from "../../state/useWorkerConfigReview";
 import { WorkerStatusBadge } from "../StatusBadge";
@@ -26,7 +22,8 @@ import { applyPending } from "./workerFilters";
 
 export interface WorkerCardProps {
   readonly worker: WorkerRecord;
-  readonly fetchReportedConfig: (workerId: string) => Promise<WorkerSchedulingConfig | null>;
+  /** Read one Worker's detail; revision and report come from that single response. */
+  readonly fetchWorkerDetail: (workerId: string) => Promise<WorkerDetail>;
   readonly onApproveWorker: (workerId: string) => Promise<void>;
   readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
@@ -37,7 +34,7 @@ export interface WorkerCardProps {
 
 export function WorkerCard({
   worker,
-  fetchReportedConfig,
+  fetchWorkerDetail,
   onApproveWorker,
   onApplyWorkerConfig,
   onRotateWorker,
@@ -47,8 +44,7 @@ export function WorkerCard({
 }: WorkerCardProps) {
   const review = useWorkerConfigReview({
     workerId: worker.workerId,
-    reportedRevision: worker.reportedRevision,
-    fetchReported: fetchReportedConfig,
+    fetchDetail: fetchWorkerDetail,
   });
 
   const {
@@ -65,7 +61,6 @@ export function WorkerCard({
     apply,
   } = useWorkerActions({
     workerId: worker.workerId,
-    reportedRevision: worker.reportedRevision,
     review,
     onApproveWorker,
     onApplyWorkerConfig,
@@ -77,17 +72,18 @@ export function WorkerCard({
   const pendingApply = applyPending(worker);
   const canApprove = !worker.revoked && worker.approval === "pending";
   const reviewedRevision = review.reviewed?.revision ?? null;
+  // Revisions and the applied configuration come from the reviewed Detail response,
+  // never the Snapshot, which carries only whether configuration is pending.
+  const reviewedDetail = review.reviewed?.detail ?? null;
 
-  // Load the report under review as soon as the Snapshot says one is pending, so the
-  // Admin sees the exact body (and revision) they would apply. A failed read leaves the
-  // card in its pending state; Apply stays disabled until a report is showing.
+  // Load the Worker Detail on mount and whenever `configurationPending` flips (a new
+  // report, or a completed Apply). The Snapshot carries no revisions or configuration, so
+  // the applied Slots, the revisions, and the report under review all come from this read.
+  // A failed read leaves the card without a report; Apply stays disabled until one loads.
   const { load: loadReview } = review;
   useEffect(() => {
-    if (!pendingApply || worker.reportedRevision === null) {
-      return;
-    }
-    void loadReview(worker.reportedRevision);
-  }, [loadReview, pendingApply, worker.reportedRevision]);
+    void loadReview();
+  }, [loadReview, worker.configurationPending]);
 
   return (
     <article className="worker-card" data-worker-id={worker.workerId}>
@@ -250,13 +246,13 @@ export function WorkerCard({
         <span>
           reported{" "}
           <strong className="tabular">
-            {worker.reportedRevision === null ? "—" : worker.reportedRevision}
+            {reviewedDetail?.reportedRevision == null ? "—" : reviewedDetail.reportedRevision}
           </strong>
         </span>
         <span>
           applied{" "}
           <strong className="tabular">
-            {worker.appliedRevision === null ? "—" : worker.appliedRevision}
+            {reviewedDetail?.appliedRevision == null ? "—" : reviewedDetail.appliedRevision}
           </strong>
         </span>
         <span>
@@ -285,7 +281,7 @@ export function WorkerCard({
         />
       ) : (
         <SlotTable
-          slots={worker.appliedConfig?.slots ?? []}
+          slots={reviewedDetail?.appliedConfig?.slots ?? []}
           caption={`Applied Slots for ${worker.workerId}: enabled state, advisory capacity, roles, capabilities, and executors`}
         />
       )}

@@ -3,8 +3,8 @@
 use std::io::{self, Write};
 
 use myrlet_protocol::{
-    ApplyWorkerConfigResponse, SecurityTrustSettings, SnapshotWorker, WorkerApprovalStatus,
-    WorkerDetail, WorkerListResponse, WorkerSchedulingConfig,
+    ApplyWorkerConfigResponse, SecurityTrustSettings, WorkerApprovalStatus, WorkerDetailView,
+    WorkerListResponse, WorkerSchedulingConfig,
 };
 
 use super::{label, optional, to_json};
@@ -28,20 +28,18 @@ pub fn worker_list<W: Write>(
     }
     writeln!(
         out,
-        "WORKER | TIER | APPROVAL | ONLINE | DELIVERIES | REPORTED | APPLIED | SLOTS"
+        "WORKER | TIER | APPROVAL | ONLINE | DELIVERIES | CONFIG-PENDING"
     )?;
     for worker in &response.workers {
         writeln!(
             out,
-            "{:<20} {:<6} {:<8} {:<7} {:>10}  {:>8} {:>7}  {}",
+            "{:<20} {:<6} {:<8} {:<7} {:>10}  {}",
             worker.worker_id,
             worker.permission_tier.as_str(),
             approval_label(worker.approval),
             worker.online,
             worker.active_deliveries,
-            optional(worker.reported_revision.as_ref()),
-            optional(worker.applied_revision.as_ref()),
-            slot_count(worker)
+            worker.configuration_pending
         )?;
     }
     Ok(())
@@ -50,7 +48,7 @@ pub fn worker_list<W: Write>(
 /// Print one Worker's detail, including Slots the Worker could claim for.
 pub fn worker_detail<W: Write>(
     out: &mut W,
-    detail: &WorkerDetail,
+    detail: &WorkerDetailView,
     as_json: bool,
 ) -> io::Result<()> {
     if as_json {
@@ -65,14 +63,18 @@ pub fn worker_detail<W: Write>(
     writeln!(
         out,
         "ReportedRevision: {}",
-        optional(worker.reported_revision.as_ref())
+        optional(detail.reported_revision.as_ref())
     )?;
     writeln!(
         out,
         "AppliedRevision: {}",
-        optional(worker.applied_revision.as_ref())
+        optional(detail.applied_revision.as_ref())
     )?;
-    writeln!(out, "ApplyPending: {}", apply_pending(worker))?;
+    writeln!(
+        out,
+        "ConfigurationPending: {}",
+        worker.configuration_pending
+    )?;
     writeln!(out, "ConnectionEpoch: {}", worker.connection_epoch)?;
     writeln!(out, "ActiveDeliveries: {}", worker.active_deliveries)?;
     writeln!(
@@ -80,7 +82,11 @@ pub fn worker_detail<W: Write>(
         "LastSeenAtMs: {}",
         optional(worker.last_seen_at_ms.as_ref())
     )?;
-    writeln!(out, "Slots: {}", slot_count(worker))?;
+    writeln!(
+        out,
+        "Slots: {}",
+        detail.applied_config.as_ref().map_or(0, |c| c.slots.len())
+    )?;
     writeln!(
         out,
         "ClaimableTasks: {}",
@@ -100,7 +106,7 @@ pub fn worker_detail<W: Write>(
 /// Print both scheduling snapshots for review before an Apply.
 pub fn worker_config<W: Write>(
     out: &mut W,
-    detail: &WorkerDetail,
+    detail: &WorkerDetailView,
     as_json: bool,
 ) -> io::Result<()> {
     if as_json {
@@ -112,18 +118,22 @@ pub fn worker_config<W: Write>(
     writeln!(
         out,
         "ReportedRevision: {}",
-        optional(worker.reported_revision.as_ref())
+        optional(detail.reported_revision.as_ref())
     )?;
     writeln!(
         out,
         "AppliedRevision: {}",
-        optional(worker.applied_revision.as_ref())
+        optional(detail.applied_revision.as_ref())
     )?;
-    writeln!(out, "ApplyPending: {}", apply_pending(worker))?;
+    writeln!(
+        out,
+        "ConfigurationPending: {}",
+        worker.configuration_pending
+    )?;
     writeln!(out, "ReportedConfig:")?;
     write_config(out, detail.reported_config.as_ref())?;
     writeln!(out, "AppliedConfig:")?;
-    write_config(out, worker.applied_config.as_ref())
+    write_config(out, detail.applied_config.as_ref())
 }
 
 /// Print the revision the Hub now schedules the Worker with.
@@ -187,18 +197,6 @@ fn write_config<W: Write>(out: &mut W, config: Option<&WorkerSchedulingConfig>) 
             Ok(())
         }
     }
-}
-
-/// Whether the latest report still awaits an Admin Apply.
-fn apply_pending(worker: &SnapshotWorker) -> bool {
-    worker.reported_revision.is_some() && worker.reported_revision != worker.applied_revision
-}
-
-fn slot_count(worker: &SnapshotWorker) -> usize {
-    worker
-        .applied_config
-        .as_ref()
-        .map_or(0, |config| config.slots.len())
 }
 
 /// Print a newly issued enrollment code (operator bootstrap).

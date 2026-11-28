@@ -41,7 +41,7 @@ type WorkspaceHub = Pick<ReturnType<typeof useHub>,
   | "selectedTaskId" | "selectedTask" | "selectedTree" | "detailLoading" | "detailError"
   | "selectTask" | "retrySelected" | "clearDetailError" | "refresh" | "disconnect"
   | "enrollmentCode" | "issuingCode" | "createEnrollmentCode" | "rotateWorker" | "revokeWorker"
-  | "approveWorker" | "applyWorkerConfig" | "fetchReportedConfig"
+  | "approveWorker" | "applyWorkerConfig" | "fetchWorkerDetail"
   | "settings" | "updateSecurityTrust"
 >;
 
@@ -334,7 +334,7 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
           onlineWorkerCount={onlineWorkerCount}
           baseUrl={baseUrl}
           workers={workers}
-          fetchReportedConfig={hub.fetchReportedConfig}
+          fetchWorkerDetail={hub.fetchWorkerDetail}
           issued={hub.enrollmentCode}
           busy={hub.issuingCode}
           onRefresh={refresh}

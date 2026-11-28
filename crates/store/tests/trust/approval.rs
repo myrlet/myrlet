@@ -21,11 +21,14 @@ async fn policies_default_on_and_a_pending_worker_cannot_claim() {
     let (worker_id, credential) = pair(&store).await;
     let snapshot = store.list_workers(HashMap::new()).await.unwrap();
     assert_eq!(snapshot[0].approval, WorkerApprovalStatus::Pending);
-    assert!(snapshot[0].reported_revision.is_none());
-    assert!(snapshot[0].applied_revision.is_none());
+    // Before any report there is nothing to apply, so configuration is not pending.
+    assert!(!snapshot[0].configuration_pending);
 
     // A pending Worker may still connect, heartbeat, and read; it just cannot claim.
     let epoch = connect(&store, inventory(1, "shell", "exec-a")).await;
+    // Its first report now awaits Apply.
+    let snapshot = store.list_workers(HashMap::new()).await.unwrap();
+    assert!(snapshot[0].configuration_pending);
     assert_eq!(
         store
             .authenticate_worker(credential)
@@ -80,9 +83,10 @@ async fn a_pending_worker_can_be_revoked_and_a_repaired_id_starts_fresh() {
     store.revoke_worker(worker(), T0).await.unwrap();
     assert_eq!(
         store
-            .get_worker(worker(), HashMap::new())
+            .get_worker_snapshot(worker(), HashMap::new())
             .await
             .unwrap()
+            .summary
             .approval,
         WorkerApprovalStatus::Revoked
     );
@@ -97,8 +101,11 @@ async fn a_pending_worker_can_be_revoked_and_a_repaired_id_starts_fresh() {
     // Re-pairing the revoked ID starts a fresh decision and clears both snapshots.
     let (repaired, credential) = pair(&store).await;
     assert_eq!(repaired, worker());
-    let worker_row = store.get_worker(worker(), HashMap::new()).await.unwrap();
-    assert_eq!(worker_row.approval, WorkerApprovalStatus::Pending);
+    let worker_row = store
+        .get_worker_snapshot(worker(), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(worker_row.summary.approval, WorkerApprovalStatus::Pending);
     assert!(worker_row.applied_revision.is_none());
     assert!(worker_row.reported_revision.is_none());
     assert_eq!(
@@ -114,7 +121,7 @@ async fn a_pending_worker_can_be_revoked_and_a_repaired_id_starts_fresh() {
     let next_epoch = connect(&store, inventory(1, "shell", "exec-a")).await;
     assert!(next_epoch > epoch);
     let repaired_revision = store
-        .get_worker(worker(), HashMap::new())
+        .get_worker_snapshot(worker(), HashMap::new())
         .await
         .unwrap()
         .reported_revision
@@ -140,8 +147,11 @@ async fn rotation_preserves_approval_and_both_snapshots() {
         .rotate_worker_credential("hub_1".into(), worker(), T0)
         .await
         .unwrap();
-    let row = store.get_worker(worker(), HashMap::new()).await.unwrap();
-    assert_eq!(row.approval, WorkerApprovalStatus::Approved);
+    let row = store
+        .get_worker_snapshot(worker(), HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(row.summary.approval, WorkerApprovalStatus::Approved);
     assert_eq!(row.reported_revision, Some(1));
     assert_eq!(row.applied_revision, Some(1));
 }

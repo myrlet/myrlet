@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HubApiError } from "../../api/client";
 import type {
   RotateWorkerResponse,
+  WorkerDetail,
   WorkerRecord,
   WorkerSchedulingConfig,
 } from "../../api/types";
@@ -36,20 +37,7 @@ function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     lastSeenAtMs: 1_700_000_000_000,
     activeDeliveries: 2,
     host: { os: "linux", arch: "x86_64", deploymentMode: "container" },
-    reportedRevision: 2,
-    appliedRevision: 2,
-    appliedConfig: {
-      slots: [
-        {
-          slotId: "gpu-1",
-          enabled: true,
-          advisoryCapacity: null,
-          roles: ["build"],
-          capabilities: [{ name: "cuda", state: "available" }],
-          executors: [{ id: "codex-cli", kind: "codex" }],
-        },
-      ],
-    },
+    configurationPending: false,
     ...overrides,
   };
 }
@@ -87,18 +75,17 @@ describe("worker inventory predicates", () => {
 
   it("only treats an unapplied report as pending Apply", () => {
     expect(applyPending(worker())).toBe(false);
-    expect(applyPending(worker({ reportedRevision: 3 }))).toBe(true);
-    expect(applyPending(worker({ reportedRevision: null, appliedRevision: null }))).toBe(false);
+    expect(applyPending(worker({ configurationPending: true }))).toBe(true);
   });
 
-  it("matches the Worker ID, host, Slot, role, capability, and executor", () => {
+  it("matches the Worker ID, host, and approval the Snapshot carries", () => {
     const record = worker();
-    for (const query of ["00000000000a", "linux", "container", "gpu-1", "build", "cuda", "codex"]) {
+    for (const query of ["00000000000a", "linux", "container", "approved"]) {
       expect(workerMatchesQuery(record, query)).toBe(true);
     }
     expect(workerMatchesQuery(record, "windows")).toBe(false);
     expect(workerMatchesQuery(record, "")).toBe(true);
-    expect(workerMatchesQuery(worker({ host: null, appliedConfig: null }), "gpu")).toBe(false);
+    expect(workerMatchesQuery(worker({ host: null }), "gpu")).toBe(false);
   });
 });
 
@@ -128,6 +115,17 @@ describe("useWorkerActions", () => {
     };
   }
 
+  function detail(revision: number, config: WorkerSchedulingConfig): WorkerDetail {
+    return {
+      worker: worker(),
+      reportedRevision: revision,
+      appliedRevision: null,
+      appliedConfig: null,
+      reportedConfig: config,
+      claimableTaskIds: [],
+    };
+  }
+
   function setup(
     rotate: (workerId: string) => Promise<RotateWorkerResponse> = async () => ({
       hubId: "hub_test",
@@ -137,9 +135,10 @@ describe("useWorkerActions", () => {
     revoke: (workerId: string) => Promise<void> = async () => undefined,
     options: {
       readonly reportedRevision?: number | null;
-      readonly onFetchReported?: (
+      readonly onFetchDetail?: (
         workerId: string,
-      ) => Promise<WorkerSchedulingConfig | null>;
+        revision: number | null,
+      ) => Promise<WorkerDetail>;
       readonly onApproveWorker?: (workerId: string) => Promise<void>;
       readonly onApplyWorkerConfig?: (
         workerId: string,
@@ -149,24 +148,24 @@ describe("useWorkerActions", () => {
   ) {
     const onRotateWorker = vi.fn(rotate);
     const onRevokeWorker = vi.fn(revoke);
-    const onFetchReported = vi.fn(
-      options.onFetchReported ?? (async () => report("cuda")),
+    const reportedRevision =
+      options.reportedRevision === undefined ? 2 : options.reportedRevision;
+    const onFetchDetail = vi.fn(
+      options.onFetchDetail ??
+        (async (_workerId: string, revision: number | null) =>
+          detail(revision ?? 2, report("cuda"))),
     );
     const onApproveWorker = vi.fn(options.onApproveWorker ?? (async () => undefined));
     const onApplyWorkerConfig = vi.fn(
       options.onApplyWorkerConfig ?? (async () => undefined),
     );
-    const reportedRevision =
-      options.reportedRevision === undefined ? 2 : options.reportedRevision;
     const hook = renderHook(() => {
       const review = useWorkerConfigReview({
         workerId: "wkr_00000000000a",
-        reportedRevision,
-        fetchReported: onFetchReported,
+        fetchDetail: (workerId) => onFetchDetail(workerId, reportedRevision),
       });
       const actions = useWorkerActions({
         workerId: "wkr_00000000000a",
-        reportedRevision,
         review,
         onApproveWorker,
         onApplyWorkerConfig,
@@ -178,7 +177,7 @@ describe("useWorkerActions", () => {
     return {
       onRotateWorker,
       onRevokeWorker,
-      onFetchReported,
+      onFetchDetail,
       onApproveWorker,
       onApplyWorkerConfig,
       ...hook,
@@ -270,10 +269,10 @@ describe("useWorkerActions", () => {
 
     // Reviewing reads the report and arms Apply for exactly the revision it was reported at.
     await act(async () => result.current.actions.review());
-    expect(result.current.review.reviewed).toEqual({
-      revision: 3,
-      config: report("cuda"),
-    });
+    expect(result.current.review.reviewed?.revision).toBe(3);
+    expect(result.current.review.reviewed?.config).toEqual(report("cuda"));
+    // The applied side travels with the same Detail response.
+    expect(result.current.review.reviewed?.detail.appliedRevision).toBeNull();
     expect(result.current.actions.pending).toBe("apply");
     expect(result.current.review.reviewed?.revision).toBe(3);
 
@@ -284,32 +283,36 @@ describe("useWorkerActions", () => {
     expect(result.current.review.reviewed).toBeNull();
   });
 
-  it("submits the revision of the displayed body, not a newer Snapshot revision", async () => {
-    let releaseReport!: () => void;
-    const reportGate = new Promise<void>((resolve) => {
-      releaseReport = resolve;
-    });
+  it("binds the reviewed revision to the body from the same Detail response", async () => {
+    // The Snapshot still says revision 3, but the Detail read returns the newer revision 4
+    // with its own body. The review must pair 4 with that body, and Apply must submit 4 —
+    // never the Snapshot's stale 3.
     const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
       reportedRevision: 3,
-      onFetchReported: async () => {
-        await reportGate;
-        return report("cuda");
-      },
+      onFetchDetail: async () => detail(4, report("cuda")),
     });
 
-    let reviewing!: Promise<void>;
-    act(() => {
-      reviewing = result.current.actions.review();
-    });
-    await act(async () => {
-      releaseReport();
-      await reviewing;
-    });
-    expect(result.current.review.reviewed?.revision).toBe(3);
+    await act(async () => result.current.actions.review());
+    expect(result.current.review.reviewed?.revision).toBe(4);
+    expect(result.current.review.reviewed?.config).toEqual(report("cuda"));
 
     await act(async () => result.current.actions.apply());
-    // The submitted revision is the one the reviewed body carries.
-    expect(onApplyWorkerConfig).toHaveBeenCalledWith("wkr_00000000000a", 3);
+    expect(onApplyWorkerConfig).toHaveBeenCalledWith("wkr_00000000000a", 4);
+  });
+
+  it("leaves Apply unavailable when the Detail read fails", async () => {
+    const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
+      reportedRevision: 3,
+      onFetchDetail: async () => {
+        throw new HubApiError(503, "Unavailable", "The Hub is restarting.");
+      },
+    });
+    await act(async () => result.current.actions.review());
+    expect(result.current.review.reviewed).toBeNull();
+    expect(result.current.actions.pending).toBeNull();
+    expect(result.current.review.error).toBe("The Hub is restarting.");
+    await act(async () => result.current.actions.apply());
+    expect(onApplyWorkerConfig).not.toHaveBeenCalled();
   });
 
   it("drops a stale report response instead of replacing newer reviewed content", async () => {
@@ -320,23 +323,23 @@ describe("useWorkerActions", () => {
     let call = 0;
     const { result } = setup(undefined, undefined, {
       reportedRevision: 3,
-      onFetchReported: async () => {
+      onFetchDetail: async (_workerId, revision) => {
         call += 1;
         if (call === 1) {
           await firstRead;
-          return report("old");
+          return detail(revision ?? 3, report("old"));
         }
-        return report("new");
+        return detail(revision ?? 3, report("new"));
       },
     });
 
     // The first read is slow; a manual reload is the second, faster one.
     let firstReadPromise!: Promise<unknown>;
     act(() => {
-      firstReadPromise = result.current.review.load(3);
+      firstReadPromise = result.current.review.load();
     });
     await act(async () => {
-      await result.current.review.load(3);
+      await result.current.review.load();
     });
     expect(result.current.review.reviewed?.config.slots[0].capabilities[0].name).toBe("new");
 
@@ -365,13 +368,21 @@ describe("useWorkerActions", () => {
   });
 
   it("never arms Apply without a reported revision", async () => {
-    const { result, onApplyWorkerConfig, onFetchReported } = setup(undefined, undefined, {
+    const { result, onApplyWorkerConfig } = setup(undefined, undefined, {
       reportedRevision: null,
+      onFetchDetail: async () => ({
+        worker: worker(),
+        reportedRevision: null,
+        appliedRevision: null,
+        appliedConfig: null,
+        reportedConfig: null,
+        claimableTaskIds: [],
+      }),
     });
     await act(async () => result.current.actions.review());
     expect(result.current.actions.pending).toBeNull();
     expect(result.current.review.reviewed).toBeNull();
-    expect(onFetchReported).not.toHaveBeenCalled();
+    expect(result.current.review.error).toMatch(/no report to review/i);
     await act(async () => result.current.actions.apply());
     expect(onApplyWorkerConfig).not.toHaveBeenCalled();
   });

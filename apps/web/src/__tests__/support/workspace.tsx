@@ -11,7 +11,7 @@ import { vi } from "vitest";
 
 import App from "../../App";
 import { stubColorScheme } from "./appearance";
-import { buildSnapshot, taskRecord, trustSettings, workerRecord } from "./fixtures";
+import { buildSnapshot, taskRecord, trustSettings, workerDetail, workerRecord } from "./fixtures";
 import { idleEventStream, jsonResponse, stubFetch } from "./hub";
 
 function defaultWorkspaceHandler(url: string): Response | Promise<Response> {
@@ -24,6 +24,11 @@ function defaultWorkspaceHandler(url: string): Response | Promise<Response> {
   }
   if (path.startsWith("/v1/settings/security-trust")) {
     return jsonResponse(trustSettings());
+  }
+  if (/^\/v1\/workers\/[^/]+$/.test(path.split("?")[0])) {
+    // One Worker's Detail: the Snapshot carries no revisions/config, so the card reads
+    // both here. This default Worker is approved and not pending.
+    return jsonResponse(workerDetail(workerRecord()));
   }
   if (path.startsWith("/v1/workers")) {
     return jsonResponse({ workers: [workerRecord()] });

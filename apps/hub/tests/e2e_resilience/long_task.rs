@@ -4,13 +4,16 @@
 use std::time::Duration;
 
 use crate::fixtures::{
-    clear_trust_gates, create_task, create_task_with_timeout, finished, line_count, show,
-    silent_long_yaml, status,
+    clear_trust_gates, create_task, create_task_with_timeout, finished_with_result, line_count,
+    show, silent_long_yaml, status,
 };
 use crate::harness::{
     binaries, cli, enroll_and_pair, free_port, online_epoch, poll, record, shutdown, spawn_daemon,
     start_hub, start_hub_on_port,
 };
+
+/// Result every silent long-task executor writes.
+const RESULT: &str = "# Long task result\n\nNo progress was ever written.\n";
 
 /// A silent long task that writes no Progress still finishes, and its own Result reaches
 /// the Hub through the real Worker/Hub entry points.
@@ -44,9 +47,12 @@ async fn a_silent_long_task_without_progress_finishes_with_its_own_result() {
         "shell",
         "exec-long",
     );
-    let shown = poll("the silent task to finish", Duration::from_secs(30), || {
-        finished(&cli, &task).map(|()| show(&cli, &task))
-    });
+    poll(
+        "the silent task to finish with its Result",
+        Duration::from_secs(30),
+        || finished_with_result(&cli, &task, RESULT),
+    );
+    let shown = show(&cli, &task);
     let delivery = record(&shown)
         .and_then(|task| task.get("currentDelivery"))
         .expect("current delivery");
@@ -118,9 +124,12 @@ async fn a_task_configured_for_more_than_two_hours_is_not_timed_out_early() {
         "a >2h timeout must not be shortened by any intermediate fence"
     );
 
-    let shown = poll("the long task to finish", Duration::from_secs(30), || {
-        finished(&cli, &task).map(|()| show(&cli, &task))
-    });
+    poll(
+        "the long task to finish with its Result",
+        Duration::from_secs(30),
+        || finished_with_result(&cli, &task, RESULT),
+    );
+    let shown = show(&cli, &task);
     let delivery = record(&shown)
         .and_then(|task| task.get("currentDelivery"))
         .expect("current delivery");
@@ -175,11 +184,12 @@ async fn a_real_duration_long_task_runs_and_finishes_once() {
     let timeout = seconds + 600;
     let task = create_task_with_timeout(&cli, "real-long", "Real long task", "exec-long", timeout);
     let started = std::time::Instant::now();
-    let shown = poll(
-        "the real long task to finish",
+    poll(
+        "the real long task to finish with its Result",
         Duration::from_secs(seconds + 120),
-        || finished(&cli, &task).map(|()| show(&cli, &task)),
+        || finished_with_result(&cli, &task, RESULT),
     );
+    let shown = show(&cli, &task);
     assert!(
         started.elapsed() >= Duration::from_secs(seconds),
         "the harness really ran for its full duration"
@@ -255,11 +265,12 @@ async fn transport_disconnect_across_process_exit_replays_result_and_finish_once
         online_epoch(&cli).filter(|epoch| *epoch > first_epoch)
     });
     assert!(second_epoch > first_epoch);
-    let shown = poll(
+    poll(
         "the replayed result and finish",
         Duration::from_secs(20),
-        || finished(&cli, &task).map(|()| show(&cli, &task)),
+        || finished_with_result(&cli, &task, RESULT),
     );
+    let shown = show(&cli, &task);
     assert_eq!(
         record(&shown).expect("task record")["resultMarkdown"],
         "# Long task result\n\nNo progress was ever written.\n",

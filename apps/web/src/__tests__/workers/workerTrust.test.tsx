@@ -47,9 +47,7 @@ function pendingWorker(): WorkerRecord {
     lastSeenAtMs: Date.now(),
     activeDeliveries: 0,
     host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
-    reportedRevision: 1,
-    appliedRevision: null,
-    appliedConfig: null,
+    configurationPending: true,
   };
 }
 
@@ -58,9 +56,7 @@ function reviewWorker(): WorkerRecord {
     ...pendingWorker(),
     approval: "approved",
     permissionTier: "worker",
-    reportedRevision: 3,
-    appliedRevision: 2,
-    appliedConfig: appliedConfig("rust"),
+    configurationPending: true,
   };
 }
 
@@ -87,12 +83,19 @@ afterEach(resetWorkspaceTest);
 describe("Worker trust", () => {
   let worker: WorkerRecord;
   let reported: WorkerSchedulingConfig | null;
+  // The Detail-only fields the Snapshot does not carry.
+  let detailReportedRevision: number | null;
+  let detailAppliedRevision: number | null;
+  let detailAppliedConfig: WorkerSchedulingConfig | null;
   let policies: { requireWorkerApproval: boolean; requireConfigurationApply: boolean };
   let calls: { method: string; path: string; body: unknown }[];
 
   beforeEach(() => {
     worker = pendingWorker();
     reported = null;
+    detailReportedRevision = 1;
+    detailAppliedRevision = null;
+    detailAppliedConfig = null;
     policies = { requireWorkerApproval: true, requireConfigurationApply: true };
     calls = [];
     stubFetch((url, init) => {
@@ -109,7 +112,12 @@ describe("Worker trust", () => {
         return jsonResponse(policies);
       }
       if (path.endsWith("/config/apply") && method === "POST") {
-        worker = { ...worker, appliedRevision: body.revision };
+        detailAppliedRevision = body.revision;
+        detailAppliedConfig = reported;
+        worker = {
+          ...worker,
+          configurationPending: detailReportedRevision !== detailAppliedRevision,
+        };
         return jsonResponse({ appliedRevision: body.revision });
       }
       if (path.endsWith("/approve") && method === "POST") {
@@ -119,6 +127,9 @@ describe("Worker trust", () => {
       if (path.startsWith("/v1/workers/")) {
         return jsonResponse({
           worker,
+          reportedRevision: detailReportedRevision,
+          appliedRevision: detailAppliedRevision,
+          appliedConfig: detailAppliedConfig,
           reportedConfig: reported,
           claimableTaskIds: [],
         });
@@ -152,6 +163,9 @@ describe("Worker trust", () => {
 
   it("applies exactly the revision under review after the Admin inspects it", async () => {
     worker = reviewWorker();
+    detailReportedRevision = 3;
+    detailAppliedRevision = 2;
+    detailAppliedConfig = appliedConfig("rust");
     reported = appliedConfig("gpu");
     await connectWorkspace();
     const drawer = await openWorkers();

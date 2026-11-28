@@ -2,8 +2,17 @@
 //!
 //! Every committed Delivery keeps the adapter that admitted it in `delivery_adapters`, so a
 //! `worker.yaml` reload never strands a running execution's cancellation or reporting path.
-//! That registry is bounded by the Delivery's own lifecycle: a reference is released when
-//! the Delivery finishes or is cancelled, and never grows with completed work.
+//! That registry is bounded by the Delivery's own lifecycle: the reference is released once
+//! the Hub accepts the Delivery's end of handling (a Finish, or its cancellation report),
+//! and never grows with completed work.
+//!
+//! Cancellation is deliberately one-shot. The first `task.cancel` runs the adapter's
+//! `cancel`; every later request re-sends the recorded answer instead of calling the adapter
+//! again, and `drain` skips a Delivery that already recorded a cancellation. No
+//! `CancelState` therefore leaves a path that would call the adapter a second time:
+//! `Confirmed` ends the group, `Failed` / `Unsupported` are recorded and re-sent, and
+//! `Uncertain` honestly declines to claim a termination it could not prove. Holding the
+//! reference past the acknowledgement would only leak completed work.
 
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
@@ -275,8 +284,16 @@ impl RuntimeCore {
     }
 }
 
-/// A Delivery whose handling ended: the Hub accepted its Finish, or the cancellation was
-/// acknowledged. Its pinned adapter is no longer needed for cancellation.
+/// Whether the Hub has accepted this Delivery's end of handling, so no further local
+/// action remains: an acknowledged Finish, or an acknowledged cancellation report.
+///
+/// The cancellation report is the final local step for any `CancelState` — `Confirmed`,
+/// `Failed`, `Uncertain`, or `Unsupported` all mean the Worker has done everything a
+/// cancellation asks of it and reported honestly what it observed. Adapters are stateless
+/// signalling bridges whose `cancel` removes the only per-execution handle it holds, so no
+/// later supported path reaches the adapter again; a repeated cancel re-sends the recorded
+/// answer instead of calling it. Retaining the reference after that would only grow the
+/// registry with completed work.
 fn record_is_terminal(record: &LocalDeliveryRecord) -> bool {
     record.finish_acked || (record.cancel_report.is_some() && record.cancel_acked)
 }

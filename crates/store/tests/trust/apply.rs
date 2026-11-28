@@ -28,8 +28,8 @@ async fn apply_teaches_the_hub_the_new_inventory_only_after_review() {
         .worker_detail(worker(), HashMap::new(), 50)
         .await
         .unwrap();
-    assert_eq!(detail.worker.reported_revision, Some(2));
-    assert_eq!(detail.worker.applied_revision, Some(1));
+    assert_eq!(detail.reported_revision, Some(2));
+    assert_eq!(detail.applied_revision, Some(1));
     assert_eq!(
         detail.reported_config.as_ref().unwrap().slots[0].executors[0]
             .id
@@ -37,7 +37,7 @@ async fn apply_teaches_the_hub_the_new_inventory_only_after_review() {
         "exec-b"
     );
     assert_eq!(
-        detail.worker.applied_config.as_ref().unwrap().slots[0].executors[0]
+        detail.applied_config.as_ref().unwrap().slots[0].executors[0]
             .id
             .as_str(),
         "exec-a"
@@ -76,7 +76,7 @@ async fn apply_errors_leave_the_applied_snapshot_untouched() {
     let mismatch = store.apply_worker_config(worker(), 1, T0).await;
     assert!(matches!(mismatch, Err(StoreError::ConfigRevisionMismatch)));
     let applied = store
-        .get_worker(worker(), HashMap::new())
+        .get_worker_snapshot(worker(), HashMap::new())
         .await
         .unwrap()
         .applied_revision;

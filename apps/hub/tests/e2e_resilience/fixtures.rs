@@ -30,6 +30,19 @@ pub(crate) fn finished(cli: &Cli<'_>, id: &str) -> Option<()> {
     (status(&show(cli, id)) == "finished").then_some(())
 }
 
+/// The Task record once it has finished with the expected Result stored.
+///
+/// Result sync is independent of Finish and the Worker reconciles Finish first, so a Task
+/// turns `finished` before its Result reaches the Hub. Polling only on `finished` would
+/// race that write; wait for both facts before asserting on the Result.
+pub(crate) fn finished_with_result(cli: &Cli<'_>, id: &str, expected: &str) -> Option<()> {
+    let shown = show(cli, id);
+    let complete = status(&shown) == "finished"
+        && crate::harness::record(&shown).and_then(|task| task.get("resultMarkdown"))
+            == Some(&serde_json::Value::String(expected.to_owned()));
+    complete.then_some(())
+}
+
 /// Submit one authorized Task with an explicit execution timeout.
 pub(crate) fn create_task_with_timeout(
     cli: &Cli<'_>,
@@ -92,7 +105,7 @@ pub(crate) fn clear_trust_gates(cli: &Cli<'_>) {
         .to_owned();
     cli.run(&["--json", "workers", "approve", &worker_id]);
     let detail = cli.run(&["--json", "workers", "show", &worker_id]);
-    let revision = detail["worker"]["reportedRevision"]
+    let revision = detail["reportedRevision"]
         .as_u64()
         .expect("the online Worker reported an inventory");
     cli.run(&[

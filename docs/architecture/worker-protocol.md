@@ -22,7 +22,7 @@ Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/
 
 ## Worker approval and configuration apply
 
-The Hub stores two independent policies under **Security & Trust**. Each defaults to on, including for the auto-paired Worker in the all-in-one image. A settings write takes effect for subsequent operations. Changing either switch leaves existing approval decisions and pending reports in place.
+The Hub stores two independent policies under **Security & Trust**. Each defaults to on. A settings write takes effect for subsequent operations. Changing either switch leaves existing approval decisions and pending reports in place. The all-in-one image keeps these Hub-wide policies untouched; its entrypoint instead approves and applies configuration for the single Worker it paired, identified by the `workerId` that pairing reported, and leaves every other Worker subject to the configured policies.
 
 | Policy | Decision point | On | Off |
 | --- | --- | --- | --- |

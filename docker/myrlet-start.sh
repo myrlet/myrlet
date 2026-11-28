@@ -8,6 +8,11 @@
 #
 #   /usr/bin/tini -- /usr/local/bin/myrlet-start
 #
+# The local Worker is identified by the `workerId` its pairing reported. This
+# entrypoint approves and applies configuration for that one Worker only, while
+# leaving the Hub's Security & Trust policies untouched, so any other Worker
+# enrolled with the same Hub stays subject to the configured rules.
+#
 # Runs as UID 10001 (`myrlet`) with `MYRLET_HOME` pointing at a private data
 # root. `tini` is PID 1, so this script can forward signals and reap both
 # children instead of orphaning them.
@@ -17,12 +22,16 @@
 #   MYRLET_HOME          data root (default: /var/lib/myrlet)
 #   MYRLET_HUB_BIND      Hub listen address (default: 0.0.0.0:4140); the local
 #                        Worker always reaches the Hub over 127.0.0.1:<port>
+#   MYRLET_HUB_BIN, MYRLET_WORKER_BIN, MYRLET_CLI_BIN
+#                        optional binary paths; default to the image layout, and let an
+#                        integration test run this exact script against freshly built
+#                        binaries instead of the baked-in ones.
 
 set -euo pipefail
 
-readonly HUB_BIN="/usr/local/bin/hub"
-readonly WORKER_BIN="/usr/local/bin/worker"
-readonly CLI_BIN="/usr/local/bin/myrlet"
+readonly HUB_BIN="${MYRLET_HUB_BIN:-/usr/local/bin/hub}"
+readonly WORKER_BIN="${MYRLET_WORKER_BIN:-/usr/local/bin/worker}"
+readonly CLI_BIN="${MYRLET_CLI_BIN:-/usr/local/bin/myrlet}"
 readonly READY_TIMEOUT_SECONDS=30
 
 log() { printf 'myrlet-start: %s\n' "$*" >&2; }
@@ -34,6 +43,8 @@ die() {
 hub_pid=""
 worker_pid=""
 shutting_down=0
+# Identity of the Worker this entrypoint enrolled. Empty until pairing establishes it.
+local_worker_id=""
 
 # --- Shutdown ---------------------------------------------------------------
 # Forward SIGTERM to the Worker first (it drains in-flight deliveries), then to
@@ -113,28 +124,12 @@ worker_dir="${MYRLET_HOME}/worker"
 worker_credentials="${worker_dir}/credentials.json"
 worker_config="${worker_dir}/worker.yaml"
 
-# --- All-in-one trust policies ---------------------------------------------
-# A single-machine deployment enrolls exactly one Worker on first boot, so the Hub's
-# own policies decide whether that pair is approved and whether its first report is
-# applied; this script never inspects or names a Worker. Enable both automatic
-# policies once (they persist in the Hub database); an operator who turned either off
-# for a reason keeps that choice. The two switches stay independent, and every later
-# report still goes through the same Hub rules. Existing installs are left untouched.
-if [ ! -f "$worker_credentials" ]; then
-  log "enabling automatic approval and configuration apply for this Hub"
-  set +e
-  MYRLET_HUB_URL="$local_hub_url" \
-    "$CLI_BIN" --json policy set --auto-approve true --auto-apply true >/dev/null
-  policies_status=$?
-  set -e
-  if [ "$policies_status" -eq 0 ]; then
-    log "automatic approval and configuration apply are enabled"
-  else
-    log "warning: could not enable the Hub policies; approve the local worker manually if it stays pending"
-  fi
-fi
-
 # --- Auto-pair the local Worker (first boot only) ---------------------------
+# Trust stays exactly as the Hub is configured: this entrypoint never edits the
+# Security & Trust policies, so any other Worker enrolled with the same Hub keeps
+# whatever approval and review rules the operator set. Instead it approves and
+# applies configuration for this one local Worker, identified by the `workerId`
+# bound in this image's credential file — never by position in `workers list`.
 if [ ! -f "$worker_credentials" ]; then
   log "no worker credentials in ${worker_credentials}; enrolling a local worker"
   if ! enroll_json="$(MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers enroll)"; then
@@ -145,9 +140,29 @@ if [ ! -f "$worker_credentials" ]; then
   if [ -z "$code" ]; then
     die "could not extract an enrollmentCode from the Hub response: ${enroll_json}"
   fi
-  "$WORKER_BIN" pair --hub-url "$local_hub_url" --code "$code"
-  log "local worker paired"
+  # `worker pair` writes the Hub-assigned identity to credentials.json.
+  if ! pair_out="$("$WORKER_BIN" pair --hub-url "$local_hub_url" --code "$code" 2>&1)"; then
+    die "pairing the local worker failed: ${pair_out}"
+  fi
+  log "$pair_out"
 fi
+
+# --- Resolve the local Worker identity (both fresh install and restart) -----
+# The credential binding this image wrote is the authoritative, restart-stable local
+# identity. Resolving it here — not only inside the first-boot branch — is what lets a
+# restarted container converge its own Worker. It is read from the local file, never
+# inferred from `workers list` order.
+if [ ! -f "$worker_credentials" ]; then
+  die "no worker credentials at ${worker_credentials}; the local worker was never paired"
+fi
+local_worker_id="$(sed -n 's/.*"workerId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$worker_credentials" | head -n 1)"
+case "$local_worker_id" in
+  wkr_*) ;;
+  *)
+    die "could not resolve the local worker identity from ${worker_credentials} (got '${local_worker_id}')"
+    ;;
+esac
+log "local worker identity ${local_worker_id}"
 
 # --- Default Worker configuration (first boot only) -------------------------
 # Field names mirror `apps/worker/src/config.rs` (`hubUrl`, `slots`, `slotId`,
@@ -193,13 +208,95 @@ log "starting worker"
 "$WORKER_BIN" &
 worker_pid=$!
 
+# --- Approve and apply for this Worker only ---------------------------------
+# Resolve the pair from one `workers show` read so the approval and the applied
+# revision describe the same observation. Every step is idempotent (approval repeats
+# harmlessly; Apply only runs while the reported revision is newer), so a container
+# restart re-converges without touching the Hub's policies or any other Worker.
+local_worker_admin() {
+  MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json "$@"
+}
+
+converge_local_worker() {
+  local show revision applied approval
+  if ! show="$(local_worker_admin workers show "$local_worker_id")"; then
+    return 1
+  fi
+  revision="$(printf '%s' "$show" | sed -n 's/.*"reportedRevision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  applied="$(printf '%s' "$show" | sed -n 's/.*"appliedRevision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+  approval="$(printf '%s' "$show" | sed -n 's/.*"approval"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  # Wait until the Worker has connected and reported at least one inventory.
+  if [ -z "$revision" ]; then
+    return 1
+  fi
+  if [ "$approval" != "approved" ]; then
+    if ! local_worker_admin workers approve "$local_worker_id" >/dev/null 2>&1; then
+      return 1
+    fi
+    log "approved the local worker (approval is required by this Hub)"
+  fi
+  if [ "$revision" != "$applied" ]; then
+    if ! local_worker_admin workers config apply "$local_worker_id" \
+      --revision "$revision" >/dev/null 2>&1; then
+      return 1
+    fi
+    log "applied the local worker inventory at revision ${revision}"
+  fi
+  return 0
+}
+
+waited=0
+converged=0
+while [ "$waited" -lt "$READY_TIMEOUT_SECONDS" ]; do
+  if ! kill -0 "$worker_pid" 2>/dev/null; then
+    die "the local worker exited during startup."
+  fi
+  if converge_local_worker; then
+    converged=1
+    break
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
+if [ "$converged" -eq 1 ]; then
+  log "local worker ${local_worker_id} is approved and its inventory is applied"
+else
+  log "warning: could not approve/apply the local worker ${local_worker_id} within ${READY_TIMEOUT_SECONDS}s; it stays subject to the Hub's policies until the next restart"
+fi
+
 # --- Supervise --------------------------------------------------------------
 log "myrlet is running (hub pid ${hub_pid}, worker pid ${worker_pid})"
-if wait -n "$hub_pid" "$worker_pid"; then
-  status=0
-else
-  status=$?
-fi
+
+# Join whichever daemon exits first and return its status. `wait -n` does this directly on
+# bash 5+ (the Debian image); a polling fallback keeps this script runnable on an older
+# host shell (bash 3.2 on macOS) for non-container integration tests.
+wait_first_exit() {
+  if wait -n 2>/dev/null; then
+    return 0
+  else
+    first_status=$?
+  fi
+  # `wait -n` is unsupported (it rejects its own usage), so poll the two children instead.
+  if [ "$first_status" -eq 2 ]; then
+    while kill -0 "$hub_pid" 2>/dev/null && kill -0 "$worker_pid" 2>/dev/null; do
+      sleep 1
+    done
+    set +e
+    wait "$hub_pid"
+    hub_exit=$?
+    wait "$worker_pid"
+    worker_exit=$?
+    set -e
+    # Report the daemon that stopped first; a clean stop is 0.
+    if [ "$hub_exit" -eq 0 ] || [ "$worker_exit" -eq 0 ]; then
+      return 0
+    fi
+    return "$hub_exit"
+  fi
+  return "$first_status"
+}
+wait_first_exit
+status=$?
 
 if [ "$shutting_down" -eq 1 ]; then
   exit 0

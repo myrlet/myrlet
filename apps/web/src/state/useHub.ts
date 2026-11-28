@@ -410,7 +410,7 @@ export function useHub() {
     revokeWorker,
     approveWorker,
     applyWorkerConfig,
-    fetchReportedConfig,
+    fetchWorkerDetail,
     enrollmentCode,
     issuingCode,
   } = useWorkerCommands({
@@ -480,7 +480,7 @@ export function useHub() {
     revokeWorker,
     approveWorker,
     applyWorkerConfig,
-    fetchReportedConfig,
+    fetchWorkerDetail,
     settings,
     updateSecurityTrust,
   };

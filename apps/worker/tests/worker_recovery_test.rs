@@ -25,7 +25,8 @@ async fn a_lost_claim_acknowledgement_is_recovered_without_a_second_submission()
     let mut hub = support::start_with_lost_claim_reply(None).await;
     let (directory, home) = temp_home();
     let counter = directory.path().join("runs.txt");
-    let script = format!("echo run >> {}", counter.display());
+    // Record one launch, then stay alive so the Delivery is still live across the reconnect.
+    let script = format!("echo run >> {}; sleep 30", counter.display());
     std::fs::write(
         home.worker_config(),
         support::process_yaml(&hub.url, &[("exec-count", script.as_str())]),
@@ -34,6 +35,7 @@ async fn a_lost_claim_acknowledgement_is_recovered_without_a_second_submission()
     let config = WorkerConfig::load(&home.worker_config()).expect("config");
     let runtime =
         WorkerRuntime::new(home.clone(), config, support::credentials()).expect("runtime");
+    let probe = runtime.clone();
     let (shutdown, rx) = watch::channel(false);
     let worker = tokio::spawn(async move { runtime.run(rx).await });
 
@@ -68,6 +70,17 @@ async fn a_lost_claim_acknowledgement_is_recovered_without_a_second_submission()
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(registered.exists(), "the recovered Delivery is registered");
+    // The committed Delivery keeps its admitting adapter across the reconnect, so the
+    // execution's cancellation and reporting paths survive the epoch change.
+    let pinned = std::time::Instant::now() + Duration::from_secs(5);
+    while probe.pinned_adapter_count() != 1 && std::time::Instant::now() < pinned {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        probe.pinned_adapter_count(),
+        1,
+        "a replayed claim keeps its pinned adapter",
+    );
     tokio::time::sleep(Duration::from_millis(500)).await;
     let runs = std::fs::read_to_string(&counter).unwrap_or_default();
     assert_eq!(runs.lines().count(), 1, "no duplicate execution: {runs:?}");
