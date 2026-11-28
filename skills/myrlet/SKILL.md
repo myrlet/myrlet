@@ -12,10 +12,15 @@ See [references/cli.md](references/cli.md) for exact command syntax and [docs/ar
 
 ```bash
 export MYRLET_HUB_URL='http://127.0.0.1:4140'
-export MYRLET_ADMIN_TOKEN='<hub-admin-token>'   # Owner writes only
+export MYRLET_ADMIN_TOKEN='<hub-admin-token>'   # Admin only
 ```
 
-Never place tokens in command arguments, committed files, Task prompts, or logs.
+A Worker or Owner Agent uses its Worker's credential at `$MYRLET_HOME/worker/credentials.json`
+(set `MYRLET_HOME`) and inherits the Hub-assigned `worker` or `owner` tier; there is no separate
+Agent credential. A `worker`-tier credential can read only its own Delivery-bound Task and direct
+related-Task summaries; an `owner`-tier credential can coordinate every Task. The Admin token is a
+separate principal for Worker administration and cannot impersonate Worker execution. Never place
+tokens in command arguments, committed files, Task prompts, or logs.
 
 ## Submit and Inspect
 
@@ -34,7 +39,7 @@ myrlet --json tasks submit --file task.json --idempotency-key issue-42-1
 # Or atomically submit a Bundle (up to 100 Tasks, local clientRef references)
 myrlet --json tasks import --file bundle.json --idempotency-key issue-42-bundle-1
 
-# Inspect every Task, tree, blocker, Worker, and event (Admin or Worker credential)
+# Inspect Tasks, trees, blockers, Workers, and events (Owner or Admin; Worker for its own Task)
 myrlet --json tasks list
 myrlet --json tasks show '<task-id>'
 myrlet --json tasks tree '<task-id>'
@@ -50,12 +55,15 @@ myrlet --json events watch
 A freshly paired Worker is `pending` by default: it can connect and read, but claims nothing until an Admin approves it. Its first scheduling report also waits for an explicit Apply. Operators handle both:
 
 ```bash
-myrlet --json workers list                              # approval + reported/applied revisions
-myrlet --json workers show '<worker-id>'                # same detail for one Worker
-myrlet --json workers config show '<worker-id>'         # both snapshots, for review
+myrlet --json workers list                              # tier, approval, reported/applied revisions
+myrlet --json workers show '<worker-id>'                # same detail for one Worker (Owner or Admin)
+myrlet --json workers config show '<worker-id>'         # both snapshots, for review (Admin)
 myrlet --json workers approve '<worker-id>'
 myrlet --json workers config apply '<worker-id>' --revision '<revision>'
+myrlet --json workers permission set '<worker-id>' --tier owner   # Admin; promote or demote
 ```
+
+A Worker can never change its own tier; only an Admin can promote it to `owner` or demote it back.
 
 Approval and Apply are independent and may happen in either order. If Apply answers `ConfigRevisionMismatch`, re-read the Worker; the report changed since you looked. These commands never change an existing Worker retroactively.
 

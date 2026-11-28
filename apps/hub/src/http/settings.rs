@@ -9,17 +9,15 @@ use myrlet_protocol::{SecurityTrustSettings, UpdateSecurityTrustRequest};
 
 use crate::auth;
 use crate::error::ApiError;
-use crate::http::{read_bounded_json, require_reader, run_bounded};
+use crate::http::{read_bounded_json, run_bounded};
 use crate::state::{now_ms, HubState};
 
-/// `GET /v1/settings/security-trust`: the two stored policy booleans.
-///
-/// Either principal may read them; only Admin may change them.
+/// `GET /v1/settings/security-trust`: the two stored policy booleans. Admin only.
 pub async fn read_settings(
     State(state): State<HubState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    require_reader(&state, &headers).await?;
+    auth::require_admin(&state, &headers).await?;
     let settings: SecurityTrustSettings = state.store.load_settings().await?;
     Ok(Json(settings).into_response())
 }
@@ -30,7 +28,7 @@ pub async fn update_settings(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    auth::require_admin(&state, &headers)?;
+    auth::require_admin(&state, &headers).await?;
     run_bounded(state.clone(), async move {
         let request: UpdateSecurityTrustRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;

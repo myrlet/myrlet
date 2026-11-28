@@ -33,9 +33,20 @@ pub(crate) fn free_port() -> u16 {
     listener.local_addr().expect("addr").port()
 }
 
-/// Read `key` from a CLI document, falling back to a nested `task` object.
+/// Read `key` from a CLI document, falling back to the Task record nested under `task`.
+///
+/// A `tasks show` response is `{ task, summary, related }`; the Task record itself also
+/// nests its immutable definition under `task`.
 pub(crate) fn field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
-    value.get(key).or_else(|| value.get("task")?.get(key))
+    value
+        .get(key)
+        .or_else(|| value.get("task")?.get(key))
+        .or_else(|| value.get("task")?.get("task")?.get(key))
+}
+
+/// The full Task record returned by `tasks show` (or the bare record when nested).
+pub(crate) fn record(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    value.get("task").filter(|task| task.get("id").is_some())
 }
 
 /// A `myrlet` CLI bound to one home directory and hub URL.

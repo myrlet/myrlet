@@ -53,7 +53,10 @@ pub fn subtree_counts(conn: &Connection, task_id: &TaskId) -> Result<SubtreeCoun
     })
 }
 
-fn dependency_ids(conn: &Connection, task_id: &TaskId) -> Result<Vec<TaskId>, StoreError> {
+pub(crate) fn dependency_ids(
+    conn: &Connection,
+    task_id: &TaskId,
+) -> Result<Vec<TaskId>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT depends_on_task_id FROM task_deps WHERE task_id = ?1 \
          ORDER BY depends_on_task_id ASC",
@@ -150,6 +153,7 @@ pub fn get_task_tree(
     Ok(TaskTreeResponse {
         root_task_id: start.root_task_id,
         tasks,
+        related: Vec::new(),
         truncated,
     })
 }

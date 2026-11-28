@@ -64,13 +64,18 @@ describe("Result in Task Detail", () => {
         return jsonResponse({
           rootTaskId: summary.rootTaskId,
           tasks: [taskRecord(summary)],
+          related: [],
           truncated: false,
         });
       }
       return jsonResponse({
-        ...taskRecord(summary),
-        resultMarkdown: result,
-        resultRecordedAtMs: 1_700_000_000_600,
+        task: {
+          ...taskRecord(summary),
+          resultMarkdown: result,
+          resultRecordedAtMs: 1_700_000_000_600,
+        },
+        summary: null,
+        related: [],
       });
     });
 

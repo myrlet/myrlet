@@ -24,10 +24,12 @@ pub mod reads;
 pub mod reports;
 pub mod result;
 pub mod schema;
+pub mod scoped;
 pub mod settings;
 pub mod tasks;
 pub mod workers;
 
+pub use enrollment::AuthenticatedWorker;
 pub use error::StoreError;
 pub use myrlet_protocol::WORKER_PROTOCOL_VERSION;
 

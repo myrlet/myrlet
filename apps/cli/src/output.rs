@@ -3,16 +3,16 @@
 use std::io::{self, Write};
 
 use myrlet_protocol::{
-    DeliveryView, GlobalSnapshot, HubEventEnvelope, LocalReply, TaskBundleImportResponse,
-    TaskListResponse, TaskRecord, TaskTreeResponse,
+    DeliveryView, GlobalSnapshot, HubEventEnvelope, LocalReply, RelatedTaskSummary,
+    TaskBundleImportResponse, TaskListResponse, TaskReadResponse, TaskRecord, TaskTreeResponse,
 };
 use serde::Serialize;
 
 mod workers;
 
 pub use workers::{
-    approved, config_applied, enrollment, policy, revoked, rotate, worker_config, worker_detail,
-    worker_list,
+    approved, config_applied, enrollment, permission_tier, policy, revoked, rotate, worker_config,
+    worker_detail, worker_list,
 };
 
 fn to_json<W: Write, T: Serialize>(out: &mut W, value: &T) -> io::Result<()> {
@@ -57,6 +57,42 @@ fn delivery_summary(delivery: &DeliveryView) -> String {
     } else {
         label(&delivery.state)
     }
+}
+
+/// Print one Task read within the credential's visibility.
+pub fn task_read<W: Write>(out: &mut W, read: &TaskReadResponse, as_json: bool) -> io::Result<()> {
+    if as_json {
+        return to_json(out, read);
+    }
+    match (&read.task, &read.summary) {
+        (Some(record), _) => task_record(out, record, false)?,
+        (None, Some(summary)) => related_summary(out, summary)?,
+        (None, None) => writeln!(out, "Task: (not visible)")?,
+    }
+    if !read.related.is_empty() {
+        writeln!(out, "RelatedTasks:")?;
+        for related in &read.related {
+            writeln!(
+                out,
+                "  {}  {}  {}",
+                related.id,
+                label(&related.status),
+                truncate(&related.title, 40)
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn related_summary<W: Write>(out: &mut W, summary: &RelatedTaskSummary) -> io::Result<()> {
+    writeln!(out, "Task: {}", summary.id)?;
+    writeln!(out, "Title: {}", summary.title)?;
+    writeln!(out, "Status: {}", label(&summary.status))?;
+    writeln!(out, "Version: {}", summary.version)?;
+    writeln!(out, "Parent: {}", optional(summary.parent_task_id.as_ref()))?;
+    writeln!(out, "Depth: {}", summary.depth)?;
+    writeln!(out, "Dependencies: {}", list(&summary.dependencies))?;
+    writeln!(out, "Summary: limited one-hop related-Task view")
 }
 
 /// Print one authoritative Task record.
@@ -169,6 +205,15 @@ pub fn task_tree<W: Write>(out: &mut W, tree: &TaskTreeResponse, as_json: bool) 
             label(&task.status),
             task.version,
             task.task.title
+        )?;
+    }
+    for related in &tree.related {
+        writeln!(
+            out,
+            "  related {}  {}  {}",
+            related.id,
+            label(&related.status),
+            truncate(&related.title, 40)
         )?;
     }
     writeln!(out, "truncated: {}", tree.truncated)

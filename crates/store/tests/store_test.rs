@@ -4,9 +4,9 @@ use std::collections::HashMap;
 
 use myrlet_protocol::{
     CancelTaskRequest, ClaimTaskRequest, DeliveryStatus, FinishReportRequest, FinishTaskRequest,
-    PairWorkerRequest, ProgressReportRequest, ResultReportRequest, TaskBundleImportRequest,
-    TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection, UpdateTaskRequest, WorkerId,
-    WorkerInventory,
+    PairWorkerRequest, PermissionTier, ProgressReportRequest, ResultReportRequest,
+    TaskBundleImportRequest, TaskDefinition, TaskId, TaskRecord, TaskStatus, TaskTreeDirection,
+    UpdateTaskRequest, WorkerId, WorkerInventory,
 };
 use myrlet_store::{HubStore, StoreError};
 
@@ -516,7 +516,8 @@ async fn pairing_rotation_and_revocation_fence_credentials() {
         .authenticate_worker(paired.credential.clone())
         .await
         .unwrap();
-    assert_eq!(authenticated, worker());
+    assert_eq!(authenticated.worker_id, worker());
+    assert_eq!(authenticated.permission_tier, PermissionTier::Worker);
     let reuse = store.redeem_pairing_code("hub_1".into(), request, T0).await;
     assert!(matches!(reuse, Err(StoreError::Unauthorized)));
     let rotated = store
@@ -530,7 +531,8 @@ async fn pairing_rotation_and_revocation_fence_credentials() {
         store
             .authenticate_worker(rotated.credential.clone())
             .await
-            .unwrap(),
+            .unwrap()
+            .worker_id,
         worker()
     );
     assert_eq!(

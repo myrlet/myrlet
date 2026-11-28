@@ -78,6 +78,7 @@ function workerRecord(): WorkerRecord {
     online: true,
     revoked: false,
     approval: "approved",
+    permissionTier: "worker",
     connectionEpoch: 2,
     lastSeenAtMs: Date.now(),
     activeDeliveries: 0,
@@ -199,9 +200,9 @@ beforeEach(() => {
       return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
     }
     if (match !== null && match[2] !== undefined) {
-      return jsonResponse({ rootTaskId: summary.rootTaskId, tasks: [taskRecord(summary)], truncated: false });
+      return jsonResponse({ rootTaskId: summary.rootTaskId, tasks: [taskRecord(summary)], related: [], truncated: false });
     }
-    return jsonResponse(taskRecord(summary));
+    return jsonResponse({ task: taskRecord(summary), summary: null, related: [] });
   });
 });
 

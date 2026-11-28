@@ -22,6 +22,7 @@ struct Recorded {
     method: String,
     path: String,
     key: Option<String>,
+    authorization: Option<String>,
     body: Value,
 }
 
@@ -39,11 +40,15 @@ async fn capture(
     next: axum::middleware::Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let key = parts
-        .headers
-        .get("idempotency-key")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let key = header("idempotency-key");
+    let authorization = header("authorization");
     let bytes = axum::body::to_bytes(body, usize::MAX)
         .await
         .unwrap_or_default();
@@ -56,6 +61,7 @@ async fn capture(
         method: parts.method.to_string(),
         path: parts.uri.path().to_string(),
         key,
+        authorization,
         body,
     });
     next.run(axum::extract::Request::from_parts(parts, Body::from(bytes)))
@@ -73,7 +79,7 @@ fn router(hub: Hub) -> Router {
         )
         .route(
             "/v1/tasks/:id",
-            get(|| async { Json(task("dispatched", 3, delivery())) })
+            get(|| async { Json(task_read("dispatched", 3, delivery())) })
                 .post(|| async { Json(task("queued", 4, Value::Null)) }),
         )
         .route(
@@ -138,6 +144,12 @@ fn router(hub: Hub) -> Router {
                 Json(stored)
             }),
         )
+        .route(
+            "/v1/workers/:id/permission-tier",
+            axum::routing::patch(|| async {
+                Json(json!({ "workerId": "wkr_000000000000", "permissionTier": "owner" }))
+            }),
+        )
         .route("/v1/events", get(events_route))
         .layer(axum::middleware::from_fn_with_state(hub, capture))
 }
@@ -198,6 +210,10 @@ fn task(status: &str, version: u64, current: Value) -> Value {
     })
 }
 
+fn task_read(status: &str, version: u64, current: Value) -> Value {
+    json!({ "task": task(status, version, current), "summary": null, "related": [] })
+}
+
 fn task_list() -> Value {
     json!({
         "tasks":[{
@@ -222,8 +238,9 @@ fn snapshot_value() -> Value {
 fn worker_value() -> Value {
     json!({
         "workerId":"wkr_000000000000","online":true,"revoked":false,"approval":"approved",
-        "connectionEpoch":7,"lastSeenAtMs":null,"activeDeliveries":0,"host":null,
-        "reportedRevision":1,"appliedRevision":1,"appliedConfig":null
+        "permissionTier":"worker","connectionEpoch":7,"lastSeenAtMs":null,
+        "activeDeliveries":0,"host":null,"reportedRevision":1,"appliedRevision":1,
+        "appliedConfig":null
     })
 }
 
@@ -295,11 +312,11 @@ async fn submit_show_and_update() {
     let (json_out, _) = ok(&["--json", "tasks", "show", "task_01"], &url).await;
     let show: Value = serde_json::from_str(&json_out).unwrap();
     assert_eq!(
-        show["currentDelivery"]["progress"]["text"],
+        show["task"]["currentDelivery"]["progress"]["text"],
         "hello progress"
     );
-    assert_eq!(show["resultMarkdown"], "# Findings\n\n- one");
-    assert_eq!(show["resultRecordedAtMs"], 45);
+    assert_eq!(show["task"]["resultMarkdown"], "# Findings\n\n- one");
+    assert_eq!(show["task"]["resultRecordedAtMs"], 45);
 
     let _ = ok(
         &[
@@ -492,4 +509,135 @@ async fn execution_local_commands_require_a_worker_socket() {
         assert_eq!(code, ExitCode::from(2u8), "result {args:?}");
         assert!(err.contains("MYRLET_HOME"), "result {args:?}: {err}");
     }
+}
+
+/// Run one command against a fixed home directory, so a Worker credential is available.
+async fn run_with_home(
+    args: &[&str],
+    url: &str,
+    admin_token: Option<&str>,
+    home: &str,
+) -> (ExitCode, String, String) {
+    let mut env = HashMap::new();
+    env.insert("MYRLET_HUB_URL".to_string(), url.to_string());
+    env.insert("MYRLET_HOME".to_string(), home.to_string());
+    env.extend(admin_token.map(|t| ("MYRLET_ADMIN_TOKEN".to_string(), t.to_string())));
+    let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let code =
+        myrlet_cli::run_with_io(&args, |k| env.get(k).cloned(), &mut stdout, &mut stderr).await;
+    (
+        code,
+        String::from_utf8(stdout).unwrap(),
+        String::from_utf8(stderr).unwrap(),
+    )
+}
+
+/// Write a Worker credential document under a private temp home.
+fn worker_home(credential: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let home = std::env::temp_dir().join(format!(
+        "myrlet-cli-home-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let worker_dir = home.join("worker");
+    std::fs::create_dir_all(&worker_dir).unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&worker_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let document = json!({
+        "hubId": "hub_test",
+        "workerId": "wkr_000000000000",
+        "credential": credential,
+    })
+    .to_string();
+    let path = worker_dir.join("credentials.json");
+    std::fs::write(&path, document).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    home.to_string_lossy().into_owned()
+}
+
+#[tokio::test]
+async fn worker_tier_commands_use_the_worker_credential_and_admin_commands_do_not() {
+    let hub = Hub::default();
+    let url = start(hub.clone()).await;
+    let home = worker_home("worker-bearer");
+
+    // A read/coordination command with no Admin token falls back to the Worker credential.
+    let (code, _, err) = run_with_home(&["tasks", "list"], &url, None, &home).await;
+    assert_eq!(code, ExitCode::SUCCESS, "{err}");
+    assert_eq!(
+        hub.all().pop().unwrap().authorization.as_deref(),
+        Some("Bearer worker-bearer")
+    );
+    let (code, _, err) = run_with_home(&["workers", "list"], &url, None, &home).await;
+    assert_eq!(code, ExitCode::SUCCESS, "{err}");
+    assert_eq!(
+        hub.all().pop().unwrap().authorization.as_deref(),
+        Some("Bearer worker-bearer")
+    );
+
+    // An Admin-only command never downgrades to the Worker credential.
+    let (code, _, err) = run_with_home(
+        &[
+            "workers",
+            "permission",
+            "set",
+            "wkr_000000000000",
+            "--tier",
+            "owner",
+        ],
+        &url,
+        None,
+        &home,
+    )
+    .await;
+    assert_eq!(code, ExitCode::from(2u8));
+    assert!(err.contains("MYRLET_ADMIN_TOKEN"), "{err}");
+
+    // With the Admin token present the same command is allowed.
+    let (code, out, err) = run_with_home(
+        &[
+            "--json",
+            "workers",
+            "permission",
+            "set",
+            "wkr_000000000000",
+            "--tier",
+            "owner",
+        ],
+        &url,
+        Some("admin-token"),
+        &home,
+    )
+    .await;
+    assert_eq!(code, ExitCode::SUCCESS, "{err}");
+    let response: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(response["permissionTier"], "owner");
+    let recorded = hub.all().pop().unwrap();
+    assert_eq!(recorded.method, "PATCH");
+    assert_eq!(
+        recorded.path,
+        "/v1/workers/wkr_000000000000/permission-tier"
+    );
+    assert_eq!(
+        recorded.authorization.as_deref(),
+        Some("Bearer admin-token")
+    );
+    assert_eq!(recorded.body["permissionTier"], "owner");
+}
+
+#[tokio::test]
+async fn worker_commands_fail_closed_without_any_credential() {
+    let url = start(Hub::default()).await;
+    let (code, _, err) = run(&["tasks", "list"], Some(&url), None).await;
+    assert_eq!(code, ExitCode::from(2u8));
+    assert!(err.contains("MYRLET_HOME"), "{err}");
+    // A missing credential file is a runtime failure, never a silent anonymous request.
+    let home = std::env::temp_dir().join(format!("myrlet-cli-empty-{}", std::process::id()));
+    std::fs::create_dir_all(home.join("worker")).unwrap();
+    let (code, _, err) =
+        run_with_home(&["tasks", "list"], &url, None, home.to_str().unwrap()).await;
+    assert_eq!(code, ExitCode::from(1u8));
+    assert!(err.contains("credential"), "{err}");
 }

@@ -1,6 +1,8 @@
 //! Cross-process end-to-end test driving the real `hub`, `worker`, and `myrlet` binaries.
 
 use std::path::{Path, PathBuf};
+
+use serde_json::json;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -37,9 +39,15 @@ fn free_port() -> u16 {
     listener.local_addr().expect("local addr").port()
 }
 
-/// Read `key` from a CLI document, falling back to a nested `task` object.
+/// Read `key` from a CLI document, falling back to the Task record nested under `task`.
+///
+/// A `tasks show` response is `{ task, summary, related }`; the Task record itself also
+/// nests its immutable definition under `task`.
 fn field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
-    value.get(key).or_else(|| value.get("task")?.get(key))
+    value
+        .get(key)
+        .or_else(|| value.get("task")?.get(key))
+        .or_else(|| value.get("task")?.get("task")?.get(key))
 }
 
 fn status(value: &serde_json::Value) -> &str {
@@ -313,13 +321,19 @@ async fn cross_process_hub_worker_cli_end_to_end() {
 
     // Once the Hub has the result, reading it requires no connection to the producer.
     poll("Markdown result to sync", || {
-        (cli.run(&["--json", "tasks", "show", &first])["resultMarkdown"] == "# Findings\n")
-            .then_some(())
+        (field(
+            &cli.run(&["--json", "tasks", "show", &first]),
+            "resultMarkdown",
+        ) == Some(&json!("# Findings\n")))
+        .then_some(())
     });
     shutdown(&mut worker_guard.0, "worker");
     assert_eq!(
-        cli.run(&["--json", "tasks", "show", &first])["resultMarkdown"],
-        "# Findings\n"
+        field(
+            &cli.run(&["--json", "tasks", "show", &first]),
+            "resultMarkdown"
+        ),
+        Some(&json!("# Findings\n"))
     );
     shutdown(&mut hub_guard.0, "hub");
 }
@@ -407,7 +421,8 @@ async fn a_harness_can_call_done_and_clear_its_result_after_finish() {
     // the Task is still `dispatched`; wait for the Worker-observed exit separately.
     poll("the harness result to reach the Hub", || {
         let shown = cli.run(&["--json", "tasks", "show", &task]);
-        (shown["resultMarkdown"] == "# Harness result\n\n- done via CLI\n").then_some(())
+        (field(&shown, "resultMarkdown") == Some(&json!("# Harness result\n\n- done via CLI\n")))
+            .then_some(())
     });
     let shown = poll("worker exit to finish the Task", || {
         let shown = cli.run(&["--json", "tasks", "show", &task]);
@@ -415,7 +430,9 @@ async fn a_harness_can_call_done_and_clear_its_result_after_finish() {
     });
 
     // The Harness deleted its file; a later sync after Finish clears the Hub copy.
-    let delivery_id = shown["currentDelivery"]["id"].as_str().expect("delivery");
+    let delivery_id = field(&shown, "currentDelivery")
+        .and_then(|delivery| delivery["id"].as_str())
+        .expect("delivery");
     let result_path = home
         .join("worker/results")
         .join(format!("{delivery_id}.md"));
@@ -427,8 +444,11 @@ async fn a_harness_can_call_done_and_clear_its_result_after_finish() {
         "sync confirmed: {cleared}"
     );
     poll("the Hub result to clear", || {
-        (cli.run(&["--json", "tasks", "show", &task])["resultMarkdown"] == serde_json::Value::Null)
-            .then_some(())
+        (field(
+            &cli.run(&["--json", "tasks", "show", &task]),
+            "resultMarkdown",
+        ) == Some(&serde_json::Value::Null))
+        .then_some(())
     });
 
     shutdown(&mut worker_guard.0, "worker");

@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod bundle;
+pub mod credentials;
 pub mod delivery;
 pub mod id;
 pub mod inventory;
@@ -22,6 +23,7 @@ pub const SNAPSHOT_SCHEMA_VERSION: &str = "myrlet.snapshot/v1";
 
 pub use api::*;
 pub use bundle::*;
+pub use credentials::*;
 pub use delivery::*;
 pub use id::*;
 pub use inventory::*;

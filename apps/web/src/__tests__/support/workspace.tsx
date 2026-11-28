@@ -41,13 +41,18 @@ function defaultWorkspaceHandler(url: string): Response | Promise<Response> {
       return jsonResponse({
         rootTaskId: summary.rootTaskId,
         tasks: [taskRecord(summary)],
+        related: [],
         truncated: false,
       });
     }
-    return jsonResponse(taskRecord(summary));
+    return jsonResponse({ task: taskRecord(summary), summary: null, related: [] });
   }
   if (path.startsWith("/v1/tasks")) {
-    return jsonResponse(taskRecord(buildSnapshot().tasks[0]));
+    return jsonResponse({
+      task: taskRecord(buildSnapshot().tasks[0]),
+      summary: null,
+      related: [],
+    });
   }
   return jsonResponse({ error: "NotFound", message: "Not found." }, 404);
 }

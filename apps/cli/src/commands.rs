@@ -5,8 +5,8 @@ use std::io::{self, Write};
 
 use myrlet_client::{Client, ClientError, NativeTransport};
 use myrlet_protocol::{
-    CancelTaskRequest, FinishTaskRequest, LocalCommand, LocalReply, TaskBundleImportRequest,
-    TaskDefinition, TaskId, UpdateTaskRequest,
+    load_worker_credentials, CancelTaskRequest, FinishTaskRequest, LocalCommand, LocalReply,
+    PermissionTier, TaskBundleImportRequest, TaskDefinition, TaskId, UpdateTaskRequest, WorkerId,
 };
 
 use crate::args::Command;
@@ -19,10 +19,11 @@ type NativeClient = Client<NativeTransport>;
 pub struct Env<'a> {
     pub hub_url: &'a str,
     pub admin_token: Option<&'a str>,
+    pub home: Option<&'a str>,
     pub worker_socket: Option<&'a str>,
 }
 
-/// The credential a command needs: execution-local commands use only the Worker socket.
+/// Whether a command is execution-local (Worker control socket only, no Hub credential).
 fn local_only(command: &Command) -> Option<&str> {
     match command {
         Command::Done { delivery_id }
@@ -43,11 +44,7 @@ pub async fn execute<W: Write>(
     if local_only(&command).is_some() {
         return run_local(env, command, json, stdout);
     }
-    let token = env
-        .admin_token
-        .ok_or_else(|| CliError::Usage("MYRLET_ADMIN_TOKEN is not set".to_string()))?;
-    let client =
-        Client::new(env.hub_url, token).map_err(|error| CliError::Runtime(error.to_string()))?;
+    let client = authorize(env, &command)?;
     match command {
         Command::Help => Ok(()),
         Command::TasksList { limit } => {
@@ -55,8 +52,8 @@ pub async fn execute<W: Write>(
             render(output::task_list(stdout, &page, json))
         }
         Command::TasksShow { id } => {
-            let record = client.get_task(&TaskId::new(id)).await.map_err(runtime)?;
-            render(output::task_record(stdout, &record, json))
+            let read = client.get_task(&TaskId::new(id)).await.map_err(runtime)?;
+            render(output::task_read(stdout, &read, json))
         }
         Command::TasksTree {
             id,
@@ -169,7 +166,7 @@ pub async fn execute<W: Write>(
         }
         Command::WorkersShow { id } => {
             let detail = client
-                .get_worker(&myrlet_protocol::WorkerId::new(id))
+                .get_worker(&WorkerId::new(id))
                 .await
                 .map_err(runtime)?;
             render(output::worker_detail(stdout, &detail, json))
@@ -180,7 +177,7 @@ pub async fn execute<W: Write>(
         } => {
             let request = myrlet_protocol::CreateEnrollmentCodeRequest {
                 ttl_seconds,
-                suggested_worker_id: suggested_worker_id.map(myrlet_protocol::WorkerId::new),
+                suggested_worker_id: suggested_worker_id.map(WorkerId::new),
             };
             let response = client
                 .create_enrollment_code(&request)
@@ -190,30 +187,30 @@ pub async fn execute<W: Write>(
         }
         Command::WorkersRotate { id } => {
             let response = client
-                .rotate_worker(&myrlet_protocol::WorkerId::new(id))
+                .rotate_worker(&WorkerId::new(id))
                 .await
                 .map_err(runtime)?;
             render(output::rotate(stdout, &response, json))
         }
         Command::WorkersRevoke { id } => {
-            let worker_id = myrlet_protocol::WorkerId::new(id);
+            let worker_id = WorkerId::new(id);
             client.revoke_worker(&worker_id).await.map_err(runtime)?;
             render(output::revoked(stdout, &worker_id, json))
         }
         Command::WorkersApprove { id } => {
-            let worker_id = myrlet_protocol::WorkerId::new(id);
+            let worker_id = WorkerId::new(id);
             client.approve_worker(&worker_id).await.map_err(runtime)?;
             render(output::approved(stdout, &worker_id, json))
         }
         Command::WorkersConfigShow { id } => {
             let detail = client
-                .get_worker(&myrlet_protocol::WorkerId::new(id))
+                .get_worker(&WorkerId::new(id))
                 .await
                 .map_err(runtime)?;
             render(output::worker_config(stdout, &detail, json))
         }
         Command::WorkersConfigApply { id, revision } => {
-            let worker_id = myrlet_protocol::WorkerId::new(id);
+            let worker_id = WorkerId::new(id);
             let response = client
                 .apply_worker_config(&worker_id, revision)
                 .await
@@ -238,11 +235,108 @@ pub async fn execute<W: Write>(
                 .map_err(runtime)?;
             render(output::policy(stdout, &stored, json))
         }
+        Command::WorkersPermissionSet { id, tier } => {
+            let worker_id = WorkerId::new(id);
+            let response = client
+                .set_worker_permission_tier(&worker_id, tier)
+                .await
+                .map_err(runtime)?;
+            render(output::permission_tier(stdout, &response, json))
+        }
         Command::EventsWatch { cursor, limit } => watch(&client, cursor, limit, json, stdout).await,
         Command::Done { .. }
         | Command::ResultCheck { .. }
         | Command::ResultSync { .. }
         | Command::ResultStatus { .. } => unreachable!("local commands are handled above"),
+    }
+}
+
+/// Select the credential a command presents.
+///
+/// Admin commands use `MYRLET_ADMIN_TOKEN` and never fall back to a Worker credential.
+/// Worker and Owner commands use the Hub-issued Worker credential from `MYRLET_HOME`,
+/// unless an Admin token is present, in which case the Admin credential is preferred and
+/// gains the full administration surface. The CLI never inspects or selects a permission
+/// tier; the Hub decides.
+fn authorize(env: &Env<'_>, command: &Command) -> Result<NativeClient, CliError> {
+    let bearer = if command.requires_admin() {
+        env.admin_token.map(str::to_string).ok_or_else(|| {
+            CliError::Usage(format!(
+                "{command_label} requires MYRLET_ADMIN_TOKEN (Admin credential)",
+                command_label = command.label()
+            ))
+        })?
+    } else if let Some(token) = env.admin_token {
+        token.to_string()
+    } else {
+        worker_credential(env)?
+    };
+    Client::new(env.hub_url, bearer).map_err(|error| CliError::Runtime(error.to_string()))
+}
+
+/// Read the Worker's own Hub-issued credential from `MYRLET_HOME`, failing closed.
+fn worker_credential(env: &Env<'_>) -> Result<String, CliError> {
+    let home = env.home.ok_or_else(|| {
+        CliError::Usage(
+            "a Worker or Owner command needs MYRLET_HOME (for worker/credentials.json) or \
+             MYRLET_ADMIN_TOKEN"
+                .to_string(),
+        )
+    })?;
+    let path = std::path::Path::new(home)
+        .join("worker")
+        .join("credentials.json");
+    load_worker_credentials(&path)
+        .map(|credentials| credentials.credential)
+        .map_err(|error| CliError::Runtime(error.to_string()))
+}
+
+impl Command {
+    /// Whether this command is Admin-only (Worker and system administration).
+    fn requires_admin(&self) -> bool {
+        matches!(
+            self,
+            Command::WorkersEnroll { .. }
+                | Command::WorkersRotate { .. }
+                | Command::WorkersRevoke { .. }
+                | Command::WorkersApprove { .. }
+                | Command::WorkersConfigShow { .. }
+                | Command::WorkersConfigApply { .. }
+                | Command::WorkersPermissionSet { .. }
+                // Security & Trust policy writes are Admin system configuration.
+                | Command::PolicySet { .. }
+        )
+    }
+
+    /// Short command name used in credential error messages.
+    fn label(&self) -> &'static str {
+        match self {
+            Command::TasksList { .. } => "tasks list",
+            Command::TasksShow { .. } => "tasks show",
+            Command::TasksTree { .. } => "tasks tree",
+            Command::TasksSubmit { .. } => "tasks submit",
+            Command::TasksImport { .. } => "tasks import",
+            Command::TasksUpdate { .. } => "tasks update",
+            Command::TasksCancel { .. } => "tasks cancel",
+            Command::TasksFinish { .. } => "tasks finish",
+            Command::WorkersList => "workers list",
+            Command::WorkersShow { .. } => "workers show",
+            Command::WorkersEnroll { .. } => "workers enroll",
+            Command::WorkersRotate { .. } => "workers rotate",
+            Command::WorkersRevoke { .. } => "workers revoke",
+            Command::WorkersApprove { .. } => "workers approve",
+            Command::WorkersConfigShow { .. } => "workers config show",
+            Command::WorkersConfigApply { .. } => "workers config apply",
+            Command::WorkersPermissionSet { .. } => "workers permission set",
+            Command::PolicyShow => "policy show",
+            Command::PolicySet { .. } => "policy set",
+            Command::EventsWatch { .. } => "events watch",
+            Command::Done { .. } => "done",
+            Command::ResultCheck { .. } => "result check",
+            Command::ResultSync { .. } => "result sync",
+            Command::ResultStatus { .. } => "result status",
+            Command::Help => "help",
+        }
     }
 }
 
@@ -301,7 +395,17 @@ async fn current_version(
 ) -> Result<u64, CliError> {
     match expected_version {
         Some(version) => Ok(version),
-        None => Ok(client.get_task(task_id).await.map_err(runtime)?.version),
+        None => {
+            let read = client.get_task(task_id).await.map_err(runtime)?;
+            read.task.map_or_else(
+                || {
+                    Err(CliError::Runtime(
+                        "this Task has no readable record".to_string(),
+                    ))
+                },
+                |record| Ok(record.version),
+            )
+        }
     }
 }
 
@@ -374,4 +478,10 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, CliError> 
 /// Read a `TaskDefinition` file without going through a Hub call.
 pub fn read_definition(path: &str) -> Result<TaskDefinition, CliError> {
     read_json(path)
+}
+
+/// The permission tier label a CLI argument names.
+pub fn parse_permission_tier(raw: &str) -> Result<PermissionTier, CliError> {
+    PermissionTier::parse(raw)
+        .ok_or_else(|| CliError::Usage(format!("--tier must be worker or owner, got {raw:?}")))
 }

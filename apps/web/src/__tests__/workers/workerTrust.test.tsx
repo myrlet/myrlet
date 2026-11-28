@@ -42,6 +42,7 @@ function pendingWorker(): WorkerRecord {
     online: true,
     revoked: false,
     approval: "pending",
+    permissionTier: "worker",
     connectionEpoch: 4,
     lastSeenAtMs: Date.now(),
     activeDeliveries: 0,
@@ -56,6 +57,7 @@ function reviewWorker(): WorkerRecord {
   return {
     ...pendingWorker(),
     approval: "approved",
+    permissionTier: "worker",
     reportedRevision: 3,
     appliedRevision: 2,
     appliedConfig: appliedConfig("rust"),
