@@ -78,7 +78,7 @@ fn inventory() -> WorkerInventory {
 /// claim tests start from an approved Worker whose reported inventory is applied.
 async fn enrolled(store: &HubStore) -> u64 {
     let (worker_id, _credential) = paired(store).await;
-    let epoch = store
+    let (epoch, _events) = store
         .open_worker_connection(worker_id.clone(), inventory(), T0)
         .await
         .unwrap();
@@ -326,7 +326,7 @@ async fn claim_commits_one_delivery_and_racing_claims_yield_one_winner() {
         )
         .await
         .unwrap();
-    let other_epoch = store
+    let (other_epoch, _events) = store
         .open_worker_connection(other.clone(), inventory(), T0)
         .await
         .unwrap();
@@ -811,7 +811,7 @@ async fn delayed_old_epoch_result_never_undoes_a_newer_value() {
         .unwrap();
 
     // Reconnect fences the old epoch; the newer value commits under the new epoch.
-    let epoch2 = store
+    let (epoch2, _events) = store
         .open_worker_connection(worker(), inventory(), T0 + 10)
         .await
         .unwrap();
@@ -868,7 +868,7 @@ async fn resync_rebinds_epoch_and_flags_unacked_cancelled_deliveries() {
         .await
         .unwrap();
 
-    let epoch2 = store
+    let (epoch2, _events) = store
         .open_worker_connection(worker(), inventory(), T0 + 10)
         .await
         .unwrap();

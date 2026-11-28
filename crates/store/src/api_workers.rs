@@ -11,7 +11,8 @@ use myrlet_protocol::{
 };
 
 use crate::{
-    deliveries, inventory, progress, reports, result, settings, workers, HubStore, StoreError,
+    deliveries, enrollment, fleet, inventory, progress, reports, result, settings, HubStore,
+    StoreError,
 };
 
 impl HubStore {
@@ -38,17 +39,19 @@ impl HubStore {
         now_ms: i64,
     ) -> Result<HubEventEnvelope, StoreError> {
         self.db
-            .call(move |conn| workers::approve_worker(conn, &worker_id, now_ms))
+            .call(move |conn| fleet::approve_worker(conn, &worker_id, now_ms))
             .await
     }
 
     /// Apply a Worker's latest scheduling report at the revision the Admin reviewed.
+    ///
+    /// Returns the applied revision and the committed event, if the snapshot changed.
     pub async fn apply_worker_config(
         &self,
         worker_id: WorkerId,
         revision: u64,
         now_ms: i64,
-    ) -> Result<u64, StoreError> {
+    ) -> Result<(u64, Option<HubEventEnvelope>), StoreError> {
         self.db
             .call(move |conn| inventory::apply_worker_config(conn, &worker_id, revision, now_ms))
             .await
@@ -138,7 +141,7 @@ impl HubStore {
     ) -> Result<CreateEnrollmentCodeResponse, StoreError> {
         self.db
             .call(move |conn| {
-                workers::create_enrollment_code(
+                enrollment::create_enrollment_code(
                     conn,
                     ttl_seconds,
                     suggested_worker_id.as_ref(),
@@ -155,13 +158,13 @@ impl HubStore {
         now_ms: i64,
     ) -> Result<(PairWorkerResponse, HubEventEnvelope), StoreError> {
         self.db
-            .call(move |conn| workers::redeem_pairing_code(conn, &hub_id, &request, now_ms))
+            .call(move |conn| enrollment::redeem_pairing_code(conn, &hub_id, &request, now_ms))
             .await
     }
 
     pub async fn authenticate_worker(&self, bearer_token: String) -> Result<WorkerId, StoreError> {
         self.db
-            .call(move |conn| workers::authenticate_worker(conn, &bearer_token))
+            .call(move |conn| enrollment::authenticate_worker(conn, &bearer_token))
             .await
     }
 
@@ -172,7 +175,7 @@ impl HubStore {
         now_ms: i64,
     ) -> Result<(RotateWorkerCredentialResponse, HubEventEnvelope), StoreError> {
         self.db
-            .call(move |conn| workers::rotate_worker_credential(conn, &hub_id, &worker_id, now_ms))
+            .call(move |conn| fleet::rotate_worker_credential(conn, &hub_id, &worker_id, now_ms))
             .await
     }
 
@@ -182,7 +185,7 @@ impl HubStore {
         now_ms: i64,
     ) -> Result<HubEventEnvelope, StoreError> {
         self.db
-            .call(move |conn| workers::revoke_worker(conn, &worker_id, now_ms))
+            .call(move |conn| fleet::revoke_worker(conn, &worker_id, now_ms))
             .await
     }
 
@@ -191,7 +194,7 @@ impl HubStore {
         worker_id: WorkerId,
         inventory: WorkerInventory,
         now_ms: i64,
-    ) -> Result<u64, StoreError> {
+    ) -> Result<(u64, Vec<HubEventEnvelope>), StoreError> {
         self.db
             .call(move |conn| {
                 inventory::open_worker_connection(conn, &worker_id, &inventory, now_ms)
@@ -199,13 +202,16 @@ impl HubStore {
             .await
     }
 
+    /// Persist a newer inventory report; a stale epoch changes nothing.
+    ///
+    /// Returns whether the report was accepted and any events committed with it.
     pub async fn update_worker_inventory(
         &self,
         worker_id: WorkerId,
         epoch: u64,
         inventory: WorkerInventory,
         now_ms: i64,
-    ) -> Result<bool, StoreError> {
+    ) -> Result<(bool, Vec<HubEventEnvelope>), StoreError> {
         self.db
             .call(move |conn| {
                 inventory::update_worker_inventory(conn, &worker_id, epoch, &inventory, now_ms)
