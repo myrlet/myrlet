@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ToastItem } from "../components/CommandPalette";
+import type { ToastItem } from "../components/ToastStack";
 
 const TOAST_TIMEOUT_MS = 3_800;
 

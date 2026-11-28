@@ -1,17 +1,19 @@
 /**
- * Three lightweight console surfaces: the ⌘K Command Palette, the `?` keyboard
- * Shortcuts sheet, and the mutation Toast stack.
- *
- * The palette opens and closes instantly (no animation) per Emil Kowalski's
- * guidance: a command surface should feel like it was already there.
+ * The ⌘K Command Palette: a Task jump list plus the view, appearance, and
+ * workspace actions. It opens and closes instantly (no animation) per Emil
+ * Kowalski's guidance: a command surface should feel like it was already there.
+ * The `?` shortcut sheet and the notification Toast stack live in their own
+ * modules.
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { SnapshotTaskSummary, TaskRecord } from "../api/types";
-import { TASK_STATUS_META, taskTitle } from "../format";
+import { TASK_STATUS_META } from "../format";
+import { taskTitle } from "../model/taskTree";
 import type { Theme } from "../state/useAppearance";
+import { useModalFocus } from "../state/useModalFocus";
 import type { WorkspaceMode } from "./TopBar";
 
 /* --------------------------------------------------------------------- */
@@ -80,7 +82,12 @@ export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const titleId = useId();
+  const { panelRef, onKeyDown: containTab } = useModalFocus<HTMLDivElement>({
+    open,
+    initialFocusRef: inputRef,
+  });
 
   useEffect(() => {
     if (open) {
@@ -207,6 +214,10 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Tab") {
+        containTab(event);
+        return;
+      }
       switch (event.key) {
         case "Escape":
           // Stop the global handler from also clearing selection.
@@ -234,7 +245,7 @@ export function CommandPalette(props: CommandPaletteProps) {
           break;
       }
     },
-    [activate, activeIndex, onClose, visible],
+    [activate, activeIndex, containTab, onClose, visible],
   );
 
   if (!open) {
@@ -252,7 +263,14 @@ export function CommandPalette(props: CommandPaletteProps) {
         }
       }}
     >
-      <div className="palette-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <div
+        ref={panelRef}
+        className="palette-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
         <h2 className="visually-hidden" id={titleId}>
           Command Palette
         </h2>
@@ -261,9 +279,9 @@ export function CommandPalette(props: CommandPaletteProps) {
             ⌘K
           </span>
           <input
+            ref={inputRef}
             className="palette-input"
             type="text"
-            autoFocus
             aria-label="Search commands, Tasks, views, and appearance"
             placeholder="Search Tasks, views, actions, appearance…"
             value={query}
@@ -327,142 +345,3 @@ export function CommandPalette(props: CommandPaletteProps) {
     </div>
   );
 }
-
-/* --------------------------------------------------------------------- */
-/* Shortcuts sheet                                                        */
-/* --------------------------------------------------------------------- */
-
-/**
- * Read-only shortcut sheet. Every entry here exists in `App.tsx`; there are no
- * Task write entry points to list because this UI never creates or mutates Tasks.
- */
-const SHORTCUTS: readonly { readonly keys: string; readonly label: string }[] = [
-  { keys: "⌘K", label: "Open or close the Command Palette" },
-  { keys: "F", label: "Fit the Board to all Task groups" },
-  { keys: "Shift+F", label: "Center the selected Task on the Board" },
-  { keys: "I", label: "Show or hide the Inspector" },
-  { keys: "↑ / ↓", label: "Move the Task selection through the List" },
-  { keys: "Esc", label: "Close the active overlay, or clear the selection" },
-  { keys: "?", label: "Show this shortcut sheet" },
-];
-
-export interface ShortcutsModalProps {
-  readonly open: boolean;
-  readonly onClose: () => void;
-}
-
-export function ShortcutsModal({ open, onClose }: ShortcutsModalProps) {
-  const titleId = useId();
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const frame = window.setTimeout(() => {
-      closeRef.current?.focus();
-    }, 0);
-    return () => window.clearTimeout(frame);
-  }, [open]);
-
-  if (!open) {
-    return null;
-  }
-
-  return (
-    <div
-      className="backdrop"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <div className="dialog-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <div className="dialog-header">
-          <div className="dialog-heading">
-            <h2 className="dialog-title" id={titleId}>
-              Keyboard shortcuts
-            </h2>
-            <p className="dialog-description">
-              Everything in this console is reachable without the mouse.
-            </p>
-          </div>
-          <button
-            type="button"
-            ref={closeRef}
-            className="icon-button"
-            aria-label="Close keyboard shortcuts"
-            onClick={onClose}
-          >
-            <span aria-hidden="true">✕</span>
-          </button>
-        </div>
-
-        <div className="dialog-body">
-          <dl className="shortcut-list">
-            {SHORTCUTS.map((shortcut) => (
-              <div className="shortcut-row" key={shortcut.keys}>
-                <dt>
-                  <kbd className="kbd mono">{shortcut.keys}</kbd>
-                </dt>
-                <dd>{shortcut.label}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-
-        <div className="dialog-footer">
-          <button type="button" className="button" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* --------------------------------------------------------------------- */
-/* Toasts                                                                 */
-/* --------------------------------------------------------------------- */
-
-export interface ToastItem {
-  readonly id: string;
-  readonly message: string;
-  readonly tone?: "neutral" | "error";
-}
-
-export interface ToastStackProps {
-  readonly toasts: readonly ToastItem[];
-  readonly onDismiss: (id: string) => void;
-}
-
-export function ToastStack({ toasts, onDismiss }: ToastStackProps) {
-  if (toasts.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="toast-stack" role="region" aria-label="Notifications" aria-live="polite">
-      {toasts.map((toast) => (
-        <div
-          className="toast"
-          data-tone={toast.tone ?? "neutral"}
-          role={toast.tone === "error" ? "alert" : "status"}
-          key={toast.id}
-        >
-          <span className="toast-message">{toast.message}</span>
-          <button
-            type="button"
-            className="toast-dismiss"
-            aria-label={`Dismiss notification: ${toast.message}`}
-            onClick={() => onDismiss(toast.id)}
-          >
-            <span aria-hidden="true">✕</span>
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-

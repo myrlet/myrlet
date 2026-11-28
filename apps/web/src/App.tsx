@@ -10,7 +10,7 @@
  */
 
 import { AuthGate } from "./components/AuthGate";
-import { ToastStack } from "./components/CommandPalette";
+import { ToastStack } from "./components/ToastStack";
 import { AuthenticatedWorkspace } from "./components/AuthenticatedWorkspace";
 import { useAppearance } from "./state/useAppearance";
 import { useHub } from "./state/useHub";

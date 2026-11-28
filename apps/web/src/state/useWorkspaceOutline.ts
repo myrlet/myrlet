@@ -10,8 +10,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { SnapshotTaskSummary, TaskStatus } from "../api/types";
-import { buildTaskTreeRows } from "../format";
-import type { TaskFilter } from "../format";
+import { buildTaskTreeRows } from "../model/taskTree";
+import type { TaskFilter } from "../model/taskTree";
 
 export function useWorkspaceOutline(tasks: readonly SnapshotTaskSummary[]) {
   const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null);

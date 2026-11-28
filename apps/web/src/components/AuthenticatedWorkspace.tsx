@@ -20,7 +20,8 @@ import {
 import type { useHub } from "../state/useHub";
 import { useWorkspaceOutline } from "../state/useWorkspaceOutline";
 import { useWorkspaceShortcuts } from "../state/useWorkspaceShortcuts";
-import { CommandPalette, ShortcutsModal } from "./CommandPalette";
+import { CommandPalette } from "./CommandPalette";
+import { ShortcutsModal } from "./ShortcutsModal";
 import { StatusBar } from "./StatusBar";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { TaskGraphView } from "./TaskGraphView";
@@ -70,6 +71,9 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
   const workspaceRef = useRef<HTMLDivElement>(null);
   const atlasRef = useRef<TaskGraphControls | null>(null);
   const statusTriggerRef = useRef<HTMLButtonElement | null>(null);
+  /* The real Workers trigger, so a drawer opened from ⌘K still returns focus
+     to a mounted control rather than to the vanished palette option. */
+  const workersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const inspector = useInspectorPanel({ backgroundRef: workspaceRef });
 
   const {
@@ -251,6 +255,7 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
         workerCount={workers.length}
         workersOpen={workersOpen}
         onToggleWorkers={toggleWorkers}
+        workersTriggerRef={workersTriggerRef}
         onRefresh={refresh}
         theme={theme}
         onChangeTheme={onChangeTheme}
@@ -374,6 +379,7 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
 
       {workersOpen ? (
         <WorkersDrawer
+          returnFocusRef={workersTriggerRef}
           onlineWorkerCount={onlineWorkerCount}
           baseUrl={baseUrl}
           workers={workers}
