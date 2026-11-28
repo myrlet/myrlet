@@ -1,4 +1,7 @@
 //! In-process Hub stub: Worker HTTP Progress/Finish endpoints plus one WSS control socket.
+//!
+//! Shared by several test binaries; each exercises a subset of these helpers.
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -110,6 +113,28 @@ impl StubHub {
             .await
             .expect("worker posted no report")
             .expect("report channel closed")
+    }
+
+    /// A `task.cancel` frame for one Delivery.
+    pub fn cancel_frame(&self, task_id: &str, delivery_id: &str) -> Value {
+        hub_frame(
+            "task.cancel",
+            json!({
+                "taskId": task_id,
+                "deliveryId": delivery_id,
+                "reason": "test cancel"
+            }),
+        )
+    }
+
+    /// Drain pending reports and report whether any of them was a Finish.
+    #[allow(dead_code)] // used only by the shutdown drain suite
+    pub fn saw_finish(&mut self) -> bool {
+        let mut seen = false;
+        while let Ok(report) = self.reports.try_recv() {
+            seen |= matches!(report, Report::Finish { .. });
+        }
+        seen
     }
 }
 
@@ -467,6 +492,11 @@ pub fn hub_frame(kind: &str, payload: Value) -> Value {
 
 /// `hub.welcome` for epoch [`EPOCH`].
 pub fn welcome_frame() -> Value {
+    welcome_frame_with(5_000, 20_000)
+}
+
+/// `hub.welcome` with explicit heartbeat and lease timings.
+pub fn welcome_frame_with(heartbeat_interval_ms: u64, lease_ttl_ms: u64) -> Value {
     hub_frame(
         "hub.welcome",
         json!({
@@ -474,8 +504,8 @@ pub fn welcome_frame() -> Value {
             "workerId": WORKER_ID,
             "connectionId": "connection_stub",
             "connectionEpoch": EPOCH,
-            "heartbeatIntervalMs": 5_000,
-            "leaseTtlMs": 20_000,
+            "heartbeatIntervalMs": heartbeat_interval_ms,
+            "leaseTtlMs": lease_ttl_ms,
         }),
     )
 }

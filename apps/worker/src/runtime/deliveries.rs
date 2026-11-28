@@ -2,12 +2,13 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use myrlet_protocol::{
     CancelState, ClaimTaskRequest, ClaimTaskResponse, DeliveryId, ExecutorId, HubWakeupPayload,
     SlotId, TaskCancelPayload, TaskCancelledPayload, TaskId, WorkerWireKind,
 };
+use myrlet_worker::process_group::CANCEL_ACK_BOUND;
 use myrlet_worker::{ExecutorAdapter, LocalDeliveryRecord, SubmitRequest};
 
 use super::{RuntimeCore, RuntimeError};
@@ -163,10 +164,20 @@ impl RuntimeCore {
     }
 
     /// Relay a Hub cancellation request and report what the backend answered.
+    ///
+    /// A repeated request (a reconnect replay or a duplicate frame) re-sends the answer
+    /// already recorded for this Delivery instead of cancelling again: the execution handle
+    /// is gone, so a second attempt could only produce `Uncertain` and would weaken a
+    /// truthful `Confirmed` into a false negative.
+    ///
+    /// Cleanup can take several seconds, so the WSS heartbeat keeps flowing while the
+    /// adapter works; otherwise the Hub lease would expire mid-cancel and the report would
+    /// be lost with the connection.
     pub(super) async fn handle_cancel(
         &self,
         sink: &mut HubSink,
         cancel: TaskCancelPayload,
+        heartbeat: Duration,
     ) -> Result<(), RuntimeError> {
         let delivery_id = cancel.delivery_id;
         let Some(record) = self.registry.get(&delivery_id)? else {
@@ -180,12 +191,18 @@ impl RuntimeCore {
                 )
                 .await;
         };
-        let state = match (
-            record.execution_ref.as_ref(),
-            self.adapter_for(&record.slot_id, record.executor_id.as_ref()),
-        ) {
-            (Some(execution_ref), Some(adapter)) => adapter.cancel(execution_ref).await,
-            _ => CancelState::Uncertain,
+        let state = match record.cancel_report.clone() {
+            Some((state, _)) => state,
+            None => match (
+                record.execution_ref.as_ref(),
+                self.adapter_for(&record.slot_id, record.executor_id.as_ref()),
+            ) {
+                (Some(execution_ref), Some(adapter)) => {
+                    self.cancel_while_heartbeating(sink, adapter.as_ref(), execution_ref, heartbeat)
+                        .await?
+                }
+                _ => CancelState::Uncertain,
+            },
         };
         let reason = cancel.reason;
         self.update(&delivery_id, |record| {
@@ -193,6 +210,24 @@ impl RuntimeCore {
         });
         self.send_cancelled(sink, &record.task_id, &delivery_id, state, reason)
             .await
+    }
+
+    /// Run one adapter cancel to completion while keeping the Hub lease alive.
+    async fn cancel_while_heartbeating(
+        &self,
+        sink: &mut HubSink,
+        adapter: &dyn ExecutorAdapter,
+        execution_ref: &myrlet_protocol::ExecutionRef,
+        heartbeat: Duration,
+    ) -> Result<CancelState, RuntimeError> {
+        let cancel = adapter.cancel(execution_ref);
+        tokio::pin!(cancel);
+        loop {
+            tokio::select! {
+                state = &mut cancel => return Ok(state),
+                () = tokio::time::sleep(heartbeat) => self.heartbeat_now(sink).await?,
+            }
+        }
     }
 
     pub(super) async fn send_cancelled(
@@ -265,28 +300,50 @@ impl RuntimeCore {
 
     /// Wait for owned executions to end, then cancel what still runs. Never fabricates a
     /// finish report: an execution that is merely signalled stays honestly unresolved.
+    ///
+    /// The wait is for **local handling to end**, not for the Hub to acknowledge a Finish.
+    /// Once the WSS session is gone the epoch is zero, so a pending Finish cannot be posted
+    /// at all; waiting for `finish_acked` here would stall for the whole shutdown budget.
+    ///
+    /// Cancellation starts early enough for its acknowledgement bound to fit inside
+    /// `MYRLET_WORKER_SHUTDOWN_TIMEOUT_MS`, so a normal budget both drains in-flight work
+    /// and reaps owned process groups before the operator's bound. When the configured
+    /// bound is shorter than cleanup needs, the cancel wait is **not** truncated: returning
+    /// early would let the process exit mid-cleanup and orphan a TERM-ignoring group.
+    /// `main` therefore leaves the runtime this much margin past its own bound.
     pub(super) async fn drain(&self) {
-        let deadline = Instant::now() + Duration::from_millis(self.config.shutdown_timeout_ms());
+        let budget = Duration::from_millis(self.config.shutdown_timeout_ms());
+        let cancel_from = tokio::time::Instant::now() + budget.saturating_sub(CANCEL_ACK_BOUND);
         loop {
-            let pending = self.pending_executions();
+            let pending = self.running_executions();
             if pending.is_empty() {
                 return;
             }
-            if Instant::now() >= deadline {
-                for record in &pending {
-                    self.cancel_execution(record).await;
-                }
+            if tokio::time::Instant::now() >= cancel_from {
+                // Every owned execution is cancelled together, so the wait is bounded by
+                // one acknowledgement rather than growing with the number of Slots.
+                futures::future::join_all(
+                    pending.iter().map(|record| self.cancel_execution(record)),
+                )
+                .await;
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
-    fn pending_executions(&self) -> Vec<LocalDeliveryRecord> {
+    /// Deliveries whose adapter execution is still owned locally: not ended and not
+    /// cancelled. Hub acknowledgement is deliberately not part of this condition.
+    fn running_executions(&self) -> Vec<LocalDeliveryRecord> {
         match self.registry.load_all() {
             Ok(records) => records
                 .into_iter()
-                .filter(|record| record.execution_ref.is_some() && !record.finish_acked)
+                .filter(|record| {
+                    record.execution_ref.is_some()
+                        && !record.finish_pending
+                        && !record.finish_acked
+                        && record.cancel_report.is_none()
+                })
                 .collect(),
             Err(error) => {
                 tracing::warn!(%error, "local Delivery registry could not be read while draining");
@@ -306,7 +363,7 @@ impl RuntimeCore {
         tracing::info!(
             delivery = %record.delivery_id,
             ?state,
-            "execution signalled while shutting down"
+            "owned execution cancelled while shutting down"
         );
     }
 }

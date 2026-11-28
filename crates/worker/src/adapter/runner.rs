@@ -14,10 +14,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
 use super::{AdapterError, HandlingEnded, SpawnSpec};
-use crate::process_group::{configure_process_group, terminate_process_group, CANCEL_GRACE};
-
-/// How long a `cancel` call waits for the exit confirmation it requested.
-const CANCEL_RESULT_WAIT: Duration = Duration::from_secs(15);
+use crate::process_group::{
+    configure_process_group, terminate_process_group, CANCEL_ACK_BOUND, CANCEL_GRACE,
+};
 
 /// Cancellation rendezvous for one running execution. The exiting task owns the child
 /// process; this handle only asks it to stop and reports what it observed.
@@ -28,10 +27,9 @@ struct CancelHandle {
 }
 
 /// Which event ended one watched execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum End {
-    /// The process exited on its own.
-    Exited,
+    /// The worker's own `wait` resolved; the result may still be an error.
+    Exited(std::io::Result<std::process::ExitStatus>),
     /// A cancel request arrived.
     CancelRequested,
     /// The Task's execution timeout elapsed.
@@ -73,6 +71,9 @@ impl ProcessRunner {
             executor: executor.to_owned(),
             source,
         })?;
+        // Captured while the child is unreaped: its PID stays allocated, so this is the
+        // group ID of exactly this execution and cannot have been reused by another one.
+        let pgid = child.id();
         if let Some(text) = spec.stdin_prompt {
             let Some(mut stdin) = child.stdin.take() else {
                 let _ = child.start_kill();
@@ -106,36 +107,59 @@ impl ProcessRunner {
                 let wait = child.wait();
                 tokio::pin!(wait);
                 tokio::select! {
-                    _ = &mut wait => End::Exited,
+                    status = &mut wait => End::Exited(status),
                     _ = cancel_rx => End::CancelRequested,
                     _ = sleep_for(timeout) => End::TimedOut,
                 }
             };
-            match end {
-                End::Exited => {}
+            // End of handling is only reported when the Worker actually observed the
+            // execution end. A failed wait or a process group that resisted termination
+            // stays honestly unresolved instead of fabricating a Finish.
+            let ended = match end {
+                End::Exited(Ok(_)) => true,
+                End::Exited(Err(error)) => {
+                    tracing::warn!(
+                        %error,
+                        delivery = %watched_delivery,
+                        "execution wait failed; handling stays unresolved"
+                    );
+                    false
+                }
                 End::CancelRequested => {
-                    let confirmed_exit = terminate_process_group(&mut child, CANCEL_GRACE).await;
-                    let _ = confirmed_tx.send(confirmed_exit);
+                    let termination = terminate_process_group(&mut child, pgid, CANCEL_GRACE).await;
+                    let _ = confirmed_tx.send(termination.confirmed());
+                    termination.confirmed()
                 }
                 End::TimedOut => {
-                    let _ = terminate_process_group(&mut child, CANCEL_GRACE).await;
+                    let termination = terminate_process_group(&mut child, pgid, CANCEL_GRACE).await;
+                    if !termination.confirmed() {
+                        tracing::warn!(
+                            delivery = %watched_delivery,
+                            group_clear = termination.group_clear,
+                            "timed-out execution could not be confirmed stopped"
+                        );
+                    }
+                    termination.confirmed()
                 }
-            }
+            };
             active
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&watched);
-            let _ = on_exit.send(HandlingEnded {
-                delivery_id: watched_delivery,
-                execution_ref: watched,
-            });
+            if ended {
+                let _ = on_exit.send(HandlingEnded {
+                    delivery_id: watched_delivery,
+                    execution_ref: watched,
+                });
+            }
         });
 
         Ok(execution_ref)
     }
 
-    /// Cancel one execution: `Confirmed` only when the running child was observed to
-    /// exit, else `Uncertain`, because a missing handle proves nothing about side effects.
+    /// Cancel one execution: `Confirmed` only when the whole original process group was
+    /// observed to disappear, else `Uncertain`, because a missing handle or a merely
+    /// delivered signal proves nothing about side effects.
     pub async fn cancel(&self, execution_ref: &ExecutionRef) -> CancelState {
         let handle = self
             .active
@@ -148,7 +172,7 @@ impl ProcessRunner {
         if handle.request.send(()).is_err() {
             return CancelState::Uncertain; // handling already ended before the request
         }
-        match tokio::time::timeout(CANCEL_RESULT_WAIT, handle.confirmed).await {
+        match tokio::time::timeout(CANCEL_ACK_BOUND, handle.confirmed).await {
             Ok(Ok(true)) => CancelState::Confirmed,
             _ => CancelState::Uncertain,
         }
