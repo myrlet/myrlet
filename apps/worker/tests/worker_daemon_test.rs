@@ -421,7 +421,8 @@ async fn a_lost_claim_acknowledgement_is_recovered_without_a_second_submission()
     // must treat the claim outcome as unknown and replay the same claim.
     assert!(matches!(hub.next_report().await, Report::Claim { .. }));
     hub.expect_authorized().await;
-    assert_eq!(hub.next_frame().await["kind"], "worker.hello");
+    // The stub may still have the last heartbeat from the former session queued.
+    while hub.next_frame().await["kind"] != "worker.hello" {}
     let mut welcome = support::welcome_frame();
     welcome["connectionEpoch"] = serde_json::json!(support::EPOCH + 1);
     welcome["payload"]["connectionEpoch"] = serde_json::json!(support::EPOCH + 1);
@@ -459,6 +460,83 @@ async fn a_lost_claim_acknowledgement_is_recovered_without_a_second_submission()
     );
     shutdown.send(true).expect("signal shutdown");
     let _ = tokio::time::timeout(Duration::from_secs(10), worker).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ambiguous_timed_out_result_write_retries_at_the_new_epoch() {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let gate = std::sync::Arc::new(tokio::sync::Notify::new());
+    let mut hub = support::start_with_result_timeout(gate.clone()).await;
+    let (_directory, home) = temp_home();
+    let path = home.worker_results_dir().join("delivery_task_one.md");
+    std::fs::write(
+        home.worker_config(),
+        support::process_yaml(&hub.url, &[("exec-quiet", "sleep 5")]),
+    )
+    .unwrap();
+    let config = WorkerConfig::load(&home.worker_config()).unwrap();
+    let runtime = WorkerRuntime::new(home, config, support::credentials()).unwrap();
+    let (shutdown, rx) = watch::channel(false);
+    let worker = tokio::spawn(async move { runtime.run(rx).await });
+    hub.expect_authorized().await;
+    assert_eq!(hub.next_frame().await["kind"], "worker.hello");
+    hub.send_frame(support::welcome_frame());
+    assert_eq!(hub.next_frame().await["kind"], "worker.resync");
+    hub.send_frame(support::wakeup_frame("task_one"));
+    assert!(matches!(hub.next_report().await, Report::Claim { .. }));
+
+    // Seed the acknowledged digest with B before an ambiguous write of A.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap()
+        .write_all(b"B")
+        .unwrap();
+    assert!(
+        matches!(hub.next_report().await, Report::Result{epoch:support::EPOCH,text:Some(t),..} if t=="B")
+    );
+    std::fs::write(&path, b"A").unwrap();
+    assert!(
+        matches!(hub.next_report().await, Report::Result{epoch:support::EPOCH,text:Some(t),..} if t=="A")
+    );
+
+    // Revert to the previously confirmed bytes while A is still outstanding.
+    // Release a 504 without touching WSS. The Worker must initiate reconnect.
+    std::fs::write(&path, b"B").unwrap();
+    gate.notify_one();
+    hub.expect_authorized().await;
+    while hub.next_frame().await["kind"] != "worker.hello" {}
+    let mut welcome = support::welcome_frame();
+    welcome["connectionEpoch"] = serde_json::json!(support::EPOCH + 1);
+    welcome["payload"]["connectionEpoch"] = serde_json::json!(support::EPOCH + 1);
+    hub.send_frame(welcome);
+    assert_eq!(hub.next_frame().await["kind"], "worker.resync");
+
+    // The reconciler rereads the local file even though B matches the old digest.
+    let retry = hub.next_report().await;
+    assert!(
+        matches!(
+            &retry,
+            Report::Result { delivery_id, epoch, text: Some(text) }
+                if delivery_id == "delivery_task_one"
+                    && text == "B"
+                    && *epoch == support::EPOCH + 1
+        ),
+        "ambiguous write must be retried at EPOCH+1: {retry:?}"
+    );
+
+    shutdown.send(true).unwrap();
+    let mut worker = worker;
+    if tokio::time::timeout(Duration::from_secs(1), &mut worker)
+        .await
+        .is_err()
+    {
+        worker.abort();
+        let _ = worker.await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

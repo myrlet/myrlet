@@ -42,6 +42,7 @@ enum Step {
     Signal(bool),
     Heartbeat,
     LeaseExpired,
+    Reconnect,
     Frame(Box<Result<Option<WorkerWireEnvelope<Value>>, WssError>>),
 }
 
@@ -84,6 +85,7 @@ impl RuntimeCore {
         loop {
             let step = tokio::select! {
                 changed = shutdown.changed() => Step::Signal(changed.is_err()),
+                () = self.reconnect.notified() => Step::Reconnect,
                 _ = ticker.tick() => {
                     if Instant::now() >= deadline {
                         Step::LeaseExpired
@@ -103,6 +105,12 @@ impl RuntimeCore {
                     let _ = sink.close().await;
                     self.epoch.store(0, Ordering::SeqCst);
                     return Ok(Outcome::Shutdown);
+                }
+                Step::Reconnect => {
+                    // A notification from the preceding session may still be queued.
+                    if self.epoch() != epoch {
+                        return Ok(self.lost());
+                    }
                 }
                 Step::LeaseExpired => {
                     tracing::warn!(epoch, "hub lease expired without a frame; reconnecting");

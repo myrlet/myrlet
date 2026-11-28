@@ -62,7 +62,7 @@ struct HubState {
     outbound: Arc<Mutex<UnboundedReceiver<Value>>>,
     authorized: UnboundedSender<bool>,
     stale_epoch: Option<u64>,
-    result_gate: Option<Arc<tokio::sync::Notify>>,
+    result_gate: Option<(Arc<tokio::sync::Notify>, StatusCode)>,
     /// Truncate the first claim acknowledgement after committing the Delivery.
     lose_first_claim_reply: Arc<Mutex<bool>>,
     /// The committed Delivery, replayed to the owning Worker on a repeated claim.
@@ -122,7 +122,17 @@ pub async fn start_with_result_gate(
     stale_epoch: Option<u64>,
     result_gate: Option<Arc<tokio::sync::Notify>>,
 ) -> StubHub {
-    launch(stale_epoch, result_gate, false).await
+    launch(
+        stale_epoch,
+        result_gate.map(|gate| (gate, StatusCode::OK)),
+        false,
+    )
+    .await
+}
+
+/// Hold Result A until the test releases a gateway timeout while WSS stays connected.
+pub async fn start_with_result_timeout(gate: Arc<tokio::sync::Notify>) -> StubHub {
+    launch(None, Some((gate, StatusCode::GATEWAY_TIMEOUT)), false).await
 }
 
 /// Start a stub Hub whose first claim commits and then truncates its acknowledgement,
@@ -133,7 +143,7 @@ pub async fn start_with_lost_claim_reply(stale_epoch: Option<u64>) -> StubHub {
 
 async fn launch(
     stale_epoch: Option<u64>,
-    result_gate: Option<Arc<tokio::sync::Notify>>,
+    result_gate: Option<(Arc<tokio::sync::Notify>, StatusCode)>,
     lose_first_claim_reply: bool,
 ) -> StubHub {
     let (reports_tx, reports) = mpsc::unbounded_channel();
@@ -308,8 +318,11 @@ async fn result(
         text: body.text,
     });
     if hold {
-        if let Some(gate) = &state.result_gate {
+        if let Some((gate, status)) = &state.result_gate {
             gate.notified().await;
+            if !status.is_success() {
+                return (*status, Json(json!({ "error": "RequestTimeout" })));
+            }
         }
     }
     (
