@@ -155,11 +155,12 @@ async fn waking_a_worker_creates_no_delivery_and_a_claim_commits_one() {
     assert_eq!(claimed.1["delivery"]["state"], "accepted");
     assert_eq!(claimed.1["delivery"]["slotId"], "slot-a");
 
-    // A second claim for the same Task loses: exactly one Delivery exists.
-    let losing = hub
+    // The winning Worker can replay its claim without creating another Delivery.
+    let repeated = hub
         .post_worker("/v1/workers/claim", &credential, &claim)
         .await;
-    assert_eq!(losing.0, 409, "{}", losing.1);
+    assert_eq!(repeated.0, 200, "{}", repeated.1);
+    assert_eq!(repeated.1["delivery"]["id"], claimed.1["delivery"]["id"]);
     let shown = hub.get_admin(&format!("/v1/tasks/{task_id}")).await;
     assert_eq!(
         shown.1["currentDelivery"]["id"],
@@ -534,4 +535,82 @@ async fn embedded_ui_never_shadows_the_api_and_respects_the_toggle() {
         assert_eq!(unknown.0, 404, "{}", unknown.1);
         assert_eq!(unknown.1["error"], "NotFound");
     }
+}
+
+#[tokio::test]
+async fn same_worker_recovers_claim_with_discarded_response() {
+    let hub = start(10_000).await;
+    let (worker, cred) = hub.pair().await;
+    let (mut socket, epoch) = hub.connect(&worker, &cred).await;
+    let task = hub
+        .post_admin(
+            "/v1/tasks",
+            Some("lost"),
+            Some(r#"{"title":"test","prompt":"test"}"#),
+        )
+        .await;
+    let id = task.1["task"]["id"].as_str().unwrap();
+    assert_eq!(read_frame(&mut socket).await["kind"], "hub.wakeup");
+    let claim = |epoch| json!({"taskId":id,"slotId":"slot-a","connectionEpoch":epoch}).to_string();
+    // The test transport discards the first response. The simulated Worker never learns the ID.
+    assert_eq!(
+        hub.post_worker("/v1/workers/claim", &cred, &claim(epoch))
+            .await
+            .0,
+        200
+    );
+    let committed = hub.get_admin(&format!("/v1/tasks/{id}")).await.1;
+    assert_eq!(committed["status"], "dispatched");
+    let (_next, new_epoch) = hub.connect(&worker, &cred).await;
+    assert!(new_epoch > epoch);
+    let (code, replay) = hub
+        .post_worker("/v1/workers/claim", &cred, &claim(new_epoch))
+        .await;
+    assert_eq!(
+        code, 200,
+        "committed {}, replay returned {replay}",
+        committed["currentDelivery"]["id"]
+    );
+    assert_eq!(replay["delivery"]["id"], committed["currentDelivery"]["id"]);
+    assert_eq!(replay["delivery"]["connectionEpoch"], new_epoch);
+    let wrong_slot = json!({"taskId":id,"slotId":"slot-b","connectionEpoch":new_epoch}).to_string();
+    assert_eq!(
+        hub.post_worker("/v1/workers/claim", &cred, &wrong_slot)
+            .await
+            .0,
+        409
+    );
+}
+
+#[tokio::test]
+async fn wakeup_rotates_past_two_silent_workers() {
+    let hub = start(10_000).await;
+    let mut workers = [hub.pair().await, hub.pair().await, hub.pair().await];
+    workers.sort();
+    let (mut first, _) = hub.connect(&workers[0].0, &workers[0].1).await;
+    let (mut second, _) = hub.connect(&workers[1].0, &workers[1].1).await;
+    let (mut third, epoch) = hub.connect(&workers[2].0, &workers[2].1).await;
+    let submitted = hub
+        .post_admin(
+            "/v1/tasks",
+            Some("rotate"),
+            Some(r#"{"title":"Rotate","prompt":"test"}"#),
+        )
+        .await;
+    assert_eq!(submitted.0, 201);
+    let id = submitted.1["task"]["id"].as_str().unwrap();
+    for socket in [&mut first, &mut second, &mut third] {
+        let wake = read_frame(socket).await;
+        assert_eq!(wake["kind"], "hub.wakeup");
+        assert_eq!(wake["payload"]["taskId"], id);
+    }
+    let state = hub.get_admin(&format!("/v1/tasks/{id}")).await.1;
+    assert_eq!(state["status"], "queued");
+    assert!(state["currentDelivery"].is_null());
+    let claim = json!({"taskId":id,"slotId":"slot-a","connectionEpoch":epoch}).to_string();
+    let claimed = hub
+        .post_worker("/v1/workers/claim", &workers[2].1, &claim)
+        .await;
+    assert_eq!(claimed.0, 200, "{}", claimed.1);
+    assert_eq!(claimed.1["delivery"]["workerId"], workers[2].0);
 }

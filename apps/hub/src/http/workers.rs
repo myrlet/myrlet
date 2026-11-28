@@ -105,7 +105,7 @@ pub async fn claim_task(
         let request: ClaimTaskRequest =
             read_bounded_json(body, state.config.max_body_bytes).await?;
         let (response, event) = state.store.claim_task(worker_id, request, now_ms()).await?;
-        state.publish_event(Some(event));
+        state.publish_event(event);
         Ok(Json(response).into_response())
     })
     .await

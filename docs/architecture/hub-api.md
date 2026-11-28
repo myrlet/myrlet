@@ -76,6 +76,7 @@ Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{i
 - In one transaction the Hub rechecks: Task `queued` with every dependency `finished`, no existing Delivery for the Task, the named Slot exists and is enabled, every `requiredCapabilities` entry is `available`, and any requested Executor is present on that Slot.
 - If `executorId` is omitted the Hub resolves the Task's own `preferredExecutorId` against the Slot (falling back to the Slot's first Executor); a preference never blocks a claim.
 - Exactly one Delivery is created (`state: accepted`) and the Task moves to `dispatched`. Racing claims either lose the version check or violate the unique Delivery index, so exactly one wins; a loser receives `409 InvalidTransition` / `409 AlreadyClaimed`.
+- Retrying an active claim at the live epoch with the same Worker and Slot returns the existing Delivery and binds it to that epoch. Replay emits no second dispatch event. A different Worker or Slot cannot recover that claim.
 - Returns `ClaimTaskResponse { task, delivery }`.
 
 ## Worker Progress, Result, and Finish Reporting (HTTP)

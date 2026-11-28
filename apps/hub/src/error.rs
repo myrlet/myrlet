@@ -81,6 +81,11 @@ impl From<StoreError> for ApiError {
                 "IdempotencyConflict",
                 "the Idempotency-Key was reused with a different request",
             ),
+            StoreError::AlreadyClaimed => (
+                StatusCode::CONFLICT,
+                "AlreadyClaimed",
+                "the task already has a delivery",
+            ),
             StoreError::InvalidTransition => (
                 StatusCode::CONFLICT,
                 "InvalidTransition",

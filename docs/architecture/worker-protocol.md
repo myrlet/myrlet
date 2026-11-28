@@ -21,11 +21,10 @@ Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/
 
 ## Wakeup and Claim
 
-1. For a `queued` Task whose dependencies are all `finished`, the Hub picks **one** eligible Worker: online, not revoked, with an enabled Slot that meets the Task's required capabilities, preferring the Owner's `preferredWorkerId`, then fewer active Deliveries, then `workerId` lexical order. It sends a `hub.wakeup { taskId }` hint.
-2. A wakeup is **only a hint**: the Task stays `queued` and the hint creates neither a reservation nor a Delivery. If the Worker is offline, busy, or silent, the Hub simply wakes another eligible Worker on the next state change. There is no candidate polling loop, no `offer` state, and no hidden scoring.
-3. The woken Worker chooses an available local Slot and **explicitly claims** the Task over HTTP (`POST /v1/workers/claim`) with the Task ID, Slot ID, and its live `connectionEpoch`.
-4. The Hub atomically rechecks readiness, ownership, Slot eligibility, and delivery uniqueness and creates the Task's single Delivery. Racing claims yield exactly one winner.
-5. The winning Worker **durably registers** the committed `deliveryId` in its local registry **before** invoking the Harness. A lost claim acknowledgement is recovered by the same registration rule: a replayed claim reply for a known `deliveryId` is ignored, so no delivery is ever launched twice.
+1. For a `queued` Task whose dependencies are all `finished`, the Hub selects one online, unrevoked Worker with an enabled Slot that meets the Task's required capabilities. It sends `hub.wakeup { taskId, eligibleSlotIds }`. The first hint may honor `preferredWorkerId`. The bounded periodic scan rotates subsequent hints in Worker ID order while the Task remains queued. Rotation is held in memory.
+2. The hint leaves the Task queued and creates neither a reservation nor a Delivery. The Worker selects one of the hinted Slots that is free locally and explicitly claims with the Task ID, Slot ID, and live `connectionEpoch` (`POST /v1/workers/claim`).
+3. The Hub atomically rechecks readiness, ownership, Slot eligibility, and Delivery uniqueness. The Worker keeps an unanswered claim in memory and retries the same Task and Slot after reconnect. The Hub returns the same active Delivery to its original Worker and Slot at the current epoch.
+4. The winning Worker durably registers the returned `deliveryId` before invoking the Harness. A replay for a registered Delivery does not invoke the Harness again. If the Worker process itself is lost before registration, the Hub retains the assignment and exposes the outstanding Delivery.
 
 Slot and Capability are hard constraints. `preferredWorkerId`, `preferredRole`, and `preferredExecutorId` are soft preferences that never block a claim.
 
@@ -47,7 +46,7 @@ Frames are capped at 512 KiB; inventory payloads are capped at 256 KiB and 256 S
 | `hub.welcome` | Hub → Worker | Confirm `hubId`, `workerId`, `connectionId`, monotonic `connectionEpoch`, and heartbeat/lease timings. |
 | `worker.heartbeat` / `hub.heartbeat_ack` | Bidirectional | Connection liveness keepalive (does not resend full inventory). |
 | `worker.inventory` / `worker.inventory_ack` | Bidirectional | Synchronize updated Worker configuration/inventory. |
-| `hub.wakeup` | Hub → Worker | Hint that one `queued` Task may be claimable (`taskId`); reserves nothing and creates no Delivery. |
+| `hub.wakeup` | Hub → Worker | Hint that one `queued` Task may be claimable (`taskId`, `eligibleSlotIds`); reserves nothing and creates no Delivery. |
 | `task.cancel` | Hub → Worker | Request cancellation of a Delivery. |
 | `task.cancelled` / `task.cancelled_ack` | Bidirectional | Report Harness cancellation response (`confirmed`, `failed`, `uncertain`, `unsupported`); idempotent ACK by `(deliveryId, epoch)`. |
 | `worker.resync` | Worker → Hub | On reconnect, rebind locally retained non-terminal Deliveries to the new `connectionEpoch` so pending HTTP Progress/Result/Finish and WSS cancel reports can flush. |
@@ -64,7 +63,7 @@ Frames are capped at 512 KiB; inventory payloads are capped at 256 KiB and 256 S
   "connectionId": "connection_01",
   "connectionEpoch": 1,
   "sentAtMs": 1010,
-  "payload": { "taskId": "task_01" }
+  "payload": { "taskId": "task_01", "eligibleSlotIds": ["slot-a"] }
 }
 ```
 

@@ -5,8 +5,8 @@ use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use myrlet_protocol::{
-    CancelState, ClaimTaskRequest, ClaimTaskResponse, DeliveryId, ExecutorId, SlotId,
-    TaskCancelPayload, TaskCancelledPayload, TaskId, WorkerWireKind,
+    CancelState, ClaimTaskRequest, ClaimTaskResponse, DeliveryId, ExecutorId, HubWakeupPayload,
+    SlotId, TaskCancelPayload, TaskCancelledPayload, TaskId, WorkerWireKind,
 };
 use myrlet_worker::{ExecutorAdapter, LocalDeliveryRecord, SubmitRequest};
 
@@ -14,45 +14,75 @@ use super::{RuntimeCore, RuntimeError};
 use crate::wss::HubSink;
 
 impl RuntimeCore {
-    /// React to one wakeup hint by trying to claim the named Task for a local Slot.
-    ///
-    /// The hint reserves nothing: this Worker picks a free eligible Slot, asks the Hub to
-    /// commit the claim, and only then launches the Harness. Losing the race is normal.
-    pub(super) async fn handle_wakeup(&self, task_id: &TaskId) -> Result<(), RuntimeError> {
-        if self.shutting_down.load(Ordering::SeqCst) {
+    pub(super) async fn handle_wakeup(&self, wakeup: HubWakeupPayload) -> Result<(), RuntimeError> {
+        if self.shutting_down.load(Ordering::SeqCst) || self.epoch() == 0 {
             return Ok(());
         }
-        let Some(slot) = self.claimable_slot() else {
+        if self
+            .pending_claim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let busy = self.busy_slots()?;
+        let slot = self.config.slots.iter().find(|slot| {
+            slot.enabled
+                && !slot.executors.is_empty()
+                && wakeup.eligible_slot_ids.contains(&slot.slot_id)
+                && !busy.contains(&slot.slot_id)
+        });
+        let Some(slot) = slot else {
             return Ok(());
         };
-        let epoch = self.epoch();
-        if epoch == 0 {
-            return Ok(());
-        }
-        let executor_id = self.config.default_executor(&slot.slot_id);
-        let request = ClaimTaskRequest {
-            task_id: task_id.clone(),
+        *self
+            .pending_claim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(ClaimTaskRequest {
+            task_id: wakeup.task_id,
             slot_id: slot.slot_id.clone(),
-            connection_epoch: epoch,
-            // The Hub resolves the Task's own preferred Executor; the Worker only names
-            // the Slot it is claiming, so it never has to second-guess the definition.
+            connection_epoch: self.epoch(),
             executor_id: None,
-        };
-        let Some(response) = self.reporter.claim(&request).await? else {
+        });
+        self.retry_pending_claim().await
+    }
+
+    /// Only the WSS session drives claims. Until the Hub gives a definite answer,
+    /// keep the original Task and Slot and retry with the current connection epoch.
+    pub(super) async fn retry_pending_claim(&self) -> Result<(), RuntimeError> {
+        let pending = self
+            .pending_claim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(mut request) = pending else {
             return Ok(());
         };
-        self.admit_claim(response, slot.slot_id, executor_id).await;
+        request.connection_epoch = self.epoch();
+        let response = self.reporter.claim(&request).await;
+        match response {
+            Ok(Some(response)) => self.admit_claim(response).await,
+            Ok(None) => {}
+            Err(error)
+                if error.is_retryable()
+                    || matches!(error, crate::reporting::ReportError::StaleDelivery(_)) =>
+            {
+                return Err(error.into())
+            }
+            Err(error) => tracing::warn!(%error, task_id = %request.task_id, "claim was refused"),
+        }
+        *self
+            .pending_claim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         Ok(())
     }
 
     /// Durably register the committed Delivery, then submit exactly once.
-    async fn admit_claim(
-        &self,
-        response: ClaimTaskResponse,
-        slot_id: SlotId,
-        executor_id: Option<ExecutorId>,
-    ) {
+    async fn admit_claim(&self, response: ClaimTaskResponse) {
         let delivery = response.delivery;
+        let slot_id = delivery.slot_id.clone();
         let progress_path = match self.home.worker_progress_file(&delivery.id) {
             Ok(path) => path,
             Err(error) => {
@@ -77,7 +107,6 @@ impl RuntimeCore {
         record.executor_id = delivery
             .executor_id
             .clone()
-            .or(executor_id)
             .or_else(|| self.config.default_executor(&slot_id));
         // The claim is already committed at the Hub, so registration before submission
         // is what makes a replayed claim reply safe: a known `deliveryId` is never run twice.
@@ -122,30 +151,15 @@ impl RuntimeCore {
         }
     }
 
-    /// The first enabled Slot with no active local execution, if any is free.
-    fn claimable_slot(&self) -> Option<crate::config::SlotConfig> {
-        let busy = self.busy_slots();
-        self.config
-            .slots
-            .iter()
-            .filter(|slot| slot.enabled)
-            .find(|slot| !busy.contains(&slot.slot_id))
-            .cloned()
-    }
-
     /// Slots holding an unfinished local execution.
-    fn busy_slots(&self) -> Vec<SlotId> {
-        match self.registry.load_all() {
-            Ok(records) => records
-                .into_iter()
-                .filter(|record| !record.finish_acked)
-                .map(|record| record.slot_id)
-                .collect(),
-            Err(error) => {
-                tracing::warn!(%error, "local Delivery registry could not be read");
-                Vec::new()
-            }
-        }
+    fn busy_slots(&self) -> Result<Vec<SlotId>, RuntimeError> {
+        Ok(self
+            .registry
+            .load_all()?
+            .into_iter()
+            .filter(|record| !record.finish_acked)
+            .map(|record| record.slot_id)
+            .collect())
     }
 
     /// Relay a Hub cancellation request and report what the backend answered.

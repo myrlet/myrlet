@@ -139,7 +139,7 @@ impl HubStore {
         worker_id: WorkerId,
         request: ClaimTaskRequest,
         now_ms: i64,
-    ) -> Result<(ClaimTaskResponse, HubEventEnvelope), StoreError> {
+    ) -> Result<(ClaimTaskResponse, Option<HubEventEnvelope>), StoreError> {
         self.db
             .call(move |conn| claim::claim_task(conn, &worker_id, &request, now_ms))
             .await

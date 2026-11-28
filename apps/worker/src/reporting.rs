@@ -76,6 +76,10 @@ impl HubReporter {
         }
         // A ready Task another Worker already claimed, or a Task that is no longer queued.
         if status.as_u16() == 409 {
+            let error = serde_json::from_slice::<ErrorResponse>(&bytes).ok();
+            if error.is_some_and(|error| error.error == "StaleDelivery") {
+                return Err(ReportError::StaleDelivery(request.task_id.to_string()));
+            }
             return Ok(None);
         }
         Err(self.classify(request.task_id.as_str(), status.as_u16(), &bytes))

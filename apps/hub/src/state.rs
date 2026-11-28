@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, mpsc, Semaphore};
 
 use crate::auth::AdminVerifier;
 use crate::config::HubConfig;
+use crate::wakeup::WakeupRotation;
 
 /// Capacity of the in-process Hub event broadcast channel.
 const EVENTS_CHANNEL_CAPACITY: usize = 1024;
@@ -34,6 +35,8 @@ pub struct HubState {
     pub command_permits: Arc<Semaphore>,
     pub shutting_down: Arc<AtomicBool>,
     pub config: HubConfig,
+    /// In-memory rotation cursor for wakeup hints; never persisted.
+    pub(crate) wakeup_rotation: Arc<WakeupRotation>,
 }
 
 impl HubState {
@@ -49,6 +52,7 @@ impl HubState {
             command_permits: Arc::new(Semaphore::new(config.max_concurrent_requests.max(1))),
             shutting_down: Arc::new(AtomicBool::new(false)),
             config,
+            wakeup_rotation: Arc::new(WakeupRotation::default()),
         }
     }
 

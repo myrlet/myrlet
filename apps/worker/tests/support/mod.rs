@@ -1,5 +1,4 @@
 //! In-process Hub stub: Worker HTTP Progress/Finish endpoints plus one WSS control socket.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,6 +62,11 @@ struct HubState {
     outbound: Arc<Mutex<UnboundedReceiver<Value>>>,
     authorized: UnboundedSender<bool>,
     stale_epoch: Option<u64>,
+    result_gate: Option<Arc<tokio::sync::Notify>>,
+    /// Truncate the first claim acknowledgement after committing the Delivery.
+    lose_first_claim_reply: Arc<Mutex<bool>>,
+    /// The committed Delivery, replayed to the owning Worker on a repeated claim.
+    committed: Arc<Mutex<Option<DeliveryView>>>,
 }
 
 /// A running stub Hub with channels for observing and driving one Worker.
@@ -111,6 +115,27 @@ impl StubHub {
 
 /// Start the stub Hub; `stale_epoch` makes Progress with that epoch return `409`.
 pub async fn start(stale_epoch: Option<u64>) -> StubHub {
+    start_with_result_gate(stale_epoch, None).await
+}
+
+pub async fn start_with_result_gate(
+    stale_epoch: Option<u64>,
+    result_gate: Option<Arc<tokio::sync::Notify>>,
+) -> StubHub {
+    launch(stale_epoch, result_gate, false).await
+}
+
+/// Start a stub Hub whose first claim commits and then truncates its acknowledgement,
+/// so the Worker observes a transport loss after the Delivery already exists.
+pub async fn start_with_lost_claim_reply(stale_epoch: Option<u64>) -> StubHub {
+    launch(stale_epoch, None, true).await
+}
+
+async fn launch(
+    stale_epoch: Option<u64>,
+    result_gate: Option<Arc<tokio::sync::Notify>>,
+    lose_first_claim_reply: bool,
+) -> StubHub {
     let (reports_tx, reports) = mpsc::unbounded_channel();
     let (frames_tx, frames) = mpsc::unbounded_channel();
     let (outbound_tx, outbound) = mpsc::unbounded_channel();
@@ -121,6 +146,9 @@ pub async fn start(stale_epoch: Option<u64>) -> StubHub {
         outbound: Arc::new(Mutex::new(outbound)),
         authorized: authorized_tx,
         stale_epoch,
+        result_gate,
+        lose_first_claim_reply: Arc::new(Mutex::new(lose_first_claim_reply)),
+        committed: Arc::default(),
     };
     let router = Router::new()
         .route("/v1/workers/connect", get(ws_handler))
@@ -273,11 +301,17 @@ async fn result(
         cleared: body.text.is_none(),
         duplicate: false,
     };
+    let hold = body.text.as_deref() == Some("A");
     let _ = state.reports.send(Report::Result {
         delivery_id,
         epoch: body.epoch,
         text: body.text,
     });
+    if hold {
+        if let Some(gate) = &state.result_gate {
+            gate.notified().await;
+        }
+    }
     (
         StatusCode::OK,
         Json(serde_json::to_value(receipt).expect("result receipt json")),
@@ -297,10 +331,29 @@ async fn claim(
         task_id: body.task_id.to_string(),
         connection_epoch: body.connection_epoch,
     });
-    if body.connection_epoch != EPOCH {
+    if body.connection_epoch != EPOCH && body.connection_epoch != EPOCH + 1 {
         return (
             StatusCode::CONFLICT,
             Json(json!({ "error": "StaleDelivery", "message": "stale epoch" })),
+        );
+    }
+    let losing = std::mem::take(&mut *state.lose_first_claim_reply.lock().await);
+    // Replaying the same claim after a lost reply returns the committed Delivery.
+    if let Some(mut committed) = state.committed.lock().await.clone() {
+        if committed.task_id == body.task_id && committed.slot_id == body.slot_id {
+            committed.connection_epoch = body.connection_epoch;
+            let response = ClaimTaskResponse {
+                task: stub_task(&body.task_id),
+                delivery: committed,
+            };
+            return (
+                StatusCode::OK,
+                Json(serde_json::to_value(response).expect("claim response json")),
+            );
+        }
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "AlreadyClaimed", "message": "already committed" })),
         );
     }
     let delivery_id = format!("delivery_{}", body.task_id);
@@ -322,6 +375,15 @@ async fn claim(
         task: stub_task(&body.task_id),
         delivery,
     };
+    if losing {
+        *state.committed.lock().await = Some(response.delivery.clone());
+        // Committed at the Hub, but the acknowledgement is lost in transit: the
+        // Worker cannot tell whether a Delivery now exists.
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "InternalError", "message": "reply lost" })),
+        );
+    }
     (
         StatusCode::OK,
         Json(serde_json::to_value(response).expect("claim response json")),
@@ -407,7 +469,10 @@ pub fn welcome_frame() -> Value {
 
 /// `hub.wakeup`: one queued Task the Worker may claim.
 pub fn wakeup_frame(task_id: &str) -> Value {
-    hub_frame("hub.wakeup", json!({ "taskId": task_id }))
+    hub_frame(
+        "hub.wakeup",
+        json!({ "taskId": task_id, "eligibleSlotIds": [SLOT_ID] }),
+    )
 }
 
 /// Credential document matching [`WORKER_ID`] and [`CREDENTIAL`].
