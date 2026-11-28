@@ -2,7 +2,22 @@
 
 Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTTPS (or loopback HTTP for local development). Workers connect over WSS for wakeup hints and control frames, and call dedicated Hub HTTP endpoints for claims, Progress, Result, and Finish reporting.
 
-**Wire convention:** All HTTP request and response JSON bodies use **`camelCase`** consistently (no mixed `snake_case`/`camelCase` aliases). Error responses use `{ "error": "<StableCode>", "message": "<fixed safe message>" }` without leaking internal SQLite causes.
+**Wire convention:** All HTTP request and response JSON bodies use **`camelCase`** consistently (no mixed `snake_case`/`camelCase` aliases).
+
+### Error body
+
+Every failure returns `{ "error": "<StableCode>", "message": "<fixed safe message>" }` without leaking internal SQLite causes. A permission-tier denial adds two optional fields so a client can explain the refusal without inventing policy:
+
+```json
+{
+  "error": "Forbidden",
+  "message": "the owner or admin tier is required for global reads",
+  "requiredTier": "owner",
+  "currentTier": "worker"
+}
+```
+
+`401 Unauthorized` means the credential is missing, unknown, revoked, or otherwise invalid; it never names a tier. `403 Forbidden` means the credential authenticated but the tier is insufficient, and carries `requiredTier` / `currentTier`. `404 NotFound` may conceal a Task outside a Worker's visibility boundary.
 
 ## Authorization Model
 
@@ -15,6 +30,24 @@ The Hub authenticates either the Admin principal or a Worker principal. A Worker
 Worker assignment for read authorization is established by a committed Delivery's `workerId`; `preferredWorkerId` is not an assignment. A related-Task read is limited to the direct parent, direct children, direct dependencies, and direct dependents of the assigned Task, and returns only the limited summary defined in [Security](security.md#task-read-visibility). It does not recursively expand visibility.
 
 Global reads and streams are Owner/Admin-only. Worker credentials cannot enumerate all Tasks, events, or Workers. Worker reads of `GET /v1/tasks/{id}`, `/tree`, and `/eligibility` are authorized against the Worker's own Delivery and the direct related-Task boundary. A valid credential that lacks the required tier receives `403 Forbidden`; a Task outside the Worker's visibility boundary may return `404 NotFound` to avoid disclosing its existence. Invalid or missing credentials return `401 Unauthorized`.
+
+The Admin token is a distinct principal. It is checked before the Worker verifier and is never accepted on Worker-only paths (WSS, claims, Progress, Result, Finish), even if an operator misconfigured it to equal a stored Worker credential.
+
+### Task read responses
+
+`GET /v1/tasks/{id}` returns `TaskReadResponse`:
+
+```json
+{ "task": { ... }, "summary": null, "related": [ ... ], "relatedTruncated": false }
+```
+
+- Owner, Admin, and the assigned Worker receive the full `task` record, with `summary: null`.
+- A Worker reading a **directly related** Task receives `task: null` and the limited `summary` instead, with an empty `related` list.
+- `related` carries one-hop relatives as limited summaries (identifiers, `parentTaskId`, `depth`, `title`, `status`, `version`, `dependencies`, `blockedBy`) — never the prompt, input, expected output, external references, metadata, Delivery, Progress, or Result.
+- `related` is bounded to `200` entries ordered by `(createdAtMs, id)`. When a Task has more direct relatives than that page, `relatedTruncated` is `true`; the response is never silently short.
+- Visibility anchors on committed Deliveries (any state, including `finished` and `cancelled`) and never expands recursively from a related Task.
+
+`GET /v1/tasks/{id}/tree` uses the same `related` / `relatedTruncated` page for a Worker anchor. Owner/Admin reads leave `related` empty because their global reads already expose every Task.
 
 Every HTTP, SSE, WSS, Snapshot, and resource path enforces authorization at the Hub. Client-side filtering is not an authorization boundary.
 
@@ -47,7 +80,7 @@ Every HTTP, SSE, WSS, Snapshot, and resource path enforces authorization at the 
 | `GET /v1/tasks/{id}` | Owner/Admin may read any Task in full. Worker may read its own Delivery-bound Task in full, or a directly related Task as a limited summary. |
 | `GET /v1/tasks/{id}/tree` | Owner/Admin may read the bounded tree. Worker access is anchored to its own Delivery-bound Task and returns only one-hop related-Task summaries. |
 | `GET /v1/tasks/{id}/eligibility` | Owner/Admin may inspect any Task. Worker may inspect only its own Task or a directly related Task. |
-| `GET /v1/events` | Owner/Admin. Resumable global SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). Worker credentials do not receive the global event stream. |
+| `GET /v1/events` | Owner/Admin. Resumable global SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). Worker credentials do not receive the global event stream. A Worker stream is revalidated against its original credential; demotion, revocation, or rotation ends it promptly. |
 | `GET /v1/workers` | Owner/Admin. Owner receives operational status and scheduling-relevant inventory; Admin additionally receives administration-only fields. |
 | `GET /v1/workers/{id}` | Owner/Admin. Owner receives Worker status, scheduling inventory and reported Agent runtime observations; Admin receives the full administrative view. |
 | `GET /v1/settings/security-trust` | Admin only. Read the two Hub-wide policy booleans. |

@@ -22,7 +22,8 @@ Rules:
 - Credentials in URL query parameters are forbidden.
 - Worker credentials with either `worker` or `owner` tier may use Worker-bound WSS, claim, Progress, Result, and Finish operations for their own `workerId`.
 - Owner-tier credentials additionally authorize global Task coordination and Worker/Agent observability, but never Worker administration.
-- Admin credentials authorize global reads, Task coordination, and system administration. They **cannot spoof** Worker claims, Progress, Result, Finish, cancellation acknowledgements, or WSS connections; those operations must originate from the assigned Worker credential.
+- Admin credentials authorize global reads, Task coordination, and system administration. They **cannot spoof** Worker claims, Progress, Result, Finish, cancellation acknowledgements, or WSS connections; those operations must originate from the assigned Worker credential. The Admin principal is excluded before Worker-verifier lookup, so a token collision (an Admin token equal to a stored Worker credential) still cannot authenticate as a Worker.
+- A long-lived global SSE stream revalidates its original credential. A Worker stream ends when the credential is revoked or rotated, or when its tier is no longer `owner`; the Admin principal is permanent for the life of its token.
 - Browser Clients keep the Admin token in memory only (never in `localStorage`, URLs, or packaged Web assets) and default to same-origin Hub hosting with a restrictive CSP.
 
 ## Permission Tiers
@@ -69,6 +70,8 @@ A `worker` principal may read:
 - One-hop related Tasks: the direct parent, direct children, direct declared dependencies, and direct dependents (Tasks that declare the assigned Task as a dependency). Dependencies remain subject to the sibling-only rule in the Task Model.
 
 Related Tasks are returned as a limited coordination summary: identifiers, title, status, hierarchy/dependency relationships, and blocker information. Related-task access does not expose the related Task's prompt, input, expected output, external references, arbitrary metadata, Delivery details, Progress, or Result. Visibility does not recursively expand from a related Task to its other relatives or subtree.
+
+Assignment is established by any committed Delivery in any state, including `finished` and `cancelled`, so a historical handoff keeps its Task readable. The one-hop page is bounded to `200` summaries ordered by `(createdAtMs, id)`; the read reports `relatedTruncated: true` when a Task has more direct relatives than that, and never silently shortens the response.
 
 Owner and Admin may read all Task records and their full supported coordination/execution data. Owner and Admin global reads do not imply access to Worker-local files, environment variables, Harness Provider Credentials, or other local secrets.
 

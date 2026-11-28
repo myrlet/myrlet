@@ -388,6 +388,11 @@ fn new_key() -> String {
     format!("myrlet-{}", uuid::Uuid::new_v4().simple())
 }
 
+/// Resolve the Task version a version-fenced command should send.
+///
+/// A full Task record supplies its version; a Worker reading a directly related Task only
+/// receives a limited summary, which also carries the version. Either way the CLI reports
+/// what the Hub sent and lets the Hub decide whether the write is authorized.
 async fn current_version(
     client: &NativeClient,
     task_id: &TaskId,
@@ -397,14 +402,15 @@ async fn current_version(
         Some(version) => Ok(version),
         None => {
             let read = client.get_task(task_id).await.map_err(runtime)?;
-            read.task.map_or_else(
-                || {
-                    Err(CliError::Runtime(
-                        "this Task has no readable record".to_string(),
-                    ))
-                },
-                |record| Ok(record.version),
-            )
+            if let Some(record) = read.task {
+                return Ok(record.version);
+            }
+            if let Some(summary) = read.summary {
+                return Ok(summary.version);
+            }
+            Err(CliError::Runtime(
+                "this Task has no readable record".to_string(),
+            ))
         }
     }
 }

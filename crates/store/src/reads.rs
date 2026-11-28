@@ -154,6 +154,7 @@ pub fn get_task_tree(
         root_task_id: start.root_task_id,
         tasks,
         related: Vec::new(),
+        related_truncated: false,
         truncated,
     })
 }

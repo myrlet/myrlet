@@ -161,6 +161,8 @@ export interface TaskReadResponse {
   task: TaskRecord | null;
   summary: RelatedTaskSummary | null;
   related: RelatedTaskSummary[];
+  /** `true` when more related Tasks exist than the bounded response carries. */
+  relatedTruncated: boolean;
 }
 
 /** `GET /v1/tasks/{id}/tree` response. */
@@ -168,6 +170,7 @@ export interface TaskTreeResponse {
   rootTaskId: TaskId;
   tasks: TaskRecord[];
   related: RelatedTaskSummary[];
+  relatedTruncated: boolean;
   truncated: boolean;
 }
 

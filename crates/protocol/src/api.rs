@@ -128,8 +128,10 @@ pub enum TaskTreeDirection {
 /// `GET /v1/tasks/{id}` response: the Task within the caller's visibility.
 ///
 /// Owner, Admin, and the assigned Worker receive the full `task`; a Worker reading a
-/// directly related Task receives only `summary`. The `related` list always contains
-/// one-hop related Tasks as limited summaries and never expands recursively.
+/// directly related Task receives only `summary` (with empty `related`). The `related`
+/// list accompanies a full Task read and holds one-hop related Tasks as limited summaries.
+/// It never expands recursively, and `relatedTruncated` marks a bounded page that a Task
+/// with many children or dependents exceeded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskReadResponse {
@@ -139,6 +141,9 @@ pub struct TaskReadResponse {
     pub summary: Option<crate::task::RelatedTaskSummary>,
     #[serde(default)]
     pub related: Vec<crate::task::RelatedTaskSummary>,
+    /// `true` when more related Tasks exist than the bounded response carries.
+    #[serde(default)]
+    pub related_truncated: bool,
 }
 
 /// `GET /v1/tasks/{id}/tree` response: a Task plus its bounded Task records.
@@ -155,6 +160,9 @@ pub struct TaskTreeResponse {
     /// leave this empty.
     #[serde(default)]
     pub related: Vec<crate::task::RelatedTaskSummary>,
+    /// `true` when the bounded related-Task page was exceeded.
+    #[serde(default)]
+    pub related_truncated: bool,
     pub truncated: bool,
 }
 

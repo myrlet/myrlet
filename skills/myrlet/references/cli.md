@@ -28,6 +28,8 @@ Executable: `myrlet`.
 | `myrlet [--json] workers approve <id>` | Admin | Admit a pending Worker to scheduling; repeating it succeeds |
 | `myrlet [--json] workers config apply <id> --revision <n>` | Admin | Apply the reported revision previously inspected; prints `appliedRevision` |
 | `myrlet [--json] workers permission set <id> --tier worker\|owner` | Admin | Set the server-stored permission tier; never creates a credential or Agent identity |
+| `myrlet [--json] policy show` | Owner or Admin | Read the automatic approval and apply policies |
+| `myrlet [--json] policy set [--auto-approve <bool>] [--auto-apply <bool>]` | Admin | Enable/disable automatic approval or apply |
 
 `--json` may appear before or after the subcommand. Diagnostics write to `stderr`; structured output writes to `stdout`.
 
@@ -40,9 +42,11 @@ The CLI presents the credential the command needs and never selects or infers a 
 - With `MYRLET_ADMIN_TOKEN` set, every command uses the Admin credential. The Admin principal cannot impersonate Worker execution operations.
 - A valid credential with an insufficient tier receives `403 Forbidden` naming the required and current tiers; an invalid or missing credential receives `401`. A Task outside a Worker's visibility boundary reads as `404`.
 
+`tasks show` returns the full record when the caller may read it in full, and a limited summary (`task: null`, populated `summary`) when a Worker reads a directly related Task. Version-fenced commands (`tasks cancel`, `tasks finish`, `tasks update`) fall back to the summary's `version` when `--expected-version` is omitted; the CLI never decides whether the write is allowed and always lets the Hub answer. A related list reports `relatedTruncated: true` when a Task has more direct relatives than the bounded page shows.
+
 ## Worker Trust
 
-The Hub defaults to requiring both Worker approval and configuration Apply. A newly paired Worker is `pending`: it can connect, report inventory, and read, but cannot claim until an Admin runs `workers approve`. Its first scheduling report also stays under review until an Admin runs `workers config apply <id> --revision <n>` with the same revision `workers config show` displayed. Apply answers `409 NoPendingConfig` when nothing is pending and `409 ConfigRevisionMismatch` when a newer report arrived; re-read the Worker before retrying. Approval and Apply may happen in either order, and neither acts retroactively on existing Workers or reports. The two policies are editable only through the Hub API (`GET`/`PATCH /v1/settings/security-trust`) and the Web Settings **Security & Trust** group; the CLI has no settings command.
+The Hub defaults to requiring both Worker approval and configuration Apply. A newly paired Worker is `pending`: it can connect, report inventory, and read, but cannot claim until an Admin runs `workers approve`. Its first scheduling report also stays under review until an Admin runs `workers config apply <id> --revision <n>` with the same revision `workers config show` displayed. Apply answers `409 NoPendingConfig` when nothing is pending and `409 ConfigRevisionMismatch` when a newer report arrived; re-read the Worker before retrying. Approval and Apply may happen in either order, and neither acts retroactively on existing Workers or reports. The two policies are editable through the Hub API (`GET`/`PATCH /v1/settings/security-trust`), the Web Settings **Security & Trust** group, and the Admin-only `myrlet policy show` / `myrlet policy set [--auto-approve <bool>] [--auto-apply <bool>]` commands.
 
 ## Execution-local Commands
 

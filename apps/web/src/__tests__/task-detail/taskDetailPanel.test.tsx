@@ -93,6 +93,7 @@ function loaded(
     rootTaskId: task.rootTaskId,
     tasks: [task],
     related: [],
+    relatedTruncated: false,
     truncated: false,
   };
   return props({ selectedTaskId: task.id, task, tree: read, summary: summary(task), ...overrides });
@@ -207,6 +208,7 @@ describe("TaskDetailPanel", () => {
       rootTaskId: "parent",
       tasks: [parent, leaf],
       related: [],
+      relatedTruncated: false,
       truncated: false,
     };
     const onCopyText = vi.fn();
@@ -236,7 +238,7 @@ describe("TaskDetailPanel", () => {
       <TaskDetailPanel
         {...props({
           task: leaf,
-          tree: { rootTaskId: "outside", tasks: [leaf], related: [], truncated: true },
+          tree: { rootTaskId: "outside", tasks: [leaf], related: [], relatedTruncated: false, truncated: true },
         })}
       />,
     );

@@ -94,6 +94,30 @@ impl HubStore {
             .await
     }
 
+    /// Query plan of the bounded related-page lookup (index verification in tests).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn explain_related_lookup(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Vec<String>, StoreError> {
+        let task_id = task_id.clone();
+        self.db
+            .call(move |conn| scoped::explain_related_lookup(conn, &task_id))
+            .await
+    }
+
+    /// Query plan of the assignment-authorization lookup (index verification in tests).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn explain_assignment_lookup(
+        &self,
+        worker_id: &WorkerId,
+    ) -> Result<Vec<String>, StoreError> {
+        let worker_id = worker_id.clone();
+        self.db
+            .call(move |conn| scoped::explain_assignment_lookup(conn, &worker_id))
+            .await
+    }
+
     /// Worker-tier eligibility for the Worker's own Task or a directly related Task.
     pub async fn worker_task_eligibility(
         &self,

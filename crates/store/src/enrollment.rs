@@ -204,3 +204,46 @@ pub fn authenticate_worker(
     }
     authenticated.ok_or(StoreError::Unauthorized)
 }
+
+/// The Worker a presented token still authenticates, with its current tier.
+///
+/// A long-lived stream (SSE) uses this to revalidate its *original* credential: the check
+/// is the same constant-time comparison against the stored SHA-256 verifier, so rotation
+/// and revocation fail immediately, and the returned tier exposes a demotion. It never
+/// accepts the Admin principal.
+pub fn reauthenticate(
+    conn: &Connection,
+    bearer_token: &str,
+) -> Result<Option<AuthenticatedWorker>, StoreError> {
+    match authenticate_worker(conn, bearer_token) {
+        Ok(worker) => Ok(Some(worker)),
+        Err(StoreError::Unauthorized) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Pair a Worker whose credential is exactly `token` and approve it.
+///
+/// This exists only for tests that must prove the Admin token and a Worker credential are
+/// separate principals even when their raw values collide; production pairing always
+/// generates a random credential.
+#[cfg(any(test, feature = "test-support"))]
+pub fn pair_with_credential(
+    conn: &mut Connection,
+    worker_id: &WorkerId,
+    token: &str,
+    now_ms: i64,
+) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO workers \
+         (worker_id, token_sha256, revoked, approval, permission_tier, connection_epoch, \
+          inventory_revision, created_at_ms) \
+         VALUES (?1, ?2, 0, 'approved', 'worker', 0, 0, ?3) \
+         ON CONFLICT(worker_id) DO UPDATE SET token_sha256 = excluded.token_sha256, \
+         revoked = 0, approval = 'approved', permission_tier = 'worker'",
+        params![worker_id.as_str(), sha256_hex(token.as_bytes()), now_ms],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
