@@ -6,7 +6,7 @@ Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTT
 
 ## Read Authorization
 
-Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{id}/tree`, `/v1/tasks/{id}/eligibility`, `/v1/events`, `/v1/workers`, `/v1/workers/{id}`) accept **either** the Admin token **or** any enrolled Worker credential. A Harness therefore never needs the Hub Admin token merely to inspect Tasks, trees, Workers, or events. Reads grant **no** management authority: every write route still requires the Admin principal. See [security](security.md#read-visibility).
+Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{id}/tree`, `/v1/tasks/{id}/eligibility`, `/v1/events`, `/v1/workers`, `/v1/workers/{id}`, `/v1/settings/security-trust`) accept **either** the Admin token **or** any enrolled Worker credential. A Harness therefore never needs the Hub Admin token merely to inspect Tasks, trees, Workers, or events. Reads grant **no** management authority: management writes require the Admin principal. See [security](security.md#read-visibility).
 
 ## V1 Endpoint Surface
 
@@ -37,8 +37,9 @@ Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{i
 | `GET /v1/tasks/{id}/tree` | Read bounded ancestors or descendants (depth & node cap; simple limit, no view-fingerprint cursor). |
 | `GET /v1/tasks/{id}/eligibility` | Whether the Task can be claimed now, and which dependencies block it. |
 | `GET /v1/events` | Resumable SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). |
-| `GET /v1/workers` | List enrolled Workers, connectivity, and reported Slot/Executor inventory. |
-| `GET /v1/workers/{id}` | One Worker's detail, inventory, and the `claimableTaskIds` its Slots could run next. |
+| `GET /v1/workers` | List Workers with connectivity, approval status (`pending`, `approved`, `revoked`), applied inventory and nullable `reportedRevision` / `appliedRevision`. |
+| `GET /v1/workers/{id}` | Worker detail adds `reportedConfig` and `appliedConfig` for review and `claimableTaskIds` (empty while either approval gate is pending). |
+| `GET /v1/settings/security-trust` | Read the two Hub-wide policy booleans. |
 
 ### Admin Control Plane (`Authorization: Bearer <admin-token>`)
 
@@ -52,6 +53,11 @@ Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{i
 | `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code (`{ ttlSeconds, suggestedWorkerId? } -> { enrollmentCode, expiresAt }`). |
 | `POST /v1/workers/{id}/rotate` | Rotate a Worker's bearer credential (fences active WSS session). |
 | `POST /v1/workers/{id}/revoke` | Revoke a Worker's credential and disconnect its active WSS session. |
+| `PATCH /v1/settings/security-trust` | Admin updates one or both boolean policies and receives the stored pair. Omitted fields retain their values. |
+| `POST /v1/workers/{id}/approve` | Approve a pending Worker. Repeating approval for an approved Worker succeeds. A revoked Worker requires a new Pair. |
+| `POST /v1/workers/{id}/config/apply` | Apply `{ revision }` and return `{ appliedRevision }`. The Hub checks and copies the latest pending report in one transaction. |
+
+Apply on a revoked Worker returns `409 InvalidTransition`. With no pending report it returns `409 NoPendingConfig`. With a pending report and a different revision it returns `409 ConfigRevisionMismatch` and asks the operator to inspect the latest report. Each error leaves Applied unchanged.
 
 ### Worker Control & Reporting (`Authorization: Bearer <worker-token>`)
 
@@ -73,10 +79,10 @@ Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{i
 ```
 
 - The Worker credential identifies the claimant; `connectionEpoch` must equal the Worker's live WSS epoch, otherwise `409 StaleDelivery`.
-- In one transaction the Hub rechecks: Task `queued` with every dependency `finished`, no existing Delivery for the Task, the named Slot exists and is enabled, every `requiredCapabilities` entry is `available`, and any requested Executor is present on that Slot.
+- To create a new Delivery the Hub also requires Worker approval and a non-null applied revision matching the latest report. Otherwise it returns `409 InvalidTransition`. In the same transaction the Hub rechecks: Task `queued` with every dependency `finished`, no existing Delivery for the Task, the named Slot exists and is enabled, every `requiredCapabilities` entry is `available`, and any requested Executor is present on that Slot.
 - If `executorId` is omitted the Hub resolves the Task's own `preferredExecutorId` against the Slot (falling back to the Slot's first Executor); a preference never blocks a claim.
 - Exactly one Delivery is created (`state: accepted`) and the Task moves to `dispatched`. Racing claims either lose the version check or violate the unique Delivery index, so exactly one wins; a loser receives `409 InvalidTransition` / `409 AlreadyClaimed`.
-- Retrying an active claim at the live epoch with the same Worker and Slot returns the existing Delivery and binds it to that epoch. Replay emits no second dispatch event. A different Worker or Slot cannot recover that claim.
+- The approval gates apply only to new Deliveries. Retrying an active claim at the live epoch with the same Worker and Slot returns the existing Delivery and binds it to that epoch. Replay emits no second dispatch event. A different Worker or Slot cannot recover that claim.
 - Returns `ClaimTaskResponse { task, delivery }`.
 
 ## Worker Progress, Result, and Finish Reporting (HTTP)
@@ -135,7 +141,7 @@ The Delivery's Worker is the single writer of both values. It serializes reconci
 `GET /v1/snapshot` builds a consistent read from Hub SQLite and in-memory Worker connection state without calling Workers synchronously. It returns:
 
 - `schemaVersion` (`"myrlet.snapshot/v1"`), `generatedAt`, `eventCursor`, and `tasksTruncated` (boolean + total count when Task summaries exceed the Snapshot page bound);
-- connected/disconnected Workers with their reported Slots, capabilities, Executors, observation timestamps, and advisory capacity hints (absent capacity MUST be `null`, never `0`);
+- connected/disconnected Workers with approval status, reported/applied revisions and their applied Slots, capabilities, Executors, observation timestamps, and advisory capacity hints (absent capacity MUST be `null`, never `0`);
 - Task summaries (status, version, hierarchy, `dependencies`, `blockedBy`, current Delivery, and latest `DeliveryProgressView`).
 
 Snapshot is purely observational and never reserves capacity.

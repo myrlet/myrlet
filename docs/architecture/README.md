@@ -24,7 +24,7 @@ Pre-release formats carry **no backward-compatibility obligation**. Change canon
 | --- | --- |
 | [Task model](task-model.md) | 5-state Task lifecycle, 5-level Task Tree, sibling dependencies, minimal `TaskDefinition`, submission & readiness, pending edits, Task Bundle import, copy/retry |
 | [Hub API](hub-api.md) | Minimal V1 HTTP/SSE surface, Worker HTTP Progress/Result/Finish reporting, claims, Global Snapshot, single-table event log + broadcast SSE, ingress & shutdown |
-| [Worker protocol](worker-protocol.md) | Worker WSS transport, wakeup hints, explicit claims, single-step pairing, trusted inventory, epoch fencing, non-invasive Harness adapters, CLI/Progress boundary, local state & control socket |
+| [Worker protocol](worker-protocol.md) | Worker WSS transport, wakeup hints, explicit claims, single-step pairing, Worker approval and applied scheduling inventory, epoch fencing, non-invasive Harness adapters, CLI/Progress boundary, local state & control socket |
 | [Security](security.md) | `Admin` + `Worker` bearer authentication, read visibility, one-time pairing codes, mandatory WSS TLS verification, file permission safety, explicit no-sandbox Harness boundary |
 | [Local runtime and platform](local-runtime.md) | `MYRLET_HOME` layout, SQLite concurrency model, workspace binaries, crate boundaries, and Client surfaces |
 
@@ -64,7 +64,7 @@ Harness Session, Thread, and Workspace identifiers are **Harness-private** and a
 To prevent over-engineering in `0.1.0`, the following are explicitly **excluded** from V1:
 
 - Multi-tenant RBAC, custom Principal roles, multi-Scope isolation, Task Assignments / grant tokens, nested subtree Ownership Boundaries, ownership transfer, and one-hop `adjacentTasks` projections.
-- Double-stage administrative enrollment approval, per-claim Worker inventory approval state machines, deterministic credential seed derivation, and proxy `X-Forwarded-For` rate limiters.
+- Multi-stage credential issuance, per-Task or per-claim approval, approval workflows, configuration history or rollback, deterministic credential seed derivation, and proxy `X-Forwarded-For` rate limiters.
 - Scope Category Catalog API/table, Task `priority` scheduling or validation ceremony, Human Inbox, and Owner notification delivery.
 - `GET /v1/work`, `GET /v1/history`, `POST /v1/matches/preview`, `POST /v1/task-bundles/preview`, Queue Intent stale reauthorization, and SHA-256 view-fingerprint / signed pagination cursors.
 - A general `dispatch` operation, Hub-side offer/accept/release Delivery states, refusal codes, candidate polling loops, hidden scheduling scores, automatic fallback, and capability relaxation.
