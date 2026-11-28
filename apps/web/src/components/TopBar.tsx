@@ -22,8 +22,9 @@ import {
   Sun,
 } from "lucide-react";
 
-import { THEMES } from "../state/useHub";
-import type { ConnectionStatus, Theme } from "../state/useHub";
+import { THEMES } from "../state/useAppearance";
+import type { Theme } from "../state/useAppearance";
+import type { ConnectionStatus } from "../state/useHub";
 import { BrandMark } from "./BrandMark";
 
 /** The two presentations of the single workspace. `list` is the home. */

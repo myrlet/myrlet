@@ -6,8 +6,8 @@
  * right Inspector, and the compact status bar. Workers & Pairing is a slide-over
  * drawer rather than a separate page. The Task surface is strictly read-only:
  * creation, import, cancel, finish, subtask, and retry belong to the
- * CLI, never here. All non-session state lives in this component; the bearer
- * token stays inside `useHub`.
+ * CLI, never here. The shell composes workspace navigation, appearance, and the
+ * Hub session.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -31,6 +31,7 @@ import { WorkersView } from "./components/WorkersView";
 import { WorkspaceInspector } from "./components/WorkspaceInspector";
 import { TASK_STATUSES, TASK_STATUS_META, buildTaskTreeRows } from "./format";
 import type { TaskFilter } from "./format";
+import { useAppearance } from "./state/useAppearance";
 import { useHub } from "./state/useHub";
 
 const INSPECTOR_MIN_WIDTH = 320;
@@ -46,6 +47,7 @@ const INITIAL_ATLAS_META: AtlasBoardMeta = {
 
 export default function App() {
   const hub = useHub();
+  const appearance = useAppearance();
 
   /* The Board opens first; List provides a compact task outline. */
   const [mode, setMode] = useState<WorkspaceMode>("board");
@@ -533,8 +535,8 @@ export default function App() {
         defaultBaseUrl={hub.baseUrl}
         connecting={hub.connection === "connecting"}
         error={hub.error}
-        theme={hub.theme}
-        onChangeTheme={hub.setTheme}
+        theme={appearance.theme}
+        onChangeTheme={appearance.setTheme}
         onConnect={hub.connect}
       />
     );
@@ -566,8 +568,8 @@ export default function App() {
         workersOpen={workersOpen}
         onToggleWorkers={() => setWorkersOpen((current) => !current)}
         onRefresh={refresh}
-        theme={hub.theme}
-        onChangeTheme={hub.setTheme}
+        theme={appearance.theme}
+        onChangeTheme={appearance.setTheme}
         onDisconnect={hub.disconnect}
         onOpenShortcuts={() => setShortcutsOpen(true)}
       />
@@ -834,7 +836,7 @@ export default function App() {
         open={paletteOpen}
         tasks={tasks}
         selectedTask={hub.selectedTask}
-        theme={hub.theme}
+        theme={appearance.theme}
         onClose={() => setPaletteOpen(false)}
         onSelectTask={selectTaskAndReveal}
         onSelectMode={setMode}
@@ -842,7 +844,7 @@ export default function App() {
         onToggleInspector={toggleInspector}
         onFitBoard={() => atlasRef.current?.fit()}
         onArrangeBoard={() => atlasRef.current?.arrange()}
-        onChangeTheme={hub.setTheme}
+        onChangeTheme={appearance.setTheme}
       />
 
       <ShortcutsModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
