@@ -11,16 +11,16 @@ mod reports;
 mod session;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use myrlet_protocol::inventory::WorkerInventory;
 use myrlet_protocol::paths::{ensure_private_dir, MyrletHome, PathError};
-use myrlet_protocol::{ExecutorId, SlotId, WorkerId};
+use myrlet_protocol::{ClaimTaskRequest, DeliveryId, ExecutorId, SlotId, WorkerId};
 use myrlet_worker::{ExecutorAdapter, HandlingEnded, LocalRegistry, RegistryError};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 use crate::config::WorkerConfig;
 use crate::credentials::WorkerCredentials;
@@ -38,6 +38,11 @@ pub struct WorkerRuntime {
     core: Arc<RuntimeCore>,
 }
 
+impl WorkerRuntime {
+    /// Pending-claim retry interval used while a lost acknowledgement is unexplained.
+    pub const CLAIM_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+}
+
 struct RuntimeCore {
     home: MyrletHome,
     config: WorkerConfig,
@@ -49,9 +54,15 @@ struct RuntimeCore {
     tls: Arc<rustls::ClientConfig>,
     /// Current non-zero `connectionEpoch`; `0` marks "no live session".
     epoch: AtomicU64,
+    reconnect: Notify,
     shutting_down: AtomicBool,
-    /// Serializes read-modify-write cycles and per-Delivery reconciliation.
+    /// Serializes local registry read-modify-write cycles.
     gate: Mutex<()>,
+    /// One async lock per Delivery, so a poll, exit, resync, or manual sync of the same
+    /// Delivery never overtakes another. In memory only; a restart re-reads the Registry.
+    reconciliation: Mutex<HashMap<DeliveryId, Arc<tokio::sync::Mutex<()>>>>,
+    /// The session retries its single outstanding claim after an ambiguous response.
+    pending_claim: Mutex<Option<ClaimTaskRequest>>,
     on_exit: UnboundedSender<HandlingEnded>,
     on_exit_rx: Mutex<Option<UnboundedReceiver<HandlingEnded>>>,
 }
@@ -87,8 +98,11 @@ impl WorkerRuntime {
                 reporter: Arc::new(reporter),
                 tls: tls_config,
                 epoch: AtomicU64::new(0),
+                reconnect: Notify::new(),
                 shutting_down: AtomicBool::new(false),
                 gate: Mutex::new(()),
+                reconciliation: Mutex::new(HashMap::new()),
+                pending_claim: Mutex::new(None),
                 on_exit,
                 on_exit_rx: Mutex::new(Some(on_exit_rx)),
             }),
@@ -155,7 +169,7 @@ pub async fn wait_for_shutdown_signal() {
 impl RuntimeCore {
     /// The live connection epoch, or `0` when no session is established.
     pub(super) fn epoch(&self) -> u64 {
-        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+        self.epoch.load(Ordering::SeqCst)
     }
 
     /// Connect, serve one session, and back off before reconnecting.
@@ -170,6 +184,7 @@ impl RuntimeCore {
                 Ok(session::Outcome::Lost) => backoff = INITIAL_BACKOFF,
                 Err(error) => tracing::warn!(%error, "worker session ended with an error"),
             }
+            self.epoch.store(0, Ordering::SeqCst);
             let closed = tokio::select! {
                 () = tokio::time::sleep(backoff) => {
                     backoff = (backoff * 2).min(MAX_BACKOFF);

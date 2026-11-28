@@ -107,6 +107,44 @@ function normalizeBaseUrl(raw: string): string {
   return trimmed.replace(/\/+$/, "");
 }
 
+/**
+ * Public reachability probe for the Auth gate. A successful HTTP response
+ * establishes reachability even when the body has no readable version.
+ */
+export async function probeHubHealth(
+  baseUrl: string,
+): Promise<{ ok: boolean; version?: string }> {
+  let response: Response;
+  try {
+    response = await fetch(`${normalizeBaseUrl(baseUrl)}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  } catch {
+    return { ok: false };
+  }
+
+  if (!response.ok) {
+    return { ok: false };
+  }
+
+  try {
+    const body: unknown = await response.json();
+    if (typeof body === "object" && body !== null) {
+      const record = body as Partial<HealthResponse> & Record<string, unknown>;
+      return {
+        ok: true,
+        version: typeof record.version === "string" ? record.version : undefined,
+      };
+    }
+  } catch {
+    // A reachable process with an unreadable body is still reachable.
+  }
+
+  return { ok: true };
+}
+
 function isAbortError(error: unknown): boolean {
   return (
     typeof error === "object" &&

@@ -38,7 +38,7 @@ pub struct LocalDeliveryRecord {
     /// SHA-256 of the Result text the Hub confirmed; `None` means "Hub holds no Result".
     #[serde(default)]
     pub result_acked_sha256: Option<String>,
-    /// Local reading of the Result file could not complete; never treated as absence.
+    /// An unconfirmed Result write invalidated the cached Hub hash.
     #[serde(default)]
     pub result_recovery_incomplete: bool,
     /// Backend cancel answer (and optional reason) kept until acknowledged.

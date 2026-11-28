@@ -5,11 +5,14 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
-use myrlet_protocol::{result_sha256, ProgressReportRequest, ResultReportRequest};
+use myrlet_protocol::{
+    result_sha256, DeliveryId, ProgressReportRequest, ResultReceipt, ResultReportRequest,
+};
 use myrlet_worker::{read_progress_if_changed, read_result, LocalDeliveryRecord, LocalResultError};
 use tokio::task::JoinHandle;
 
 use super::{RuntimeCore, RuntimeError, REPORT_POLL};
+use crate::reporting::ReportError;
 use crate::wss::HubSink;
 
 impl RuntimeCore {
@@ -40,28 +43,12 @@ impl RuntimeCore {
                         .await?;
                 }
             }
-            if record.finish_pending && !record.finish_acked {
-                match self.reporter.post_finish(&record.delivery_id, epoch).await {
-                    Ok(Some(_)) => {
-                        self.update(&record.delivery_id, |record| record.finish_acked = true);
-                    }
-                    Ok(None) => {}
-                    Err(error) => tracing::warn!(
-                        delivery = %record.delivery_id,
-                        %error,
-                        "pending finish report could not be flushed"
-                    ),
-                }
-            }
-            self.sync_progress(&record, epoch).await;
-            self.sync_result(&record, epoch).await;
+            self.reconcile(&record.delivery_id, epoch).await;
         }
         Ok(())
     }
 
     /// Record end of handling, relay the final Progress, Finish, and Result.
-    ///
-    /// A `done` signal and a Worker-observed exit both arrive here; either one is enough.
     async fn run_exit_handler(self: Arc<Self>) {
         let receiver = self
             .on_exit_rx
@@ -82,13 +69,7 @@ impl RuntimeCore {
             if epoch == 0 {
                 continue;
             }
-            self.post_finish_if_pending(&record.delivery_id, epoch)
-                .await;
-            let refreshed = self.registry.get(&record.delivery_id).ok().flatten();
-            if let Some(record) = refreshed {
-                self.sync_progress(&record, epoch).await;
-                self.sync_result(&record, epoch).await;
-            }
+            self.reconcile(&record.delivery_id, epoch).await;
         }
     }
 
@@ -110,14 +91,45 @@ impl RuntimeCore {
                 }
             };
             for record in records {
-                if record.finish_pending && !record.finish_acked {
-                    self.post_finish_if_pending(&record.delivery_id, epoch)
-                        .await;
-                }
-                self.sync_progress(&record, epoch).await;
-                self.sync_result(&record, epoch).await;
+                self.reconcile(&record.delivery_id, epoch).await;
             }
         }
+    }
+
+    /// Serialize all Progress/Result reconciliation of one Delivery behind its own lock.
+    ///
+    /// The poll loop, the exit handler, resync flush, and a manual `result sync` command
+    /// all funnel here, so no two of them ever have a request for the same Delivery in
+    /// flight at once. The lock is per Delivery, so unrelated Deliveries stay parallel.
+    async fn reconcile(&self, delivery_id: &myrlet_protocol::DeliveryId, epoch: u64) {
+        let lock = self.reconciliation_lock(delivery_id);
+        let _guard = lock.lock().await;
+        if self.epoch() != epoch {
+            return;
+        }
+        let Some(record) = self.registry.get(delivery_id).ok().flatten() else {
+            return;
+        };
+        if record.finish_pending && !record.finish_acked {
+            self.post_finish_if_pending(delivery_id, epoch).await;
+        }
+        self.sync_progress(&record, epoch).await;
+        self.sync_result(&record, epoch).await;
+    }
+
+    fn reconciliation_lock(
+        &self,
+        delivery_id: &myrlet_protocol::DeliveryId,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .reconciliation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            locks
+                .entry(delivery_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     async fn post_finish_if_pending(&self, delivery_id: &myrlet_protocol::DeliveryId, epoch: u64) {
@@ -180,30 +192,58 @@ impl RuntimeCore {
             Ok(text) => text.map(str::to_owned),
             Err(LocalResultError::Incomplete) => return,
         };
-        let wanted_sha = wanted.as_deref().map(result_sha256);
-        if wanted_sha == record.result_acked_sha256 {
+        if !record.result_recovery_incomplete
+            && wanted.as_deref().map(result_sha256) == record.result_acked_sha256
+        {
             return;
         }
         let request = ResultReportRequest {
             epoch,
             text: wanted,
         };
-        match self
-            .reporter
-            .post_result(&record.delivery_id, &request)
-            .await
-        {
-            Ok(_) => {
-                self.update(&record.delivery_id, |record| {
-                    record.result_acked_sha256 = wanted_sha;
+        if let Err(error) = self.write_result(&record.delivery_id, &request).await {
+            tracing::debug!(delivery = %record.delivery_id, %error, "result report not yet accepted; will retry");
+        }
+    }
+
+    /// Both Result writers use the Delivery lock before reaching this write boundary.
+    async fn write_result(
+        &self,
+        delivery_id: &DeliveryId,
+        request: &ResultReportRequest,
+    ) -> Result<ResultReceipt, ReportError> {
+        let epoch = request.epoch;
+        if self.epoch() != epoch {
+            return Err(ReportError::StaleDelivery(delivery_id.to_string()));
+        }
+        match self.reporter.post_result(delivery_id, request).await {
+            Ok(receipt) => {
+                self.update(delivery_id, |record| {
+                    record.result_acked_sha256 = receipt.result_sha256.clone();
                     record.result_recovery_incomplete = false;
                 });
+                Ok(receipt)
             }
-            Err(error) => tracing::debug!(
-                delivery = %record.delivery_id,
-                %error,
-                "result report not yet accepted; will retry"
-            ),
+            Err(error) => {
+                if matches!(error, ReportError::Transport(_))
+                    || matches!(error, ReportError::Response { status, .. } if status == 408 || status >= 500)
+                {
+                    // The write may have committed. The previously acknowledged hash
+                    // no longer establishes what the Hub holds, even if the file reverts.
+                    self.update(delivery_id, |record| {
+                        record.result_recovery_incomplete = true
+                    });
+                    if self
+                        .epoch
+                        .compare_exchange(epoch, 0, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        tracing::warn!(%delivery_id, epoch, "result write outcome unknown; reconnecting before retry");
+                        self.reconnect.notify_one();
+                    }
+                }
+                Err(error)
+            }
         }
     }
 
@@ -221,6 +261,8 @@ impl RuntimeCore {
         &self,
         delivery_id: &myrlet_protocol::DeliveryId,
     ) -> Result<Option<String>, crate::reporting::ReportError> {
+        let lock = self.reconciliation_lock(delivery_id);
+        let _guard = lock.lock().await;
         let Some(record) = self
             .registry
             .get(delivery_id)
@@ -243,10 +285,7 @@ impl RuntimeCore {
             epoch,
             text: wanted,
         };
-        let receipt = self.reporter.post_result(delivery_id, &request).await?;
-        self.update(delivery_id, |record| {
-            record.result_acked_sha256 = receipt.result_sha256.clone();
-        });
+        let receipt = self.write_result(delivery_id, &request).await?;
         Ok(receipt.result_sha256)
     }
 }

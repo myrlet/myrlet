@@ -42,6 +42,7 @@ enum Step {
     Signal(bool),
     Heartbeat,
     LeaseExpired,
+    Reconnect,
     Frame(Box<Result<Option<WorkerWireEnvelope<Value>>, WssError>>),
 }
 
@@ -72,6 +73,7 @@ impl RuntimeCore {
             "worker session established"
         );
         self.send_resync(&mut sink).await?;
+        self.retry_pending_claim().await?;
         self.flush_pending(&mut sink).await?;
 
         let lease_ttl = Duration::from_millis(welcome.lease_ttl_ms.max(1));
@@ -83,6 +85,7 @@ impl RuntimeCore {
         loop {
             let step = tokio::select! {
                 changed = shutdown.changed() => Step::Signal(changed.is_err()),
+                () = self.reconnect.notified() => Step::Reconnect,
                 _ = ticker.tick() => {
                     if Instant::now() >= deadline {
                         Step::LeaseExpired
@@ -102,6 +105,12 @@ impl RuntimeCore {
                     let _ = sink.close().await;
                     self.epoch.store(0, Ordering::SeqCst);
                     return Ok(Outcome::Shutdown);
+                }
+                Step::Reconnect => {
+                    // A notification from the preceding session may still be queued.
+                    if self.epoch() != epoch {
+                        return Ok(self.lost());
+                    }
                 }
                 Step::LeaseExpired => {
                     tracing::warn!(epoch, "hub lease expired without a frame; reconnecting");
@@ -173,7 +182,7 @@ impl RuntimeCore {
             }
             WorkerWireKind::HubWakeup => {
                 let wakeup: HubWakeupPayload = serde_json::from_value(payload)?;
-                self.handle_wakeup(&wakeup.task_id).await?;
+                self.handle_wakeup(wakeup).await?;
             }
             WorkerWireKind::TaskCancel => {
                 let cancel: TaskCancelPayload = serde_json::from_value(payload)?;

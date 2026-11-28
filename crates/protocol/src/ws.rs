@@ -103,6 +103,7 @@ pub struct WorkerInventoryAckPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HubWakeupPayload {
     pub task_id: TaskId,
+    pub eligible_slot_ids: Vec<SlotId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,7 +232,9 @@ mod tests {
         assert!(
             serde_json::from_str::<WorkerByePayload>(r#"{"reason":"done","extra":1}"#).is_err()
         );
-        let wakeup: HubWakeupPayload = serde_json::from_str(r#"{"taskId":"task_1"}"#).unwrap();
+        let wakeup: HubWakeupPayload =
+            serde_json::from_str(r#"{"taskId":"task_1","eligibleSlotIds":["slot-a"]}"#).unwrap();
         assert_eq!(wakeup.task_id.as_str(), "task_1");
+        assert_eq!(wakeup.eligible_slot_ids, vec![SlotId::new("slot-a")]);
     }
 }

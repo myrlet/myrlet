@@ -11,7 +11,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { SnapshotTaskSummary, TaskRecord } from "../api/types";
 import { TASK_STATUS_META, taskTitle } from "../format";
-import type { Theme } from "../state/useHub";
+import type { Theme } from "../state/useAppearance";
 import type { WorkspaceMode } from "./TopBar";
 
 /* --------------------------------------------------------------------- */

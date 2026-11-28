@@ -38,6 +38,7 @@ pub async fn serve(config: HubConfig) -> Result<(), HubError> {
     let state = HubState::new(config.clone(), Arc::new(store), hub_id);
     let listener = TcpListener::bind(config.bind_addr).await?;
     tracing::info!(bind = %config.bind_addr, hub_id = %state.hub_id, "myrlet hub listening");
+    wakeup::spawn_wakeup_loop(&state);
     axum::serve(listener, build_router(state.clone()))
         .with_graceful_shutdown(shutdown_signal(state))
         .await?;

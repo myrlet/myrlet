@@ -91,7 +91,11 @@ async fn enrolled(store: &HubStore) -> u64 {
 }
 
 fn pair_request(enrollment_code: String) -> PairWorkerRequest {
-    let body = serde_json::json!({ "enrollmentCode": enrollment_code, "workerId": WORKER });
+    pair_request_for(enrollment_code, WORKER)
+}
+
+fn pair_request_for(enrollment_code: String, worker_id: &str) -> PairWorkerRequest {
+    let body = serde_json::json!({ "enrollmentCode": enrollment_code, "workerId": worker_id });
     serde_json::from_value(body).unwrap()
 }
 
@@ -274,12 +278,42 @@ async fn claim_commits_one_delivery_and_racing_claims_yield_one_winner() {
         .unwrap();
     assert_eq!(first.task.status, TaskStatus::Dispatched);
     assert_eq!(first.delivery.state, DeliveryStatus::Accepted);
-    assert_eq!(event.kind, "task.dispatched");
+    assert_eq!(event.unwrap().kind, "task.dispatched");
 
-    let second = store
+    // The winning Worker replaying its own claim recovers the same Delivery: a lost
+    // acknowledgement never produces a replacement event or a second Delivery.
+    let (recovered, replayed_event) = store
         .claim_task(worker(), claim(&record.id, epoch), T0)
+        .await
+        .unwrap();
+    assert!(replayed_event.is_none(), "a replay commits nothing new");
+    assert_eq!(recovered.delivery.id, first.delivery.id);
+
+    // A different Worker still loses the race even at a live epoch.
+    let other = WorkerId::new("wkr_111111111111");
+    store
+        .redeem_pairing_code(
+            "hub_1".into(),
+            pair_request_for(
+                store
+                    .create_enrollment_code(Some(600), Some(other.clone()), T0)
+                    .await
+                    .unwrap()
+                    .enrollment_code,
+                other.as_str(),
+            ),
+            T0,
+        )
+        .await
+        .unwrap();
+    let other_epoch = store
+        .open_worker_connection(other.clone(), inventory(), T0)
+        .await
+        .unwrap();
+    let second = store
+        .claim_task(other, claim(&record.id, other_epoch), T0)
         .await;
-    assert!(matches!(second, Err(StoreError::InvalidTransition)));
+    assert!(matches!(second, Err(StoreError::AlreadyClaimed)));
     let detail = store.get_task(record.id).await.unwrap();
     assert_eq!(detail.status, TaskStatus::Dispatched);
     assert_eq!(

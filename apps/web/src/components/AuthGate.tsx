@@ -12,8 +12,9 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { AlertCircle, Eye, EyeOff, ShieldCheck } from "lucide-react";
 
-import { THEMES, probeHubHealth } from "../state/useHub";
-import type { Theme } from "../state/useHub";
+import { probeHubHealth } from "../api/client";
+import { THEMES } from "../state/useAppearance";
+import type { Theme } from "../state/useAppearance";
 import { BrandMark } from "./BrandMark";
 
 export interface AuthGateProps {
