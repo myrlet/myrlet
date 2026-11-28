@@ -20,7 +20,7 @@ use myrlet_protocol::paths::{ensure_private_dir, MyrletHome, PathError};
 use myrlet_protocol::{ClaimTaskRequest, DeliveryId, ExecutorId, SlotId, WorkerId};
 use myrlet_worker::{ExecutorAdapter, HandlingEnded, LocalRegistry, RegistryError};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 use crate::config::WorkerConfig;
 use crate::credentials::WorkerCredentials;
@@ -54,6 +54,7 @@ struct RuntimeCore {
     tls: Arc<rustls::ClientConfig>,
     /// Current non-zero `connectionEpoch`; `0` marks "no live session".
     epoch: AtomicU64,
+    reconnect: Notify,
     shutting_down: AtomicBool,
     /// Serializes local registry read-modify-write cycles.
     gate: Mutex<()>,
@@ -97,6 +98,7 @@ impl WorkerRuntime {
                 reporter: Arc::new(reporter),
                 tls: tls_config,
                 epoch: AtomicU64::new(0),
+                reconnect: Notify::new(),
                 shutting_down: AtomicBool::new(false),
                 gate: Mutex::new(()),
                 reconciliation: Mutex::new(HashMap::new()),

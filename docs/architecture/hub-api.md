@@ -117,6 +117,7 @@ Progress, Result, and Finish are **HTTP-only** (not WSS frames). All require the
 - `text` is `Some(bounded Markdown)` (max 64 KiB, non-blank) to set the value, or `null` to state that a completed local recovery found **no Result** and clear any stored copy.
 - The Hub keeps the latest value plus the SHA-256 of its exact text. An identical digest is a no-op (`duplicate: true`). Different content **replaces** the value — there is no write-once rule and no history.
 - Accepted for a live, `finished`, or `cancelled` Delivery: a live epoch still fences every write, so a delayed request carrying an old epoch is refused at this boundary and can never undo a newer value.
+- If a Result write has an unknown outcome, the Worker invalidates the last confirmed hash and stops issuing Result writes on that epoch. It reconnects, rereads the file, and reconciles on the new epoch even if the content matches the previously confirmed value.
 - A `null` clear is only legitimate after the Worker has completed local recovery and confirmed absence or emptiness; an unreadable, unsafe, or partially written file must never be treated as absence.
 - Returns `ResultReceipt { deliveryId, taskId, recordedAtMs, resultSha256, cleared, duplicate }` and emits one `delivery.result` invalidation event when it changes anything.
 - A Result never changes Task status and is not a verdict. Hub stores it on the Delivery; `GET /v1/tasks/{id}` exposes it as `resultMarkdown` + `resultRecordedAtMs`. It is **not** part of the Snapshot.
