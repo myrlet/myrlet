@@ -27,7 +27,11 @@ async fn policies_default_on_and_a_pending_worker_cannot_claim() {
     // A pending Worker may still connect, heartbeat, and read; it just cannot claim.
     let epoch = connect(&store, inventory(1, "shell", "exec-a")).await;
     assert_eq!(
-        store.authenticate_worker(credential).await.unwrap(),
+        store
+            .authenticate_worker(credential)
+            .await
+            .unwrap()
+            .worker_id,
         worker_id
     );
     store.touch_worker_seen(worker(), epoch, T0).await.unwrap();
@@ -98,7 +102,11 @@ async fn a_pending_worker_can_be_revoked_and_a_repaired_id_starts_fresh() {
     assert!(worker_row.applied_revision.is_none());
     assert!(worker_row.reported_revision.is_none());
     assert_eq!(
-        store.authenticate_worker(credential).await.unwrap(),
+        store
+            .authenticate_worker(credential)
+            .await
+            .unwrap()
+            .worker_id,
         worker()
     );
 

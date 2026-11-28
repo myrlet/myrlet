@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use myrlet_protocol::{
     CancelTaskRequest, ClaimTaskRequest, ClaimTaskResponse, FinishTaskRequest, GlobalSnapshot,
     HubEventEnvelope, TaskBundleImportRequest, TaskDefinition, TaskId, TaskListResponse,
-    TaskRecord, TaskTreeDirection, TaskTreeResponse, UpdateTaskRequest, WorkerId,
+    TaskReadResponse, TaskRecord, TaskTreeDirection, TaskTreeResponse, UpdateTaskRequest, WorkerId,
 };
 
 use crate::{
-    bundle, claim, commands, events, reads, tasks, BundleOutcome, CancellationOutcome, HubStore,
-    StoreError, TaskMutation,
+    bundle, claim, commands, events, reads, scoped, tasks, BundleOutcome, CancellationOutcome,
+    HubStore, StoreError, TaskMutation,
 };
 
 impl HubStore {
@@ -68,6 +68,40 @@ impl HubStore {
     pub async fn get_task(&self, task_id: TaskId) -> Result<TaskRecord, StoreError> {
         self.db
             .call(move |conn| reads::get_task(conn, &task_id))
+            .await
+    }
+
+    /// Worker-tier Task detail: the assigned Task in full or a related summary, plus the
+    /// one-hop related summaries. `None` means outside the Worker's visibility boundary.
+    pub async fn worker_task_read(
+        &self,
+        worker_id: WorkerId,
+        task_id: TaskId,
+    ) -> Result<Option<TaskReadResponse>, StoreError> {
+        self.db
+            .call(move |conn| scoped::task_read_for_worker(conn, &worker_id, &task_id))
+            .await
+    }
+
+    /// Worker-tier Task tree anchored to the Worker's own Delivery-bound Task.
+    pub async fn worker_task_tree(
+        &self,
+        worker_id: WorkerId,
+        task_id: TaskId,
+    ) -> Result<Option<TaskTreeResponse>, StoreError> {
+        self.db
+            .call(move |conn| scoped::task_tree_for_worker(conn, &worker_id, &task_id))
+            .await
+    }
+
+    /// Worker-tier eligibility for the Worker's own Task or a directly related Task.
+    pub async fn worker_task_eligibility(
+        &self,
+        worker_id: WorkerId,
+        task_id: TaskId,
+    ) -> Result<Option<myrlet_protocol::TaskEligibility>, StoreError> {
+        self.db
+            .call(move |conn| scoped::eligibility_for_worker(conn, &worker_id, &task_id))
             .await
     }
 

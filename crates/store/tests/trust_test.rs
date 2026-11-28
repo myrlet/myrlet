@@ -9,5 +9,6 @@ mod trust {
     mod approval;
     mod helpers;
     mod lifecycle;
+    mod permission_tier;
     mod policies;
 }

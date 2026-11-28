@@ -15,6 +15,10 @@ pub struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    /// Required permission tier for a `403`, when the failure is a tier denial.
+    required_tier: Option<&'static str>,
+    /// The caller's authenticated tier for a `403`, when it is a tier denial.
+    current_tier: Option<&'static str>,
 }
 
 impl ApiError {
@@ -23,11 +27,31 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            required_tier: None,
+            current_tier: None,
         }
     }
 
     pub fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "Unauthorized", UNAUTHORIZED)
+    }
+
+    /// A valid credential whose permission tier is insufficient.
+    ///
+    /// The required and current tiers are named only for an already-authenticated caller,
+    /// so this never discloses whether a protected resource exists.
+    pub fn forbidden(
+        message: impl Into<String>,
+        current_tier: &'static str,
+        required_tier: &'static str,
+    ) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "Forbidden",
+            message: message.into(),
+            required_tier: Some(required_tier),
+            current_tier: Some(current_tier),
+        }
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -128,11 +152,14 @@ impl From<StoreError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let status = self.status;
         let body = ErrorResponse {
             error: self.code.to_string(),
             message: self.message,
+            required_tier: self.required_tier.map(str::to_string),
+            current_tier: self.current_tier.map(str::to_string),
         };
-        (self.status, Json(body)).into_response()
+        (status, Json(body)).into_response()
     }
 }
 

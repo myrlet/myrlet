@@ -54,7 +54,7 @@ function record(
 }
 
 function tree(tasks: TaskRecord[], truncated = false): TaskTreeResponse {
-  return { rootTaskId: "root", tasks, truncated };
+  return { rootTaskId: "root", tasks, related: [], truncated };
 }
 
 describe("compareTasks", () => {

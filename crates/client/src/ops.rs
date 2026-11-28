@@ -5,8 +5,8 @@ use std::fmt;
 use myrlet_protocol::{
     CancelTaskRequest, ClaimTaskRequest, ClaimTaskResponse, FinishTaskRequest, GlobalSnapshot,
     HealthResponse, TaskBundleImportRequest, TaskBundleImportResponse, TaskDefinition, TaskId,
-    TaskListResponse, TaskRecord, TaskTreeDirection, TaskTreeResponse, UpdateTaskRequest,
-    SNAPSHOT_SCHEMA_VERSION,
+    TaskListResponse, TaskReadResponse, TaskRecord, TaskTreeDirection, TaskTreeResponse,
+    UpdateTaskRequest, SNAPSHOT_SCHEMA_VERSION,
 };
 use serde::de::DeserializeOwned;
 
@@ -113,8 +113,11 @@ impl<T: Transport> Client<T> {
         decode_direct(&body)
     }
 
-    /// Read one authoritative Task record (`GET /v1/tasks/{id}`).
-    pub async fn get_task(&self, id: &TaskId) -> Result<TaskRecord, ClientError> {
+    /// Read one Task within the credential's visibility (`GET /v1/tasks/{id}`).
+    ///
+    /// A global reader receives the full record; a `worker`-tier Worker may receive a
+    /// one-hop related summary instead.
+    pub async fn get_task(&self, id: &TaskId) -> Result<TaskReadResponse, ClientError> {
         ensure_path_segment(id.as_str())?;
         decode_direct(&self.get(&format!("/v1/tasks/{id}")).await?)
     }

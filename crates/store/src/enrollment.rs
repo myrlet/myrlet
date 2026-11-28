@@ -6,7 +6,7 @@ use subtle::ConstantTimeEq;
 
 use myrlet_protocol::{
     CreateEnrollmentCodeResponse, HubEventEnvelope, PairWorkerRequest, PairWorkerResponse,
-    WorkerApprovalStatus, WorkerId,
+    PermissionTier, WorkerApprovalStatus, WorkerId,
 };
 
 use crate::error::StoreError;
@@ -14,8 +14,8 @@ use crate::events::insert_event;
 use crate::idempotency::sha256_hex;
 use crate::settings::load_settings;
 use crate::workers::{
-    approval_str, random_hex, CREDENTIAL_BYTES, DEFAULT_TTL_SECS, ENROLLMENT_CODE_BYTES,
-    EVENT_WORKER_PAIRED, MAX_TTL_SECS,
+    approval_str, parse_permission_tier, random_hex, CREDENTIAL_BYTES, DEFAULT_TTL_SECS,
+    ENROLLMENT_CODE_BYTES, EVENT_WORKER_PAIRED, MAX_TTL_SECS,
 };
 
 /// Issue a short-lived one-time pairing code; only its SHA-256 verifier is stored.
@@ -51,8 +51,9 @@ pub fn create_enrollment_code(
 
 /// Redeem a pairing code in one step: bind a Worker and hand back its only plaintext credential.
 ///
-/// A fresh pairing (or a re-pair after revocation) starts a new approval decision and
-/// clears both scheduling snapshots; the revision high-water mark is retained.
+/// A fresh pairing (or a re-pair after revocation) starts a new approval decision, resets
+/// the permission tier to `worker`, and clears both scheduling snapshots; the revision
+/// high-water mark is retained.
 pub fn redeem_pairing_code(
     conn: &mut Connection,
     hub_id: &str,
@@ -117,12 +118,14 @@ pub fn redeem_pairing_code(
     let credential = random_hex(CREDENTIAL_BYTES);
     tx.execute(
         "INSERT INTO workers \
-         (worker_id, token_sha256, revoked, approval, connection_epoch, inventory_revision, \
-          inventory_json, reported_revision, reported_config_json, applied_revision, \
-          applied_config_json, revision_high_water, last_seen_at_ms, created_at_ms, rotated_at_ms) \
-         VALUES (?1, ?2, 0, ?3, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?4, NULL) \
+         (worker_id, token_sha256, revoked, approval, permission_tier, connection_epoch, \
+          inventory_revision, inventory_json, reported_revision, reported_config_json, \
+          applied_revision, applied_config_json, revision_high_water, last_seen_at_ms, \
+          created_at_ms, rotated_at_ms) \
+         VALUES (?1, ?2, 0, ?3, 'worker', 0, 0, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?4, NULL) \
          ON CONFLICT(worker_id) DO UPDATE SET \
          token_sha256 = excluded.token_sha256, revoked = 0, approval = excluded.approval, \
+         permission_tier = 'worker', \
          inventory_json = NULL, reported_revision = NULL, reported_config_json = NULL, \
          applied_revision = NULL, applied_config_json = NULL, rotated_at_ms = ?4",
         params![
@@ -159,26 +162,44 @@ pub fn redeem_pairing_code(
     ))
 }
 
+/// One authenticated Worker principal: its identity and server-controlled tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedWorker {
+    pub worker_id: WorkerId,
+    pub permission_tier: PermissionTier,
+}
+
 /// Constant-time bearer verification against every stored SHA-256 verifier.
-pub fn authenticate_worker(conn: &Connection, bearer_token: &str) -> Result<WorkerId, StoreError> {
+///
+/// The tier is read from the same row as the verifier, so a client can never present a
+/// different tier than the Hub stores.
+pub fn authenticate_worker(
+    conn: &Connection,
+    bearer_token: &str,
+) -> Result<AuthenticatedWorker, StoreError> {
     if bearer_token.is_empty() {
         return Err(StoreError::Unauthorized);
     }
     let presented = sha256_hex(bearer_token.as_bytes());
-    let mut stmt = conn.prepare("SELECT worker_id, token_sha256, revoked FROM workers")?;
+    let mut stmt =
+        conn.prepare("SELECT worker_id, token_sha256, revoked, permission_tier FROM workers")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     let mut authenticated = None;
     for row in rows {
-        let (worker_id, stored, revoked) = row?;
+        let (worker_id, stored, revoked, tier) = row?;
         let matches: bool = stored.as_bytes().ct_eq(presented.as_bytes()).into();
         if matches && revoked == 0 {
-            authenticated = Some(WorkerId::new(worker_id));
+            authenticated = Some(AuthenticatedWorker {
+                worker_id: WorkerId::new(worker_id),
+                permission_tier: parse_permission_tier(&tier)?,
+            });
         }
     }
     authenticated.ok_or(StoreError::Unauthorized)

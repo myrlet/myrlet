@@ -48,6 +48,7 @@ export function workerRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecor
     online: true,
     revoked: false,
     approval: "approved",
+    permissionTier: "worker",
     connectionEpoch: 4,
     lastSeenAtMs: Date.now(),
     activeDeliveries: 1,

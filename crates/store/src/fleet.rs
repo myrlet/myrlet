@@ -3,15 +3,16 @@
 use rusqlite::{params, Connection};
 
 use myrlet_protocol::{
-    HubEventEnvelope, RotateWorkerCredentialResponse, WorkerApprovalStatus, WorkerId,
+    HubEventEnvelope, PermissionTier, RotateWorkerCredentialResponse, WorkerApprovalStatus,
+    WorkerId, WorkerPermissionTierResponse,
 };
 
 use crate::error::StoreError;
 use crate::events::insert_event;
 use crate::idempotency::sha256_hex;
 use crate::workers::{
-    load_worker, random_hex, CREDENTIAL_BYTES, EVENT_WORKER_APPROVED, EVENT_WORKER_REVOKED,
-    EVENT_WORKER_ROTATED,
+    load_worker, random_hex, CREDENTIAL_BYTES, EVENT_WORKER_APPROVED, EVENT_WORKER_PERMISSION_TIER,
+    EVENT_WORKER_REVOKED, EVENT_WORKER_ROTATED,
 };
 
 /// Rotate a Worker credential; the previous verifier and the live WSS epoch are both fenced.
@@ -103,4 +104,44 @@ pub fn approve_worker(
     )?;
     tx.commit()?;
     Ok(event)
+}
+
+/// Set one Worker's server-controlled permission tier.
+///
+/// Only the Admin control plane reaches this call. The tier is never accepted from a
+/// Worker payload, and a revoked Worker keeps its stored row so a later re-pair can start
+/// from a fresh trust decision.
+pub fn set_worker_permission_tier(
+    conn: &mut Connection,
+    worker_id: &WorkerId,
+    tier: PermissionTier,
+    now_ms: i64,
+) -> Result<(WorkerPermissionTierResponse, HubEventEnvelope), StoreError> {
+    let tx = conn.transaction()?;
+    let worker = load_worker(&tx, worker_id)?;
+    if worker.revoked {
+        return Err(StoreError::InvalidTransition);
+    }
+    tx.execute(
+        "UPDATE workers SET permission_tier = ?1 WHERE worker_id = ?2",
+        params![tier.as_str(), worker_id.as_str()],
+    )?;
+    let event = insert_event(
+        &tx,
+        EVENT_WORKER_PERMISSION_TIER,
+        &serde_json::json!({
+            "workerId": worker_id.as_str(),
+            "permissionTier": tier.as_str(),
+            "changed": worker.permission_tier != tier,
+        }),
+        now_ms,
+    )?;
+    tx.commit()?;
+    Ok((
+        WorkerPermissionTierResponse {
+            worker_id: worker_id.clone(),
+            permission_tier: tier,
+        },
+        event,
+    ))
 }

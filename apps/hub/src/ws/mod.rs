@@ -37,19 +37,22 @@ pub(super) async fn send_message(
 }
 
 /// `GET /v1/workers/connect`: reject non-Worker credentials before the upgrade runs.
+///
+/// The Admin principal is not accepted here: WSS is a Worker-only execution channel, and
+/// a missing or Admin credential receives `401`.
 pub async fn connect_worker(
     State(state): State<HubState>,
     headers: HeaderMap,
     upgrade: Option<WebSocketUpgrade>,
 ) -> Response {
-    let worker_id = match require_worker(&state, &headers).await {
-        Ok(worker_id) => worker_id,
+    let worker = match require_worker(&state, &headers).await {
+        Ok(worker) => worker,
         Err(error) => return error.into_response(),
     };
     let Some(upgrade) = upgrade else {
         return ApiError::bad_request("a WebSocket upgrade request is required").into_response();
     };
-    upgrade.on_upgrade(move |socket| run(state, worker_id, socket))
+    upgrade.on_upgrade(move |socket| run(state, worker.worker_id, socket))
 }
 
 /// Encode one Hub frame envelope for a Worker session.

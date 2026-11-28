@@ -7,7 +7,7 @@ use crate::fixtures::{
     clear_trust_gates, create_task, finished, gpu_yaml, line_count, resync_yaml, show, status,
 };
 use crate::harness::{
-    binaries, cli, enroll_and_pair, field, json_file_count, online_epoch, poll, run_worker,
+    binaries, cli, enroll_and_pair, json_file_count, online_epoch, poll, record, run_worker,
     shutdown, spawn_daemon, start_hub, worker_json, worker_offline,
 };
 
@@ -31,7 +31,7 @@ async fn a_queued_task_waits_for_a_compatible_worker_to_claim_it() {
         "a queued Task waits; no Worker means no claim"
     );
     assert!(
-        show(&cli, &task)["currentDelivery"].is_null(),
+        record(&show(&cli, &task)).is_some_and(|task| task["currentDelivery"].is_null()),
         "no wakeup or queue admission creates a Delivery"
     );
 
@@ -47,7 +47,9 @@ async fn a_queued_task_waits_for_a_compatible_worker_to_claim_it() {
         let shown = show(&cli, &task);
         (status(&shown) == "finished").then_some(shown)
     });
-    let delivery = field(&shown, "currentDelivery").expect("current delivery");
+    let delivery = record(&shown)
+        .and_then(|task| task.get("currentDelivery"))
+        .expect("current delivery");
     assert_eq!(
         delivery["progress"]["text"], "gpu queued ok",
         "progress: {delivery}"
@@ -143,7 +145,7 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     }
     poll("cancel acknowledged", Duration::from_secs(10), || {
         let shown = show(&cli, &sleeping);
-        let delivery = field(&shown, "currentDelivery")?;
+        let delivery = record(&shown)?.get("currentDelivery")?;
         (!delivery["cancelState"].is_null()).then_some(())
     });
     assert_eq!(line_count(&counter), 1, "Task A must not run twice");
@@ -175,7 +177,9 @@ async fn worker_uses_second_slot_when_only_it_meets_capability() {
     let limit = Instant::now() + Duration::from_secs(4);
     loop {
         let task = show(&cli, &id);
-        if let Some(slot) = task["currentDelivery"]["slotId"].as_str() {
+        if let Some(slot) =
+            record(&task).and_then(|task| task["currentDelivery"]["slotId"].as_str())
+        {
             assert_eq!(slot, "gpu-slot");
             break;
         }
@@ -183,7 +187,7 @@ async fn worker_uses_second_slot_when_only_it_meets_capability() {
             Instant::now() < limit,
             "online two-slot Worker with eligible second slot: Task {}, Delivery {}",
             status(&task),
-            task["currentDelivery"]
+            record(&task).map_or(&serde_json::Value::Null, |task| &task["currentDelivery"])
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

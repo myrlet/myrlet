@@ -231,6 +231,7 @@ fn into_snapshot(
         worker_id: row.worker_id,
         online,
         revoked: row.revoked,
+        permission_tier: row.permission_tier,
         connection_epoch: row.connection_epoch,
         last_seen_at_ms: row.last_seen_at_ms,
         active_deliveries: active,

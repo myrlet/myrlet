@@ -209,7 +209,7 @@ pub struct SubtreeCounts {
 }
 
 /// One declared dependency that keeps a Task `held`, with its current status.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockingDependency {
     pub task_id: TaskId,
@@ -240,6 +240,26 @@ pub struct TaskRecord {
     #[serde(default)]
     pub result_recorded_at_ms: Option<i64>,
     pub subtree: SubtreeCounts,
+}
+
+/// Limited one-hop projection of a Task related to a Worker's assigned Task.
+///
+/// It carries only coordination identifiers, title, status, and hierarchy/dependency
+/// relationships. A worker-tier read never receives the related Task's prompt, input,
+/// metadata, Delivery, Progress, or Result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedTaskSummary {
+    pub id: TaskId,
+    pub parent_task_id: Option<TaskId>,
+    pub depth: u8,
+    #[serde(default)]
+    pub dependencies: Vec<TaskId>,
+    #[serde(default)]
+    pub blocked_by: Vec<BlockingDependency>,
+    pub title: String,
+    pub status: TaskStatus,
+    pub version: u64,
 }
 
 #[cfg(test)]
