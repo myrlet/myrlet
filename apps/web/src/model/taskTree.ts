@@ -25,7 +25,6 @@ export interface TreeRow {
   readonly id: string;
   readonly parentTaskId: string | null;
   readonly title: string;
-  readonly category: string;
   readonly status: TaskStatus;
   /** 0-based visual depth inside the rendered tree (Root = 0). */
   readonly depth: number;
@@ -54,11 +53,6 @@ function isTaskRecord(task: TaskTreeSource): task is TaskRecord {
 /** Task title regardless of whether the source is a summary or record. */
 export function taskTitle(task: TaskTreeSource): string {
   return isTaskRecord(task) ? task.task.title : task.title;
-}
-
-/** Task category regardless of whether the source is a summary or record. */
-export function taskCategory(task: TaskTreeSource): string {
-  return isTaskRecord(task) ? task.task.category : task.category;
 }
 
 function activeStatus(filter: TaskFilter): TaskStatus | null {
@@ -113,7 +107,7 @@ export function buildTaskTreeRows(
         const haystack = [
           task.id,
           taskTitle(task),
-          taskCategory(task),
+          isTaskRecord(task) ? task.task.category : task.category,
           task.currentDelivery?.workerId ?? "",
         ];
         if (!haystack.some((value) => value.toLowerCase().includes(query))) {
@@ -180,7 +174,6 @@ export function buildTaskTreeRows(
       id: task.id,
       parentTaskId: taskParentId(task),
       title: taskTitle(task),
-      category: taskCategory(task),
       status: task.status,
       depth,
       hasChildren: allChildren.length > 0,

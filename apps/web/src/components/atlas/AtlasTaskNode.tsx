@@ -7,6 +7,7 @@
  */
 
 import { shortId } from "../../model/shortId";
+import { isWorkerOnline } from "../../model/workerPresence";
 import type { DeliveryView, SnapshotTaskSummary, WorkerRecord } from "../../api/types";
 import { CANCEL_STATE_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../../format";
 import { NODE_HEIGHT, NODE_WIDTH } from "../workAtlasLayout";
@@ -28,10 +29,6 @@ interface AtlasTaskNodeProps {
 }
 
 const NODE_STYLE = { width: NODE_WIDTH, height: NODE_HEIGHT } as const;
-
-
-const isWorkerOnline = (worker: WorkerRecord | undefined): boolean =>
-  worker !== undefined && worker.online && !worker.revoked;
 
 /**
  * Footer line under the card. Real Harness Progress always wins; otherwise only a

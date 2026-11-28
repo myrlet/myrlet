@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { TASK_STATUS_META } from "../format";
+import { isWorkerOnline } from "../model/workerPresence";
 import type { Theme } from "../state/useAppearance";
 import {
   INSPECTOR_MAX_WIDTH,
@@ -236,9 +237,7 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
 
   /* ------------------------------ Render ------------------------------- */
 
-  const onlineWorkerCount = workers.filter(
-    (worker) => worker.online && !worker.revoked,
-  ).length;
+  const onlineWorkerCount = workers.filter(isWorkerOnline).length;
   const boardMode = mode === "board";
   const activeStatusLabel =
     statusFilter === null ? null : TASK_STATUS_META[statusFilter].label;

@@ -17,12 +17,9 @@ import type { WorkerRecord } from "../../api/types";
 import { DELIVERY_STATUS_LABELS, formatCount, formatRelativeTime } from "../../format";
 import { shortId } from "../../model/shortId";
 import type { TreeRow } from "../../model/taskTree";
+import { isWorkerOnline } from "../../model/workerPresence";
 import { TaskStatusBadge } from "../StatusBadge";
 import { TreeConnectors } from "./TreeConnectors";
-
-function isWorkerOnline(worker: WorkerRecord | undefined): boolean {
-  return worker !== undefined && worker.online && !worker.revoked;
-}
 
 export interface OutlineRowProps {
   readonly row: TreeRow;
