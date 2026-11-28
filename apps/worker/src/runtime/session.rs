@@ -138,14 +138,16 @@ impl RuntimeCore {
                     }
                 }
                 Step::Frame(boxed) => match *boxed {
-                    Ok(Some(envelope)) => match self.handle_frame(&mut sink, envelope).await {
-                        Ok(true) => deadline = Instant::now() + lease_ttl,
-                        Ok(false) => {}
-                        Err(error) => {
-                            tracing::warn!(%error, "inbound frame could not be handled");
-                            return Ok(self.lost());
+                    Ok(Some(envelope)) => {
+                        match self.handle_frame(&mut sink, envelope, heartbeat).await {
+                            Ok(true) => deadline = Instant::now() + lease_ttl,
+                            Ok(false) => {}
+                            Err(error) => {
+                                tracing::warn!(%error, "inbound frame could not be handled");
+                                return Ok(self.lost());
+                            }
                         }
-                    },
+                    }
                     Ok(None) => {
                         tracing::info!(epoch, "hub closed the worker session");
                         return Ok(self.lost());
@@ -169,6 +171,7 @@ impl RuntimeCore {
         &self,
         sink: &mut HubSink,
         envelope: WorkerWireEnvelope<Value>,
+        heartbeat: Duration,
     ) -> Result<bool, RuntimeError> {
         if envelope.worker_id != self.creds.worker_id {
             return Ok(false);
@@ -201,7 +204,7 @@ impl RuntimeCore {
             }
             WorkerWireKind::TaskCancel => {
                 let cancel: TaskCancelPayload = serde_json::from_value(payload)?;
-                self.handle_cancel(sink, cancel).await?;
+                self.handle_cancel(sink, cancel, heartbeat).await?;
             }
             _ => {}
         }
@@ -242,6 +245,11 @@ impl RuntimeCore {
         };
         self.send_frame(sink, WorkerWireKind::WorkerHeartbeat, None, payload)
             .await
+    }
+
+    /// Send one heartbeat on demand, e.g. while a long cancel holds the session loop.
+    pub(super) async fn heartbeat_now(&self, sink: &mut HubSink) -> Result<(), RuntimeError> {
+        self.send_heartbeat(sink).await
     }
 
     async fn send_bye(&self, sink: &mut HubSink) {

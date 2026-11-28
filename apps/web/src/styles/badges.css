@@ -1,0 +1,173 @@
+/* ===================================================================== */
+/* 4. Brand, Status Badges, Connection Pills & Dots                      */
+/* ===================================================================== */
+
+.brand-name {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: none;
+  height: 21px;
+  padding: 0 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: var(--bg-well);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.status-badge[data-compact="true"] {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: var(--radius-xs);
+}
+
+.status-badge .status-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-glyph {
+  flex: none;
+  font-size: 9.5px;
+  line-height: 1;
+}
+
+.status-badge[data-tone="held"] {
+  color: var(--status-held-fg);
+  background: var(--status-held-bg);
+  border-color: var(--status-held-border);
+}
+
+.status-badge[data-tone="queued"] {
+  color: var(--status-queued-fg);
+  background: var(--status-queued-bg);
+  border-color: var(--status-queued-border);
+}
+
+.status-badge[data-tone="dispatched"] {
+  color: var(--status-dispatched-fg);
+  background: var(--status-dispatched-bg);
+  border-color: var(--status-dispatched-border);
+}
+
+.status-badge[data-tone="finished"] {
+  color: var(--status-finished-fg);
+  background: var(--status-finished-bg);
+  border-color: var(--status-finished-border);
+}
+
+.status-badge[data-tone="cancelled"] {
+  color: var(--status-cancelled-fg);
+  background: var(--status-cancelled-bg);
+  border-color: var(--status-cancelled-border);
+}
+
+.status-badge[data-tone="online"] {
+  color: var(--status-online-fg);
+  background: var(--status-online-bg);
+  border-color: var(--status-online-border);
+}
+
+.status-badge[data-tone="offline"] {
+  color: var(--status-offline-fg);
+  background: var(--status-offline-bg);
+  border-color: var(--status-offline-border);
+}
+
+.status-badge[data-tone="revoked"] {
+  color: var(--status-revoked-fg);
+  background: var(--status-revoked-bg);
+  border-color: var(--status-revoked-border);
+}
+
+.status-badge[data-tone="pending"] {
+  color: var(--status-pending-fg);
+  background: var(--status-pending-bg);
+  border-color: var(--status-pending-border);
+}
+
+.connection-pill,
+.reachability-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--bg-well);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.connection-dot,
+.state-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.connection-dot[data-state="online"] { color: var(--status-online-fg); }
+.connection-dot[data-state="offline"] { color: var(--status-offline-fg); }
+
+.state-dot[data-state="held"] { background: var(--status-held-fg); }
+.state-dot[data-state="queued"] { background: var(--status-queued-fg); }
+.state-dot[data-state="dispatched"] { background: var(--status-dispatched-fg); }
+.state-dot[data-state="finished"] { background: var(--status-finished-fg); }
+.state-dot[data-state="cancelled"] { background: var(--status-cancelled-fg); }
+.state-dot[data-state="available"] { background: var(--status-online-fg); }
+.state-dot[data-state="degraded"] { background: var(--status-queued-fg); }
+.state-dot[data-state="unavailable"] { background: var(--status-offline-fg); }
+
+.connection-pill[data-state="connected"],
+.reachability-pill[data-state="reachable"],
+.reachability-pill[data-state="online"] {
+  color: var(--status-online-fg);
+  background: var(--status-online-bg);
+  border-color: var(--status-online-border);
+}
+
+.connection-pill[data-state="connecting"],
+.connection-pill[data-state="reconnecting"],
+.reachability-pill[data-state="checking"] {
+  color: var(--status-queued-fg);
+  background: var(--status-queued-bg);
+  border-color: var(--status-queued-border);
+}
+
+.connection-pill[data-state="offline"],
+.connection-pill[data-state="disconnected"],
+.reachability-pill[data-state="idle"],
+.reachability-pill[data-state="offline"] {
+  color: var(--status-offline-fg);
+  background: var(--status-offline-bg);
+  border-color: var(--status-offline-border);
+}
+
+.reachability-pill[data-state="unreachable"] {
+  color: var(--status-cancelled-fg);
+  background: var(--status-cancelled-bg);
+  border-color: var(--status-cancelled-border);
+}

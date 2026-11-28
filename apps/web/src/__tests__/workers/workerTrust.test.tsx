@@ -6,53 +6,22 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import App from "../App";
 import type {
   GlobalSnapshot,
-  SnapshotTaskSummary,
   WorkerRecord,
   WorkerSchedulingConfig,
-} from "../api/types";
-
-type FetchHandler = (url: string, init: RequestInit) => Response | Promise<Response>;
-
-function readUrl(input: RequestInfo | URL): string {
-  if (typeof input === "string") return input;
-  if (input instanceof URL) return input.toString();
-  return input.url;
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
-function stubFetch(handler: FetchHandler): void {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
-      handler(readUrl(input), init ?? {}),
-    ),
-  );
-}
-
-/** An SSE response that stays open but never emits, so no refresh is scheduled. */
-function idleEventStream(): Response {
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(": keepalive\n\n"));
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
+} from "../../api/types";
+import { taskSummary } from "../support/fixtures";
+import { idleEventStream, jsonResponse, stubFetch } from "../support/hub";
+import {
+  appBar,
+  connectWorkspace,
+  installWorkspaceHub,
+  resetWorkspaceTest,
+} from "../support/workspace";
 
 const SLOT = (capability: string) => ({
   slotId: "mac-default",
@@ -94,24 +63,6 @@ function reviewWorker(): WorkerRecord {
 }
 
 function snapshot(workers: WorkerRecord[]): GlobalSnapshot {
-  const task = (): SnapshotTaskSummary => ({
-    id: "t1",
-    parentTaskId: null,
-    rootTaskId: "t1",
-    depth: 1,
-    sourceTaskId: null,
-    dependencies: [],
-    blockedBy: [],
-    category: "general",
-    title: "Work",
-    status: "queued",
-    version: 1,
-    createdAtMs: 1,
-    updatedAtMs: 1,
-    finishedAtMs: null,
-    currentDelivery: null,
-    subtree: { total: 1, held: 0, queued: 1, dispatched: 0, finished: 0, cancelled: 0 },
-  });
   return {
     schemaVersion: "myrlet.snapshot/v1",
     generatedAtMs: 1,
@@ -119,38 +70,17 @@ function snapshot(workers: WorkerRecord[]): GlobalSnapshot {
     tasksTruncated: false,
     totalTasks: 1,
     workers,
-    tasks: [task()],
+    tasks: [taskSummary({ id: "t1", title: "Work", status: "queued" })],
   };
 }
 
-function findTokenInput(): HTMLInputElement {
-  const input = document.querySelector<HTMLInputElement>(
-    'input[type="password"], input[name="token"], input[name="adminToken"]',
-  );
-  if (!input) throw new Error("No token field");
-  return input;
-}
-
-async function connect(): Promise<void> {
-  render(<App />);
-  fireEvent.change(findTokenInput(), { target: { value: "admin-token-value" } });
-  const button = screen.getByRole("button", { name: /connect|open|continue/i });
-  fireEvent.click(button);
-  await waitFor(() => expect(document.querySelector(".app-bar")).not.toBeNull());
-}
-
 async function openWorkers(): Promise<HTMLElement> {
-  fireEvent.click(within(document.querySelector(".app-bar") as HTMLElement).getByRole("button", {
-    name: /workers/i,
-  }));
+  fireEvent.click(within(appBar()).getByRole("button", { name: /workers/i }));
   return screen.findByRole("dialog", { name: /workers and pairing/i });
 }
 
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-});
+beforeEach(installWorkspaceHub);
+afterEach(resetWorkspaceTest);
 
 describe("Worker trust", () => {
   let worker: WorkerRecord;
@@ -199,7 +129,7 @@ describe("Worker trust", () => {
   });
 
   it("shows a pending Worker as awaiting approval and approves it", async () => {
-    await connect();
+    await connectWorkspace();
     const drawer = await openWorkers();
     const card = drawer.querySelector<HTMLElement>('[data-worker-id="wkr_00000000000a"]');
     expect(card).not.toBeNull();
@@ -213,13 +143,15 @@ describe("Worker trust", () => {
       expect(approve).toBeDefined();
       expect(approve?.method).toBe("POST");
     });
-    await waitFor(() => expect(card?.querySelector(".status-badge")?.textContent).toBe("Online"));
+    await waitFor(() =>
+      expect(card?.querySelector(".status-badge")?.textContent).toBe("Online"),
+    );
   });
 
   it("applies exactly the revision under review after the Admin inspects it", async () => {
     worker = reviewWorker();
     reported = appliedConfig("gpu");
-    await connect();
+    await connectWorkspace();
     const drawer = await openWorkers();
 
     const review = drawer.querySelector<HTMLElement>(".config-review");
@@ -239,11 +171,9 @@ describe("Worker trust", () => {
   });
 
   it("toggles one Security & Trust policy and leaves the other stored", async () => {
-    await connect();
+    await connectWorkspace();
     fireEvent.click(
-      within(document.querySelector(".app-bar") as HTMLElement).getByRole("button", {
-        name: /settings and theme/i,
-      }),
+      within(appBar()).getByRole("button", { name: /settings and theme/i }),
     );
     const settings = await screen.findByRole("menu", { name: /settings/i });
     const approval = within(settings).getByRole("menuitemcheckbox", {

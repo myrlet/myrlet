@@ -289,6 +289,66 @@ async fn runtime_session_claims_wakes_and_reports_progress_finish_and_result() {
     assert!(result.is_ok(), "clean shutdown");
 }
 
+/// A cancel whose cleanup outlives the heartbeat interval must keep the Hub lease alive
+/// while it runs, then report the confirmed answer on that same connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_cancel_keeps_heartbeating_until_the_group_is_gone() {
+    let mut hub = support::start(None).await;
+    let (_directory, home) = temp_home();
+    // The leader ignores TERM, so cleanup falls through to the SIGKILL phase.
+    std::fs::write(
+        home.worker_config(),
+        support::process_yaml(
+            &hub.url,
+            &[(
+                "exec-stubborn",
+                "trap '' TERM; while :; do sleep 0.05; done",
+            )],
+        ),
+    )
+    .expect("write config");
+    save_credentials(&home.worker_credentials(), &support::credentials()).expect("credentials");
+
+    let config = WorkerConfig::load(&home.worker_config()).expect("config");
+    let credentials = load_credentials(&home.worker_credentials()).expect("credentials");
+    let runtime = WorkerRuntime::new(home, config, credentials).expect("runtime");
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let worker = tokio::spawn(async move { runtime.run(shutdown_rx).await });
+
+    hub.expect_authorized().await;
+    assert_eq!(hub.next_frame().await["kind"], "worker.hello");
+    // Heartbeat every 100 ms with a short lease: a missing heartbeat during cleanup would
+    // expire the lease before the cancel answer could be sent.
+    hub.send_frame(support::welcome_frame_with(100, 1_000));
+    assert_eq!(hub.next_frame().await["kind"], "worker.resync");
+    hub.send_frame(support::wakeup_frame("task_one"));
+    assert!(matches!(hub.next_report().await, Report::Claim { .. }));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    hub.send_frame(hub.cancel_frame("task_one", "delivery_task_one"));
+    let mut heartbeats = 0;
+    let answer = loop {
+        let frame = hub.next_frame().await;
+        match frame["kind"].as_str() {
+            Some("worker.heartbeat") => heartbeats += 1,
+            Some("task.cancelled") => break frame,
+            Some(_) => {}
+            None => panic!("frame without a kind: {frame}"),
+        }
+    };
+    assert_eq!(
+        answer["payload"]["state"], "confirmed",
+        "the group was killed and the answer reported: {answer}"
+    );
+    assert!(
+        heartbeats >= 1,
+        "the lease must be refreshed during cleanup, saw {heartbeats} heartbeats"
+    );
+
+    shutdown.send(true).expect("signal shutdown");
+    let _ = tokio::time::timeout(Duration::from_secs(10), worker).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wakeup_with_no_free_slot_claims_nothing() {
     let mut hub = support::start(None).await;

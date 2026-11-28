@@ -1,0 +1,96 @@
+/* ===================================================================== */
+/* 12. Workers & Pairing Drawer                                          */
+/* ===================================================================== */
+
+.workers-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  justify-content: flex-end;
+  background: var(--bg-overlay);
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.workers-drawer-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 94vw);
+  height: 100%;
+  min-height: 0;
+  border-left: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-overlay);
+  animation: drawer-enter var(--duration-base) var(--ease-drawer);
+}
+
+.workers-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 12px 16px 12px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.workers-drawer-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workers-drawer-title {
+  color: var(--text-primary);
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+}
+
+.workers-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workers-drawer-body .workers-view {
+  height: 100%;
+  overflow: auto;
+}
+
+.workers-drawer-body .workers-scroll {
+  max-width: none;
+  padding: 16px 20px 28px;
+  gap: 16px;
+}
+
+.workers-drawer-body .pairing-card {
+  gap: 13px;
+  padding: 16px;
+}
+
+.workers-drawer-body .pairing-controls {
+  grid-template-columns: 140px minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.workers-drawer-body .kpi-cell {
+  padding: 12px 14px;
+}
+
+.workers-drawer-body .kpi-value {
+  font-size: 18px;
+}
+
+.workers-drawer-body .worker-card {
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.workers-drawer-body .slot-table th,
+.workers-drawer-body .slot-table td {
+  padding-right: 8px;
+}
