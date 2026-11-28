@@ -1,0 +1,150 @@
+/* Result Markdown (read-only, text only) */
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.result-recorded {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Overview preview. Clipping happens after measuring the painted result, so
+   the clip box simply hides anything past the last fully visible block. */
+.result-preview {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.result-preview-clip {
+  overflow: hidden;
+}
+
+.result-preview-fallback,
+.result-reader-fallback {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.result-read-full {
+  align-self: flex-start;
+}
+
+.result-markdown {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  max-height: 420px;
+  overflow: auto;
+}
+
+/* Inside the Overview preview and the reader, the outer surface owns the
+   padding and scroll position; the Markdown block is content only. */
+.result-preview .result-markdown,
+.result-reader-body .result-markdown {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  max-height: none;
+  overflow: visible;
+}
+
+.result-markdown > :first-child { margin-top: 0; }
+.result-markdown > :last-child { margin-bottom: 0; }
+.result-markdown h1,
+.result-markdown h2,
+.result-markdown h3,
+.result-markdown h4 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.result-markdown p,
+.result-markdown ul,
+.result-markdown ol,
+.result-markdown blockquote {
+  margin: 6px 0;
+}
+.result-markdown ul,
+.result-markdown ol { padding-left: 20px; }
+.result-markdown a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.result-markdown a:hover { text-decoration: underline; }
+.result-markdown code {
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-well);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.result-markdown pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-well);
+  overflow: auto;
+  white-space: pre;
+}
+.result-markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+.result-markdown table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+}
+/* Wide tables scroll inside their own container, never the dialog or pane.
+   Cells keep a readable minimum width instead of being crushed to fit. */
+.result-table-scroll {
+  max-width: 100%;
+  margin: 8px 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.result-table-scroll > table {
+  margin: 0;
+}
+.result-markdown th,
+.result-markdown td {
+  min-width: 88px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+  overflow-wrap: break-word;
+}
+.result-markdown th { background: var(--bg-well); font-weight: 600; }
+.result-markdown blockquote {
+  padding-left: 10px;
+  border-left: 2px solid var(--border-default);
+  color: var(--text-secondary);
+}
+.result-markdown-image-alt {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}

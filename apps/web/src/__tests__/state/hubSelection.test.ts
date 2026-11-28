@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { HubApiError, HubClient } from "../api/client";
-import { useHub } from "../state/useHub";
+import { HubApiError, HubClient } from "../../api/client";
+import { useHub } from "../../state/useHub";
 
 beforeEach(() => {
   vi.spyOn(HubClient.prototype, "getSnapshot").mockResolvedValue({

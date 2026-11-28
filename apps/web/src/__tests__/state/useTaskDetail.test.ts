@@ -8,9 +8,9 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HubApiError, HubClient } from "../api/client";
-import type { TaskRecord, TaskTreeResponse } from "../api/types";
-import { useTaskDetail } from "../state/useTaskDetail";
+import { HubApiError, HubClient } from "../../api/client";
+import type { TaskRecord, TaskTreeResponse } from "../../api/types";
+import { useTaskDetail } from "../../state/useTaskDetail";
 
 function taskRecord(id: string, rootTaskId = id): TaskRecord {
   return {
