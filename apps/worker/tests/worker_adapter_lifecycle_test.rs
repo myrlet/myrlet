@@ -150,3 +150,138 @@ async fn a_resolved_claim_leaves_no_pending_adapter() {
     shutdown.send(true).expect("signal shutdown");
     let _ = tokio::time::timeout(Duration::from_secs(10), worker).await;
 }
+
+/// A cancellation that ends handling releases the pinned adapter once its Finish is
+/// accepted — no `CancelState` value keeps a live execution behind: `Confirmed` ends the
+/// group, `Failed`/`Unsupported` are recorded and re-sent, `Uncertain` ends local handling
+/// without proving termination. A duplicate cancel re-sends the recorded answer and never
+/// calls the adapter again, so the reference is never needed for a second cancellation.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancellation_ends_handling_and_releases_the_pinned_adapter() {
+    let mut hub = support::start(None).await;
+    let (_directory, home) = temp_home();
+    std::fs::write(
+        home.worker_config(),
+        support::process_yaml(&hub.url, &[("exec-long", "sleep 30")]),
+    )
+    .expect("write config");
+    let config = WorkerConfig::load(&home.worker_config()).expect("config");
+    let runtime =
+        WorkerRuntime::new(home.clone(), config, support::credentials()).expect("runtime");
+    let probe = runtime.clone();
+    let (shutdown, rx) = watch::channel(false);
+    let worker = tokio::spawn(async move { runtime.run(rx).await });
+
+    hub.expect_authorized().await;
+    assert_eq!(hub.next_frame().await["kind"], "worker.hello");
+    hub.send_frame(support::welcome_frame());
+    assert_eq!(hub.next_frame().await["kind"], "worker.resync");
+    hub.send_frame(support::wakeup_frame("task_cancel"));
+    assert!(matches!(hub.next_report().await, Report::Claim { .. }));
+    wait_for_delivery(&home, "delivery_task_cancel").await;
+    assert!(
+        eventually(|| probe.pinned_adapter_count() == 1, Duration::from_secs(5)).await,
+        "the live Delivery pins its adapter",
+    );
+
+    // The Hub asks to cancel; the Worker relays what the backend observed (Confirmed for a
+    // group it can prove is gone) and, because handling ended, posts a Finish.
+    hub.send_frame(hub.cancel_frame("task_cancel", "delivery_task_cancel"));
+    let cancelled = wait_for_frame(&mut hub, "task.cancelled", Duration::from_secs(20))
+        .await
+        .expect("the Worker reports the cancellation answer");
+    assert_eq!(cancelled["payload"]["state"], "confirmed", "{cancelled}");
+
+    // A duplicate request re-sends the recorded answer rather than cancelling again.
+    hub.send_frame(hub.cancel_frame("task_cancel", "delivery_task_cancel"));
+    let repeat = wait_for_frame(&mut hub, "task.cancelled", Duration::from_secs(10))
+        .await
+        .expect("the duplicate cancel is answered from the record");
+    assert_eq!(repeat["payload"]["state"], "confirmed", "{repeat}");
+
+    // End of handling is acknowledged by an accepted Finish, which releases the reference.
+    assert!(
+        wait_for_report(&mut hub, Duration::from_secs(10), |report| {
+            matches!(report, Report::Finish { .. })
+        })
+        .await
+        .is_some(),
+        "the cancelled handling ended and was reported",
+    );
+    assert!(
+        eventually(|| probe.pinned_adapter_count() == 0, Duration::from_secs(5)).await,
+        "an ended cancellation releases the pinned adapter",
+    );
+
+    shutdown.send(true).expect("signal shutdown");
+    let _ = tokio::time::timeout(Duration::from_secs(10), worker).await;
+}
+
+/// Pull frames until one of `kind` arrives, or `limit` elapses.
+async fn wait_for_frame(
+    hub: &mut support::StubHub,
+    kind: &str,
+    limit: Duration,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + limit;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, hub.next_frame()).await {
+            Ok(frame) if frame["kind"] == kind => return Some(frame),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    None
+}
+
+/// A refusal that creates no Delivery resolves the claim, so the adapters pinned with the
+/// request are dropped — the pending registry never retains a reference for a lost claim.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_claim_drops_its_pending_adapter() {
+    let mut hub = support::start_with_refused_claim(None).await;
+    let (_directory, home) = temp_home();
+    std::fs::write(
+        home.worker_config(),
+        support::process_yaml(&hub.url, &[("exec-idle", "sleep 5")]),
+    )
+    .expect("write config");
+    let config = WorkerConfig::load(&home.worker_config()).expect("config");
+    let runtime =
+        WorkerRuntime::new(home.clone(), config, support::credentials()).expect("runtime");
+    let probe = runtime.clone();
+    let (shutdown, rx) = watch::channel(false);
+    let worker = tokio::spawn(async move { runtime.run(rx).await });
+
+    hub.expect_authorized().await;
+    assert_eq!(hub.next_frame().await["kind"], "worker.hello");
+    hub.send_frame(support::welcome_frame());
+    assert_eq!(hub.next_frame().await["kind"], "worker.resync");
+
+    hub.send_frame(support::wakeup_frame("task_refused"));
+    let claim = hub.next_report().await;
+    assert!(
+        matches!(&claim, Report::Claim { task_id, .. } if task_id == "task_refused"),
+        "the claim is attempted: {claim:?}",
+    );
+
+    // The Hub refused; no Delivery registered, and nothing stays pinned.
+    let registered = home
+        .worker_state_dir()
+        .join("deliveries/delivery_task_refused.json");
+    assert!(
+        eventually(
+            || probe.pending_adapter_count() == 0 && probe.pinned_adapter_count() == 0,
+            Duration::from_secs(5),
+        )
+        .await,
+        "a refused claim leaves no adapter pinned",
+    );
+    assert!(
+        !registered.exists(),
+        "a refused claim registers no Delivery"
+    );
+
+    shutdown.send(true).expect("signal shutdown");
+    let _ = tokio::time::timeout(Duration::from_secs(10), worker).await;
+}

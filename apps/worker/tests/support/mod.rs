@@ -76,6 +76,8 @@ struct HubState {
     claim_gate: Option<Arc<tokio::sync::Notify>>,
     claim_held: Arc<std::sync::atomic::AtomicBool>,
     claim_executor_id: Option<ExecutorId>,
+    /// Refuse every claim as if another Worker already held the Task.
+    claim_refused: bool,
 }
 
 /// A running stub Hub with channels for observing and driving one Worker.
@@ -192,6 +194,14 @@ pub async fn start_with_lost_claim_reply(stale_epoch: Option<u64>) -> StubHub {
     launch(stale_epoch, None, true, None, None).await
 }
 
+/// Start a stub Hub whose claims are always refused as already held by another Worker.
+///
+/// A refusal resolves the Worker's claim without creating a Delivery, so the adapters it
+/// pinned with the request must be dropped.
+pub async fn start_with_refused_claim(stale_epoch: Option<u64>) -> StubHub {
+    launch_with(stale_epoch, None, false, None, None, true).await
+}
+
 /// Hold one claim response and return the named resolved Executor.
 pub async fn start_with_held_claim_for(stale_epoch: Option<u64>, executor_id: &str) -> StubHub {
     let gate = Arc::new(tokio::sync::Notify::new());
@@ -212,6 +222,26 @@ async fn launch(
     claim_gate: Option<Arc<tokio::sync::Notify>>,
     claim_executor_id: Option<ExecutorId>,
 ) -> StubHub {
+    launch_with(
+        stale_epoch,
+        result_gate,
+        lose_first_claim_reply,
+        claim_gate,
+        claim_executor_id,
+        false,
+    )
+    .await
+}
+
+/// `launch` plus the refusal switch, kept separate so existing callers stay unchanged.
+async fn launch_with(
+    stale_epoch: Option<u64>,
+    result_gate: Option<(Arc<tokio::sync::Notify>, StatusCode)>,
+    lose_first_claim_reply: bool,
+    claim_gate: Option<Arc<tokio::sync::Notify>>,
+    claim_executor_id: Option<ExecutorId>,
+    claim_refused: bool,
+) -> StubHub {
     let (reports_tx, reports) = mpsc::unbounded_channel();
     let (frames_tx, frames) = mpsc::unbounded_channel();
     let (outbound_tx, outbound) = mpsc::unbounded_channel();
@@ -229,6 +259,7 @@ async fn launch(
         claim_gate: claim_gate.clone(),
         claim_held: Arc::clone(&claim_held),
         claim_executor_id: claim_executor_id.clone(),
+        claim_refused,
     };
     let router = Router::new()
         .route("/v1/workers/connect", get(ws_handler))
@@ -422,6 +453,12 @@ async fn claim(
             Json(json!({ "error": "StaleDelivery", "message": "stale epoch" })),
         );
     }
+    if state.claim_refused {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "AlreadyClaimed", "message": "another worker holds it" })),
+        );
+    }
     let executor_id = body
         .executor_id
         .clone()
@@ -564,6 +601,14 @@ pub fn welcome_frame_with(heartbeat_interval_ms: u64, lease_ttl_ms: u64) -> Valu
             "heartbeatIntervalMs": heartbeat_interval_ms,
             "leaseTtlMs": lease_ttl_ms,
         }),
+    )
+}
+
+/// `task.cancelled_ack` for one Delivery.
+pub fn cancelled_ack(delivery_id: &str, recorded: bool) -> Value {
+    hub_frame(
+        "task.cancelled_ack",
+        json!({ "deliveryId": delivery_id, "recorded": recorded }),
     )
 }
 
