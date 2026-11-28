@@ -2,10 +2,6 @@
 
 Myrlet secures its own control plane (HTTP, SSE, WSS, and Myrlet-owned files). It does **not** sandbox Harnesses or manage Harness Provider Credentials.
 
-# Security and Trust Boundaries
-
-Myrlet secures its own control plane (HTTP, SSE, WSS, and Myrlet-owned files). It does **not** sandbox Harnesses or manage Harness Provider Credentials.
-
 ## Control-Plane Principals and Permission Tiers
 
 V1 has two principal kinds and three permission tiers. The `worker` and `owner` tiers use the **same Worker principal and credential**; `admin` is a separate system principal.
