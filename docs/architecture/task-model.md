@@ -2,6 +2,7 @@
 
 A **Task** is the durable unit of work owned by Hub. A Subtask is an ordinary Task with `parentTaskId` set.
 A **Delivery** identifies one Hub-to-Worker handoff of a Task, created by exactly one claim.
+For authorization, a Task is assigned to a Worker only after Hub commits a Delivery whose `workerId` matches that Worker. `preferredWorkerId` is a soft routing preference and never grants assignment or read visibility.
 Harness Sessions and Workspaces are private to the Harness and are not Task fields or Myrlet identities.
 
 ## Task Tree and Dependencies

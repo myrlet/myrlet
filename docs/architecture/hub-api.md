@@ -4,9 +4,19 @@ Hub exposes authenticated HTTP commands/queries and an SSE event stream over HTT
 
 **Wire convention:** All HTTP request and response JSON bodies use **`camelCase`** consistently (no mixed `snake_case`/`camelCase` aliases). Error responses use `{ "error": "<StableCode>", "message": "<fixed safe message>" }` without leaking internal SQLite causes.
 
-## Read Authorization
+## Authorization Model
 
-Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{id}/tree`, `/v1/tasks/{id}/eligibility`, `/v1/events`, `/v1/workers`, `/v1/workers/{id}`, `/v1/settings/security-trust`) accept **either** the Admin token **or** any enrolled Worker credential. A Harness therefore never needs the Hub Admin token merely to inspect Tasks, trees, Workers, or events. Reads grant **no** management authority: management writes require the Admin principal. See [security](security.md#read-visibility).
+The Hub authenticates either the Admin principal or a Worker principal. A Worker principal has a server-controlled `permissionTier` of `worker` or `owner`; both tiers use the same Worker credential and `workerId`. See [Security](security.md) for the complete rules.
+
+- **Worker-tier credential:** Worker-bound claim/report operations; full read of Tasks bound to its own Delivery; one-hop limited summaries of directly related Tasks.
+- **Owner-tier Worker credential:** all Worker operations plus global Task reads, supported Task coordination writes, and read-only Worker/Agent observability.
+- **Admin credential:** global reads, supported Task coordination writes, and Worker/system administration. Admin cannot impersonate a Worker for WSS, claims, Progress, Result, Finish, or cancellation acknowledgements.
+
+Worker assignment for read authorization is established by a committed Delivery's `workerId`; `preferredWorkerId` is not an assignment. A related-Task read is limited to the direct parent, direct children, direct dependencies, and direct dependents of the assigned Task, and returns only the limited summary defined in [Security](security.md#task-read-visibility). It does not recursively expand visibility.
+
+Global reads and streams are Owner/Admin-only. Worker credentials cannot enumerate all Tasks, events, or Workers. Worker reads of `GET /v1/tasks/{id}`, `/tree`, and `/eligibility` are authorized against the Worker's own Delivery and the direct related-Task boundary. A valid credential that lacks the required tier receives `403 Forbidden`; a Task outside the Worker's visibility boundary may return `404 NotFound` to avoid disclosing its existence. Invalid or missing credentials return `401 Unauthorized`.
+
+Every HTTP, SSE, WSS, Snapshot, and resource path enforces authorization at the Hub. Client-side filtering is not an authorization boundary.
 
 ## V1 Endpoint Surface
 
@@ -17,31 +27,32 @@ Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{i
 | `GET /health`, `GET /v1/health` | Process liveness probe (unauthenticated, unbounded). |
 | `POST /v1/pair` | Redeem a one-time pairing code (`{ enrollmentCode, workerId }`) for `{ hubId, workerId, credential }` in one step (body/timeout/concurrency bounded). |
 
-### Embedded Web UI (same-origin)
+### Embedded Web UI (Admin-only)
 
 `hub` embeds the built React/TypeScript/Vite Client (`apps/web`) in its binary and serves it from the Hub origin, so the browser talks to the same origin as the API (zero CORS).
 
+- Every non-CLI Client, including the Web UI and any future Desktop shell, requires an Admin credential. The Web UI does not expose Worker-tier or Owner-tier access.
 - `GET`/`HEAD` on any path outside `/v1/*` and `/health` serves a static asset; unknown non-asset paths fall back to `index.html` for client-side (SPA) routing.
 - Enabled by default (`uiEnabled = true`); set `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml` to disable it, after which UI paths return the JSON `404 NotFound` error body.
 - `/v1/*` NEVER falls back to HTML: an unknown `/v1/*` path always returns the JSON `404 NotFound` error body, whether or not the UI is enabled.
 - Every UI response carries strict security headers: `Content-Security-Policy` (self-only scripts and connections, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`.
 - The Admin bearer token stays in browser memory only — never written to `localStorage`/`sessionStorage`, cookies, or URLs.
 
-### Reads (Admin **or** Worker credential)
+### Reads (Owner/Admin global; Worker-scoped Task detail)
 
-| Method & Path | Purpose |
+| Method & Path | Authorization and purpose |
 | --- | --- |
-| `GET /v1/snapshot` | Primary read view: cluster/Worker inventory, bounded Task summaries, current Deliveries & latest Progress, and current `eventCursor`. |
-| `GET /v1/tasks` | Bounded newest-first Task summaries (`?limit=`); returns `totalTasks`, `truncated`, and `eventCursor`. |
-| `GET /v1/tasks/{id}` | Read one authoritative Task record, its current Delivery, latest Progress, `blockedBy`, and latest Result. |
-| `GET /v1/tasks/{id}/tree` | Read bounded ancestors or descendants (depth & node cap; simple limit, no view-fingerprint cursor). |
-| `GET /v1/tasks/{id}/eligibility` | Whether the Task can be claimed now, and which dependencies block it. |
-| `GET /v1/events` | Resumable SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). |
-| `GET /v1/workers` | List Workers with connectivity, approval status (`pending`, `approved`, `revoked`), applied inventory and nullable `reportedRevision` / `appliedRevision`. |
-| `GET /v1/workers/{id}` | Worker detail adds `reportedConfig` and `appliedConfig` for review and `claimableTaskIds` (empty while either approval gate is pending). |
-| `GET /v1/settings/security-trust` | Read the two Hub-wide policy booleans. |
+| `GET /v1/snapshot` | Owner/Admin. Primary global read view: cluster/Worker inventory, bounded Task summaries, current Deliveries & latest Progress, and current `eventCursor`. Includes Worker-reported Agent runtime observations only where such telemetry is available. |
+| `GET /v1/tasks` | Owner/Admin. Bounded newest-first global Task summaries (`?limit=`); returns `totalTasks`, `truncated`, and `eventCursor`. |
+| `GET /v1/tasks/{id}` | Owner/Admin may read any Task in full. Worker may read its own Delivery-bound Task in full, or a directly related Task as a limited summary. |
+| `GET /v1/tasks/{id}/tree` | Owner/Admin may read the bounded tree. Worker access is anchored to its own Delivery-bound Task and returns only one-hop related-Task summaries. |
+| `GET /v1/tasks/{id}/eligibility` | Owner/Admin may inspect any Task. Worker may inspect only its own Task or a directly related Task. |
+| `GET /v1/events` | Owner/Admin. Resumable global SSE invalidation stream (`Last-Event-ID` or `?cursor=<seq>`). Worker credentials do not receive the global event stream. |
+| `GET /v1/workers` | Owner/Admin. Owner receives operational status and scheduling-relevant inventory; Admin additionally receives administration-only fields. |
+| `GET /v1/workers/{id}` | Owner/Admin. Owner receives Worker status, scheduling inventory and reported Agent runtime observations; Admin receives the full administrative view. |
+| `GET /v1/settings/security-trust` | Admin only. Read the two Hub-wide policy booleans. |
 
-### Admin Control Plane (`Authorization: Bearer <admin-token>`)
+### Task Coordination (Owner-tier Worker credential or Admin)
 
 | Method & Path | Purpose |
 | --- | --- |
@@ -50,25 +61,35 @@ Ordinary reads (`GET /v1/snapshot`, `/v1/tasks`, `/v1/tasks/{id}`, `/v1/tasks/{i
 | `POST /v1/tasks/{id}/cancel` | Cancel any non-terminal Task (`Idempotency-Key` + `expectedTaskVersion`). |
 | `POST /v1/tasks/{id}/finish` | Explicitly finish a coordination-only Task with no Delivery (`Idempotency-Key` + `expectedTaskVersion`). |
 | `POST /v1/task-bundles/import` | Atomically submit up to 100 Tasks with local `clientRef` resolution (`Idempotency-Key`). |
+
+This tier exposes the Task coordination operations already defined by the V1 Task Model. It does not introduce a separate dispatch or assignment API; Workers still claim queued Tasks, and `preferredWorkerId` remains a soft preference.
+
+### Admin Control Plane (`Authorization: Bearer <admin-token>`)
+
+| Method & Path | Purpose |
+| --- | --- |
 | `POST /v1/enrollment-codes` | Issue a short-lived one-time Worker pairing code (`{ ttlSeconds, suggestedWorkerId? } -> { enrollmentCode, expiresAt }`). |
-| `POST /v1/workers/{id}/rotate` | Rotate a Worker's bearer credential (fences active WSS session). |
+| `POST /v1/workers/{id}/rotate` | Rotate a Worker's bearer credential (fences active WSS session and preserves its permission tier). |
 | `POST /v1/workers/{id}/revoke` | Revoke a Worker's credential and disconnect its active WSS session. |
+| `PATCH /v1/workers/{id}/permission-tier` | Set `{ permissionTier: "worker" | "owner" }` and return the stored tier. Admin-only; the `admin` tier cannot be assigned to a Worker. |
 | `PATCH /v1/settings/security-trust` | Admin updates one or both boolean policies and receives the stored pair. Omitted fields retain their values. |
 | `POST /v1/workers/{id}/approve` | Approve a pending Worker. Repeating approval for an approved Worker succeeds. A revoked Worker requires a new Pair. |
 | `POST /v1/workers/{id}/config/apply` | Apply `{ revision }` and return `{ appliedRevision }`. The Hub checks and copies the latest pending report in one transaction. |
 
 Apply on a revoked Worker returns `409 InvalidTransition`. With no pending report it returns `409 NoPendingConfig`. With a pending report and a different revision it returns `409 ConfigRevisionMismatch` and asks the operator to inspect the latest report. Each error leaves Applied unchanged.
 
-### Worker Control & Reporting (`Authorization: Bearer <worker-token>`)
+### Worker Control & Reporting (Worker credential: `worker` or `owner` tier)
 
 | Method & Path | Purpose |
 | --- | --- |
 | `GET /v1/workers/connect` | Authenticated Worker WSS upgrade endpoint. |
 | `POST /v1/workers/claim` | Explicitly claim one `queued` Task for one Slot; commits the Task's one Delivery. |
-| `POST /v1/worker/deliveries/{delivery_id}/progress` | Report latest Harness-authored Progress. |
-| `POST /v1/worker/deliveries/{delivery_id}/result` | Reconcile the Delivery's latest Markdown Result, or clear it. |
-| `GET /v1/worker/deliveries/{delivery_id}/result` | Read the current Hub Result copy for a `result status` comparison (no write). |
-| `POST /v1/worker/deliveries/{delivery_id}/finish` | Report Worker end of handling. |
+| `POST /v1/worker/deliveries/{delivery_id}/progress` | Report latest Harness-authored Progress for a Delivery bound to this Worker. |
+| `POST /v1/worker/deliveries/{delivery_id}/result` | Reconcile the Delivery's latest Markdown Result, or clear it, for a Delivery bound to this Worker. |
+| `GET /v1/worker/deliveries/{delivery_id}/result` | Read the current Hub Result copy for this Worker's own Delivery (`result status` comparison; no write). |
+| `POST /v1/worker/deliveries/{delivery_id}/finish` | Report Worker end of handling for a Delivery bound to this Worker. |
+
+The Admin principal is not accepted on Worker Control & Reporting routes.
 
 ## Claiming a Task
 

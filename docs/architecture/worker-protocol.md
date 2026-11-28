@@ -10,6 +10,7 @@ Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/
 ## Worker Topology, Enrollment, and Inventory
 
 - **One Worker per `MYRLET_HOME`**: Each Worker deployment has one stable `workerId` (`wkr_` + 12 Crockford Base32 chars, cryptographically random, never derived from hardware/MAC). Slots are internal concurrency targets inside one Worker—do not create multiple Workers merely for multiple Harnesses or concurrent Tasks.
+- **Shared Agent authority**: Every Agent/Harness started within a Worker uses that Worker's Myrlet identity and credential, with its Hub-assigned `worker` or `owner` tier. Agent IDs and Harness/session identifiers are observational metadata only; they cannot authenticate or narrow the Worker's authority. Owner may read Agent runtime state only to the extent the Worker reports it. V1 does not define a separate Agent-state WSS frame or introspect Harness-private subagents/Sessions; richer Agent telemetry requires a separate approved protocol contract.
 - **Basic Host facts only**: Worker Core detects only OS, CPU architecture, and deployment mode (`native` / `container`). It **never** probes, installs, upgrades, or manages toolchains, SDKs, or Harness binaries/profiles.
 - **Single-step pairing**:
   1. Admin issues a short-lived one-time code via `POST /v1/enrollment-codes`.

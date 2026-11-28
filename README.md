@@ -45,7 +45,7 @@ The commit references matter. Each harness owns its workspace and conversation. 
 
 A Mac with Xcode, a Linux test runner, and a read-only review environment offer different capabilities. We recommend a separate Docker worker for each permission boundary where the toolchain supports containers. Run the harness inside that boundary. Mount only the files it needs, scope its network access, and supply only its own credentials. You can provision those credentials with an external secrets manager such as Infisical.
 
-Slots advertise where work can run. The OS or container enforces access. Keep the Hub admin token with trusted owners because it authorizes submission, edits, and cancellation across the fleet. An enrolled worker uses its own credential to connect, claim, and report on its deliveries; it can also read Tasks and Workers without the admin token. [Security model](docs/architecture/security.md)
+Slots advertise where work can run. The OS or container enforces access. Keep the Hub Admin token with trusted operators: it authorizes Worker enrollment, credential and permission-tier management, and Hub configuration. A Worker credential receives a server-controlled `worker` or `owner` tier. A `worker`-tier Worker can read only Tasks bound to its own Delivery plus direct related-Task summaries. An `owner`-tier Worker can coordinate all Tasks and observe Worker and Worker-reported Agent runtime state, but cannot administer Workers. The CLI supports all three tiers; Web and other non-CLI clients require Admin. [Security model](docs/architecture/security.md)
 
 ## How It Works
 

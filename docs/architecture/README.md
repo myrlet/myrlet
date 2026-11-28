@@ -25,7 +25,7 @@ Pre-release formats carry **no backward-compatibility obligation**. Change canon
 | [Task model](task-model.md) | 5-state Task lifecycle, 5-level Task Tree, sibling dependencies, minimal `TaskDefinition`, submission & readiness, pending edits, Task Bundle import, copy/retry |
 | [Hub API](hub-api.md) | Minimal V1 HTTP/SSE surface, Worker HTTP Progress/Result/Finish reporting, claims, Global Snapshot, single-table event log + broadcast SSE, ingress & shutdown |
 | [Worker protocol](worker-protocol.md) | Worker WSS transport, wakeup hints, explicit claims, single-step pairing, Worker approval and applied scheduling inventory, epoch fencing, non-invasive Harness adapters, CLI/Progress boundary, local state & control socket |
-| [Security](security.md) | `Admin` + `Worker` bearer authentication, read visibility, one-time pairing codes, mandatory WSS TLS verification, file permission safety, explicit no-sandbox Harness boundary |
+| [Security](security.md) | Three-tier authorization (`worker` / `owner` / `admin`), Worker-scoped Task visibility, global Owner coordination, Admin-only Worker/system administration, one-time pairing codes, mandatory WSS TLS verification, file permission safety, explicit no-sandbox Harness boundary |
 | [Local runtime and platform](local-runtime.md) | `MYRLET_HOME` layout, SQLite concurrency model, workspace binaries, crate boundaries, and Client surfaces |
 
 ## Distinct Identity Boundaries
@@ -40,6 +40,15 @@ Never collapse these identities into one another or let one grant the authority 
 | `slotId` | Selectable execution/concurrency unit inside a Worker (not a separate Worker identity or OS sandbox). |
 | `executorId` | Operator-configured adapter selected for a Delivery. |
 | `executionRef` | Opaque backend-local handle to one submitted Harness execution or process. |
+
+### Authorization Principals and Tiers
+
+V1 has two principal kinds and three permission tiers:
+
+- A **Worker principal** is authenticated by its Hub-issued Worker credential and bound to `workerId`. The Hub assigns that Worker the `worker` or `owner` permission tier; a new pairing defaults to `worker`.
+- The **`owner` tier is not a separate identity** and is not the same concept as a Task Owner. It is elevated coordination authority on the same Worker principal. Every Agent/Harness running within that Worker shares its `workerId`, credential, and permission tier.
+- The **Admin principal** is authenticated by `MYRLET_ADMIN_TOKEN`. It is separate from Worker identity and is the only principal with the `admin` tier.
+- Agent and Harness runtime identifiers are observational metadata only. They never authenticate requests or create independent authorization boundaries.
 
 Harness Session, Thread, and Workspace identifiers are **Harness-private** and are not Myrlet identities.
 
@@ -56,14 +65,14 @@ Harness Session, Thread, and Workspace identifiers are **Harness-private** and a
 9. **Idempotent Delivery, no silent retries**: Worker durably registers `deliveryId` before invoking an adapter; replay never double-submits. Business retries create a new `held` Task linked by `sourceTaskId` and submit it explicitly.
 10. **Uncertainty stays visible**: Disconnects, timeouts, and missing reports never prove process termination and never synthesize terminal outcomes.
 11. **Model-free control plane**: Hub, Worker, CLI, and core App require no LLM.
-12. **Minimal auth and fencing**: Control-plane mutations use constant-time SHA-256 bearer verification (`Admin` or `Worker`), `Idempotency-Key`, optimistic `expectedTaskVersion`, and monotonic WSS `connectionEpoch` fencing. Reads are available to either principal and grant no management authority.
+12. **Three-tier authorization and fencing**: Hub authenticates the Admin principal or a Worker principal whose server-controlled tier is `worker` or `owner`. Worker reads are limited to Tasks bound to that Worker’s Delivery and one-hop related-task summaries; Owner has global Task coordination and read-only Worker/Agent observability; Admin owns Worker and system administration. All authorization is enforced server-side. Worker-originated claims and execution reports remain bound to the actual Worker credential; Admin cannot impersonate a Worker. Control-plane mutations retain constant-time SHA-256 bearer verification, `Idempotency-Key`, optimistic `expectedTaskVersion`, and monotonic WSS `connectionEpoch` fencing.
 13. **Code is a liability**: Keep the smallest responsibility, schema, and state space that satisfies these invariants.
 
 ## Explicit V1 Non-Goals (Cut from Baseline)
 
 To prevent over-engineering in `0.1.0`, the following are explicitly **excluded** from V1:
 
-- Multi-tenant RBAC, custom Principal roles, multi-Scope isolation, Task Assignments / grant tokens, nested subtree Ownership Boundaries, ownership transfer, and one-hop `adjacentTasks` projections.
+- Arbitrary configurable RBAC, custom permission scopes, multi-tenant isolation, explicit Task Assignment records / grant tokens, nested subtree ownership boundaries, ownership transfer, and per-Agent credentials. V1 uses only fixed `worker` / `owner` / `admin` tiers and one-hop related-Task visibility; a committed Delivery’s `workerId` is the Worker assignment boundary.
 - Multi-stage credential issuance, per-Task or per-claim approval, approval workflows, configuration history or rollback, deterministic credential seed derivation, and proxy `X-Forwarded-For` rate limiters.
 - Scope Category Catalog API/table, Task `priority` scheduling or validation ceremony, Human Inbox, and Owner notification delivery.
 - `GET /v1/work`, `GET /v1/history`, `POST /v1/matches/preview`, `POST /v1/task-bundles/preview`, Queue Intent stale reauthorization, and SHA-256 view-fingerprint / signed pagination cursors.
