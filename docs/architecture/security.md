@@ -8,7 +8,7 @@ V1 has two authenticated Principal kinds:
 
 | Principal | Credential | Authorized Surface |
 | --- | --- | --- |
-| **Admin** | `MYRLET_ADMIN_TOKEN` (operator-provisioned secret) | All Client/Admin HTTP endpoints, SSE `/v1/events`, Worker enrollment code issuance, Worker rotation/revocation. |
+| **Admin** | `MYRLET_ADMIN_TOKEN` (operator-provisioned secret) | All Client/Admin HTTP endpoints, SSE `/v1/events`, Worker enrollment code issuance, Worker rotation/revocation, Worker approval, configuration Apply and Hub settings writes. |
 | **Worker** | Hub-issued CSPRNG machine bearer token | `GET /v1/workers/connect` (WSS), `POST /v1/workers/claim`, `POST /v1/worker/deliveries/{id}/{progress,result,finish}` for Deliveries bound to that `workerId` only, and any ordinary read route. |
 
 Rules:
@@ -28,6 +28,7 @@ A Delivery ID identifies an execution and confers **no** authority. For executio
 
 - Pairing codes are one-time, short-lived, and issued only by an authenticated Admin.
 - Redeeming a valid code via `POST /v1/pair` immediately issues a Worker bearer credential bound to `(hubId, workerId)` and consumes the code.
+- Scheduling approval is independent of credential issuance. A pending Worker retains ordinary read visibility. Only an Admin can approve Workers, apply inventory or change admission policies.
 - Worker stores its binding atomically in `worker/credentials.json` with mode `0600` (POSIX) or equivalent owner-only ACL.
 - Rotation invalidates the previous credential immediately and fences active WSS sessions. Revocation removes trust and disconnects the Worker. Missing or corrupt credential files fail closed rather than silently generating a new identity.
 
