@@ -1,0 +1,222 @@
+/* Phone and tablet workspace layout: List rows, Board dock, and the
+   Workers surfaces. */
+
+@media (max-width: 820px) {
+  .app-frame {
+    --status-bar-height: 44px;
+  }
+
+  /* One compact status row: the filter menu plus Snapshot totals. */
+  .status-bar {
+    overflow: visible;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: var(--status-bar-height);
+    min-height: var(--status-bar-height);
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  .status-bar-left {
+    flex: 1 1 auto;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .status-bar-right {
+    flex: none;
+    gap: 8px;
+    font-size: 10px;
+  }
+
+  .status-bar-right > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-hints {
+    display: none;
+  }
+
+  .task-table-scroll,
+  .list-outline-scroll {
+    padding: 8px 8px 16px;
+  }
+
+  .list-inline-controls {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .list-inline-actions {
+    margin-left: auto;
+  }
+
+  .list-inline-actions .button span {
+    display: none;
+  }
+
+  .list-inline-actions .button {
+    padding: 0 7px;
+  }
+
+  .list-columns {
+    display: none;
+  }
+
+
+  /* Mobile rows: the title owns the full width, status and Worker share one
+     compact line, and Progress appears only when the Harness reported it. */
+  .list-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "task task"
+      "status worker"
+      "progress progress";
+    align-items: center;
+    row-gap: 4px;
+    column-gap: 8px;
+    min-height: 0;
+    padding: 8px 8px 9px;
+  }
+
+  .list-cell-task {
+    grid-area: task;
+    gap: 5px;
+    flex-wrap: wrap;
+    row-gap: 3px;
+    overflow: visible;
+  }
+
+  .list-cell-status {
+    grid-area: status;
+    justify-self: start;
+  }
+
+  .list-cell-progress {
+    grid-area: progress;
+  }
+
+  .list-cell-progress[data-progress="none"],
+  .list-cell-progress[data-progress="unassigned"],
+  .list-cell-worker[data-empty="true"] {
+    display: none;
+  }
+
+  .list-cell-worker {
+    grid-area: worker;
+    justify-self: end;
+  }
+
+  .list-cell-actions {
+    display: none;
+  }
+
+  .list-task-title {
+    /* The title consumes the row's remaining width; relation pills wrap below. */
+    flex: 1 1 140px;
+    min-width: 0;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .list-micro-pill {
+    order: 1;
+  }
+
+  .list-guide-slot {
+    width: 14px;
+  }
+
+  .list-guide-stem {
+    left: 7px;
+  }
+
+  .list-group-head {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: 24px;
+    padding: 4px 8px;
+  }
+
+  .list-group-summary {
+    font-size: 9.5px;
+  }
+
+  .list-progress-line {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+
+  .list-progress-text {
+    flex: 1 1 100%;
+  }
+
+  .atlas-dock {
+    height: 40px;
+    padding: 0 8px;
+    gap: 6px;
+  }
+
+  .atlas-dock-label {
+    display: none;
+  }
+
+  .atlas-dock-actions {
+    margin-left: auto;
+  }
+
+  .atlas-floating-btn {
+    height: 30px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
+
+  .atlas-hint {
+    display: none;
+  }
+
+  .atlas-minimap {
+    left: 10px;
+    bottom: 10px;
+  }
+
+  .atlas-minimap-collapse {
+    width: 24px;
+    height: 24px;
+  }
+
+  .atlas-zoom {
+    right: 10px;
+    bottom: 10px;
+  }
+
+  .pairing-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kpi-cell:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .kpi-cell:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .app-bar-workers-label {
+    display: none;
+  }
+}

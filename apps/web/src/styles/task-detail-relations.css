@@ -1,0 +1,144 @@
+/* Task Detail — relationship lists, mini tree, hierarchy link, and the
+   latest Harness Progress block. */
+
+.hierarchy-link {
+  display: inline-flex;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-canvas);
+  color: var(--accent);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hierarchy-link:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dep-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dep-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+}
+
+.dep-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.dep-card-title {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dep-card-main:hover .dep-card-title {
+  color: var(--accent);
+}
+
+.dep-card-id {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.mini-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mini-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 28px;
+  padding-right: 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  transition: var(--transition-colors);
+}
+
+.mini-tree-node:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.mini-tree-node[data-current="true"] {
+  background: var(--bg-selected);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.mini-tree-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mini-tree-id {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.progress-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-canvas);
+}
+
+.progress-block-text {
+  max-height: 220px;
+  overflow: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.progress-block-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}

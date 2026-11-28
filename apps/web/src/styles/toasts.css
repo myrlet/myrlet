@@ -1,0 +1,59 @@
+/* Toast stack. */
+
+.toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--status-bar-height) + 12px);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-overlay);
+  font-size: 12.5px;
+  pointer-events: auto;
+  animation: toast-enter var(--duration-base) var(--ease-out);
+}
+
+.toast[data-tone="error"] {
+  border-color: var(--status-cancelled-border);
+  background: var(--status-cancelled-bg);
+  color: var(--status-cancelled-fg);
+}
+
+.toast-message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toast-dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.toast-dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}

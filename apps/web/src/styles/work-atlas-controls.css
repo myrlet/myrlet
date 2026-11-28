@@ -1,0 +1,258 @@
+/* Work Atlas — minimap, zoom controls, Board dock buttons, and the active
+   status filter pill. */
+
+.atlas-minimap {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+/* Collapsed overview on phones: one quiet pill, still expandable. */
+.atlas-minimap[data-collapsed="true"] {
+  padding: 3px 4px 3px 9px;
+  border-radius: var(--radius-pill);
+}
+
+.atlas-minimap[data-collapsed="true"] .atlas-minimap-head {
+  gap: 4px;
+}
+
+.atlas-minimap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.atlas-minimap-title {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.atlas-minimap-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  transition: var(--transition-colors);
+}
+
+.atlas-minimap-collapse:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.atlas-minimap-body {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-canvas);
+  overflow: hidden;
+  cursor: crosshair;
+}
+
+.atlas-minimap-node {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+
+.atlas-minimap-node[data-tone="held"] { background: var(--status-held-fg); opacity: 0.7; }
+.atlas-minimap-node[data-tone="queued"] { background: var(--status-queued-fg); opacity: 0.8; }
+.atlas-minimap-node[data-tone="dispatched"] { background: var(--status-dispatched-fg); opacity: 0.85; }
+.atlas-minimap-node[data-tone="finished"] { background: var(--status-finished-fg); opacity: 0.7; }
+.atlas-minimap-node[data-tone="cancelled"] { background: var(--status-cancelled-fg); opacity: 0.7; }
+
+.atlas-minimap-viewport {
+  position: absolute;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--bg-selected);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.atlas-zoom {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.atlas-zoom-value {
+  min-width: 34px;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  transition: var(--transition-colors);
+}
+
+.atlas-zoom-value:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.atlas-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  transition: var(--transition-colors);
+}
+
+.atlas-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.atlas-zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.atlas-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg-surface) 85%, transparent);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Board control buttons: quiet, compact, docked in the Board header row. */
+.atlas-floating-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition: var(--transition-colors);
+}
+
+.atlas-floating-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.atlas-floating-btn[data-active="true"] {
+  background: var(--bg-active);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.atlas-floating-btn svg {
+  flex: none;
+  opacity: 0.9;
+}
+
+.atlas-floating-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border-subtle);
+}
+
+/* Active status filter: one dismissible chip, inline in the List controls and
+   in the Board dock. */
+.active-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 24px;
+  padding: 0 3px 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--shadow-card);
+}
+
+.active-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  transition: var(--transition-colors);
+}
+
+.active-filter-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* Dark theme: cards read as machined panels, not glowing ones. Scoped to the
+   resting state so hover, selection, and drag shadows still read. */
+:root[data-theme="dark"] .atlas-node:not([data-selected="true"]):not([data-dragging="true"]):not([data-dimmed="true"]):not(:hover):not([data-hovered="true"]) {
+  box-shadow: var(--shadow-card);
+}
