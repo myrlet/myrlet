@@ -77,7 +77,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
   const storageKey = props.storageKey ?? DEFAULT_ATLAS_STORAGE_KEY;
 
   const stageRef = useRef<HTMLElement | null>(null);
-  const { offsets, offsetsRef, setOffsets, restoreSnapshot, storageKeyRef, arrange, restore } =
+  const { offsets, offsetsRef, setOffsets, saveOffsets, restoreSnapshot, arrange, restore } =
     useAtlasOffsets(storageKey);
   const { layout, positions, edges, workerById, bounds } = useAtlasModel(tasks, workers, offsets);
   const { hoveredTaskId, setHoveredTaskId, subgraph } = useAtlasFocus(edges, selectedTaskId);
@@ -98,7 +98,7 @@ export function TaskGraphView(props: TaskGraphViewProps) {
     basePositions: layout.positions,
     offsetsRef,
     setOffsets,
-    storageKeyRef,
+    saveOffsets,
     onClearSelection,
   });
 
@@ -167,17 +167,15 @@ export function TaskGraphView(props: TaskGraphViewProps) {
           ) : null
         }
       >
+        <AtlasMinimap
+          nodes={layout.nodes}
+          positions={positions}
+          bounds={bounds}
+          viewWorld={viewWorld}
+          onPanTo={panToWorldPoint}
+        />
         {tasks.length === 0 ? null : (
           <>
-            {bounds === null ? null : (
-              <AtlasMinimap
-                nodes={layout.nodes}
-                positions={positions}
-                bounds={bounds}
-                viewWorld={viewWorld}
-                onPanTo={panToWorldPoint}
-              />
-            )}
             <AtlasZoom
               scale={view.scale}
               zoomPercent={zoomPercent}

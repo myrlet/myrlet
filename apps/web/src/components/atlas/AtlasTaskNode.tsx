@@ -6,6 +6,7 @@
  * badge does not already imply (such as a cancellation answer) is shown.
  */
 
+import { shortId } from "../../model/shortId";
 import type { DeliveryView, SnapshotTaskSummary, WorkerRecord } from "../../api/types";
 import { CANCEL_STATE_LABELS, TASK_STATUS_META, formatCount, formatRelativeTime } from "../../format";
 import { NODE_HEIGHT, NODE_WIDTH } from "../workAtlasLayout";
@@ -28,7 +29,6 @@ export interface AtlasTaskNodeProps {
 
 const NODE_STYLE = { width: NODE_WIDTH, height: NODE_HEIGHT } as const;
 
-const shortId = (id: string): string => (id.length <= 12 ? id : id.slice(0, 12));
 
 const isWorkerOnline = (worker: WorkerRecord | undefined): boolean =>
   worker !== undefined && worker.online && !worker.revoked;

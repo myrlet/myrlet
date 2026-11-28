@@ -11,7 +11,6 @@ import type { PointerEvent as ReactPointerEvent, RefObject } from "react";
 
 import type { AtlasPosition, AtlasView } from "../workAtlasLayout";
 import type { AtlasOffsets } from "./atlasOffsets";
-import { writeStoredOffsets } from "./atlasOffsets";
 import { DRAG_THRESHOLD, settleOffset } from "./atlasViewport";
 
 type DragState =
@@ -43,7 +42,7 @@ interface UseAtlasPointerArgs {
   readonly basePositions: ReadonlyMap<string, AtlasPosition>;
   readonly offsetsRef: { current: AtlasOffsets };
   readonly setOffsets: (next: AtlasOffsets) => void;
-  readonly storageKeyRef: { current: string };
+  readonly saveOffsets: (next: AtlasOffsets) => void;
   readonly onClearSelection: () => void;
 }
 
@@ -62,7 +61,7 @@ export function useAtlasPointer({
   basePositions,
   offsetsRef,
   setOffsets,
-  storageKeyRef,
+  saveOffsets,
   onClearSelection,
 }: UseAtlasPointerArgs): AtlasPointerState {
   const [panning, setPanning] = useState(false);
@@ -149,9 +148,7 @@ export function useAtlasPointer({
     const offset = offsetsRef.current[drag.taskId];
     if (!base || !offset) return;
     const next = { ...offsetsRef.current, [drag.taskId]: settleOffset(base, offset) };
-    setOffsets(next);
-    // Spatial memory is written once, at drag end — never on mount or pan.
-    writeStoredOffsets(storageKeyRef.current, next);
+    saveOffsets(next);
   };
 
   return { panning, nodeDragId, handlePointerDown, handlePointerMove, finishDrag };

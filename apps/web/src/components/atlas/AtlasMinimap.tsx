@@ -23,13 +23,14 @@ const startsOpen = (): boolean =>
 interface AtlasMinimapProps {
   readonly nodes: AtlasLayout["nodes"];
   readonly positions: ReadonlyMap<string, AtlasPosition>;
-  readonly bounds: AtlasFramingBounds;
+  readonly bounds: AtlasFramingBounds | null;
   readonly viewWorld: { x: number; y: number; width: number; height: number };
   readonly onPanTo: (point: AtlasPosition) => void;
 }
 
 export function AtlasMinimap({ nodes, positions, bounds, viewWorld, onPanTo }: AtlasMinimapProps) {
   const [open, setOpen] = useState(startsOpen);
+  if (bounds === null) return null;
   const minimapScale = minimapScaleFor(bounds);
 
   const handleClick = (event: ReactMouseEvent<HTMLButtonElement>): void => {

@@ -22,7 +22,7 @@ interface UseAtlasOffsetsResult {
   readonly offsetsRef: MutableRefObject<AtlasOffsets>;
   readonly setOffsets: (next: AtlasOffsets) => void;
   readonly restoreSnapshot: AtlasOffsets | null;
-  readonly storageKeyRef: MutableRefObject<string>;
+  readonly saveOffsets: (next: AtlasOffsets) => void;
   readonly arrange: () => void;
   readonly restore: () => void;
 }
@@ -38,7 +38,7 @@ export function useAtlasOffsets(storageKey: string): UseAtlasOffsetsResult {
     setOffsetsState(next);
   }, []);
 
-  // A different board (Wave 9B passes its own key) starts from that board's offsets.
+  // A different storage key starts with its own offsets.
   useEffect(() => {
     if (storageKeyRef.current === storageKey) return;
     storageKeyRef.current = storageKey;
@@ -47,6 +47,11 @@ export function useAtlasOffsets(storageKey: string): UseAtlasOffsetsResult {
     setOffsetsState(stored);
     setRestoreSnapshot(null);
   }, [storageKey]);
+
+  const saveOffsets = useCallback((next: AtlasOffsets) => {
+    setOffsets(next);
+    writeStoredOffsets(storageKeyRef.current, next);
+  }, [setOffsets]);
 
   const arrange = useCallback(() => {
     const manual = manualOffsets(offsetsRef.current);
@@ -57,10 +62,9 @@ export function useAtlasOffsets(storageKey: string): UseAtlasOffsetsResult {
 
   const restore = useCallback(() => {
     if (restoreSnapshot === null) return;
-    setOffsets(restoreSnapshot);
-    writeStoredOffsets(storageKeyRef.current, restoreSnapshot);
+    saveOffsets(restoreSnapshot);
     setRestoreSnapshot(null);
-  }, [restoreSnapshot, setOffsets]);
+  }, [restoreSnapshot, saveOffsets]);
 
-  return { offsets, offsetsRef, setOffsets, restoreSnapshot, storageKeyRef, arrange, restore };
+  return { offsets, offsetsRef, setOffsets, saveOffsets, restoreSnapshot, arrange, restore };
 }

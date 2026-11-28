@@ -9,6 +9,7 @@
  */
 
 import type { SnapshotTaskSummary } from "../api/types";
+import { compareTasks, indexTasks } from "../model/taskIndex";
 
 export const NODE_WIDTH = 232;
 export const NODE_HEIGHT = 140;
@@ -69,9 +70,6 @@ interface GroupDraft {
 
 const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-const compareTasks = (a: SnapshotTaskSummary, b: SnapshotTaskSummary): number =>
-  a.createdAtMs - b.createdAtMs || compareText(a.id, b.id);
-
 /**
  * Lay out one group's local tree. A leaf consumes one vertical slot; a parent
  * centers on the slots its children span. Tasks whose parent is missing become
@@ -79,20 +77,8 @@ const compareTasks = (a: SnapshotTaskSummary, b: SnapshotTaskSummary): number =>
  */
 function layoutGroup(rootId: string, members: readonly SnapshotTaskSummary[]): GroupDraft {
   const ordered = [...members].sort(compareTasks);
-  const byId = new Map(ordered.map((task) => [task.id, task]));
+  const { byId, childrenByParent } = indexTasks(ordered);
   const root = byId.get(rootId) ?? ordered[0];
-
-  const childrenByParent = new Map<string, SnapshotTaskSummary[]>();
-  for (const task of ordered) {
-    const parentId = task.parentTaskId;
-    if (parentId === null || parentId === task.id || !byId.has(parentId)) {
-      continue;
-    }
-    const siblings = childrenByParent.get(parentId);
-    if (siblings) siblings.push(task);
-    else childrenByParent.set(parentId, [task]);
-  }
-  for (const siblings of childrenByParent.values()) siblings.sort(compareTasks);
 
   const nodes: AtlasNode[] = [];
   const placed = new Set<string>();
