@@ -526,6 +526,7 @@ async fn a_silent_long_task_without_progress_finishes_with_its_own_result() {
     poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let task = create_task(
         &cli,
@@ -584,6 +585,7 @@ async fn a_task_configured_for_more_than_two_hours_is_not_timed_out_early() {
     poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let task = create_task_with_timeout(
         &cli,
@@ -655,6 +657,7 @@ async fn a_real_duration_long_task_runs_and_finishes_once() {
     poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let timeout = seconds + 600;
     let task = create_task_with_timeout(&cli, "real-long", "Real long task", "exec-long", timeout);
@@ -704,6 +707,7 @@ async fn transport_disconnect_across_process_exit_replays_result_and_finish_once
     let first_epoch = poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let task = create_task(
         &cli,
