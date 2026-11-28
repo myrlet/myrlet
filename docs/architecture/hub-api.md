@@ -84,10 +84,10 @@ Apply on a revoked Worker returns `409 InvalidTransition`. With no pending repor
 | --- | --- |
 | `GET /v1/workers/connect` | Authenticated Worker WSS upgrade endpoint. |
 | `POST /v1/workers/claim` | Explicitly claim one `queued` Task for one Slot; commits the Task's one Delivery. |
-| `POST /v1/worker/deliveries/{id}/progress` | Report latest Harness-authored Progress for a Delivery bound to this Worker. |
-| `POST /v1/worker/deliveries/{id}/result` | Reconcile the Delivery's latest Markdown Result, or clear it, for a Delivery bound to this Worker. |
-| `GET /v1/worker/deliveries/{id}/result` | Read the current Hub Result copy for this Worker's own Delivery (`result status` comparison; no write). |
-| `POST /v1/worker/deliveries/{id}/finish` | Report Worker end of handling for a Delivery bound to this Worker. |
+| `POST /v1/worker/deliveries/{delivery_id}/progress` | Report latest Harness-authored Progress for a Delivery bound to this Worker. |
+| `POST /v1/worker/deliveries/{delivery_id}/result` | Reconcile the Delivery's latest Markdown Result, or clear it, for a Delivery bound to this Worker. |
+| `GET /v1/worker/deliveries/{delivery_id}/result` | Read the current Hub Result copy for this Worker's own Delivery (`result status` comparison; no write). |
+| `POST /v1/worker/deliveries/{delivery_id}/finish` | Report Worker end of handling for a Delivery bound to this Worker. |
 
 The Admin principal is not accepted on Worker Control & Reporting routes.
 
