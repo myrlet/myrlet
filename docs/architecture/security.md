@@ -45,17 +45,17 @@ An `owner` principal includes all Worker permissions and may:
 - Read all Worker operational status and scheduling-relevant inventory, including connectivity, health/availability, Slots, capabilities, Executors, and advisory capacity.
 - Read internal Agent runtime state when it is reported by the Worker.
 
-Owner is observational and coordinative with respect to Workers. It cannot enroll, approve, enable, disable, remove, configure, or otherwise administer a Worker; change Worker capabilities/labels/inventory; issue, rotate, or revoke credentials; change permission tiers; or modify Hub/system/security configuration.
+Owner is observational and coordinative with respect to Workers. It cannot enroll, approve, revoke, rotate, or otherwise administer a Worker; change Worker capabilities/labels/inventory; issue or revoke credentials; change permission tiers; or modify Hub/system/security configuration.
 
 This tier does not add a separate dispatch or Task Assignment API. Workers still claim queued Tasks under the existing Task Model; `preferredWorkerId` remains a soft preference, not an assignment or read grant.
 
 ### Admin — system administration
 
 The Admin principal can perform all global Task reads and supported Task coordination operations, and additionally:
-- Enroll, approve, enable/disable, revoke, and administer Workers.
+- Enroll, approve, and revoke Workers through the supported trust operations.
 - Issue, rotate, and revoke Worker credentials.
 - Set a Worker's permission tier to `worker` or `owner`.
-- Modify Worker configuration and administrative metadata, including capabilities/labels where supported.
+- Review and apply Worker-reported scheduling inventory revisions; this does not write to the Worker's local `worker.yaml` or manage Harness configuration.
 - Modify Hub and system configuration, including security-related settings.
 
 Admin remains a distinct principal and cannot impersonate a Worker for Worker-originated execution operations.
