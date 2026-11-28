@@ -87,7 +87,8 @@ The same operations live in the Web UI: the Workers page filters pending Workers
 both snapshots field by field, and submits the revision the Admin actually viewed. Web
 **Settings → Security & Trust** edits the two Hub-wide policies independently. A settings
 write applies to the next Pair or inventory report; it never changes an existing decision
-or a pending report. The policies have no CLI settings command — use the Web UI or
+or a pending report. The same policies are editable without the Web UI through the Admin
+CLI (`myrlet policy show`, `myrlet policy set --auto-approve/--auto-apply`) or
 `GET`/`PATCH /v1/settings/security-trust`.
 
 ### Worker Configuration Reload
