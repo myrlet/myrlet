@@ -27,6 +27,8 @@ MYRLET_HOME/
 - Hub uses **one local SQLite database** in WAL mode (`PRAGMA foreign_keys = ON`, bounded `busy_timeout`).
 - Synchronous `rusqlite` work MUST NOT block Tokio async scheduler threads: wrap the single writer connection behind a one-permit semaphore + `tokio::task::block_in_place` on the multi-thread Tokio runtime (running inline only on current-thread test runtimes). Do not introduce separate actor threads, connection pools, or external message brokers.
 
+The Hub stores the two Security & Trust booleans in one singleton `hub_settings` row. The existing `workers` row holds approval, reported/applied scheduling inventory and their revisions. Policy decisions and their associated Pair, report or Apply are serialized by the existing SQLite writer.
+
 ## Workspace Layout and Crate Boundaries
 
 Myrlet uses single-word directory names under `crates/` and `apps/`, shipping three binaries over four shared crates with strict one-way dependencies (zero duplicated domain vs. wire structs):
@@ -59,10 +61,16 @@ V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the
 
 | Surface | Binary / Crate | V1 Scope |
 | --- | --- | --- |
-| **CLI** | `myrlet` (`apps/cli`) | Headless Hub reads (`tasks list/show/tree`, `workers list/show`, `events watch`), Owner writes (`tasks submit/import/update/cancel/finish`), execution-local commands (`done`, `result check/sync/status`), and operator bootstrap (`workers enroll/rotate/revoke`). Human + `--json` output. Also the supported interface for Harnesses. |
+| **CLI** | `myrlet` (`apps/cli`) | Headless Hub reads (`tasks list/show/tree`, `workers list/show`, `events watch`), Owner writes (`tasks submit/import/update/cancel/finish`), execution-local commands (`done`, `result check/sync/status`), and operator bootstrap (`workers enroll/rotate/revoke/approve` and `workers config show/apply`). Human + `--json` output. Also the supported interface for Harnesses. |
 | **Shared Client SDK** | `myrlet-client` (`crates/client`) | One `Client` over `native` (`reqwest`/Tokio) and `wasm` (`fetch`) transports using canonical `myrlet-protocol` DTOs. |
 | **Web UI** | `apps/web` → embedded in `hub` | React/TypeScript/Vite app compiled and embedded into the `hub` binary at build time and served same-origin: zero CORS, strict CSP, in-memory token only. Scope: Hub connection, **List and read-only Board**, **Task Detail** (hierarchy, dependencies and blockers, Delivery, latest Progress, latest result Markdown), and Worker/pairing management. Enabled by default; disable with `MYRLET_HUB_UI=false` or `uiEnabled = false` in `hub/config.toml`. |
 | **Agent Skill** | [skills/myrlet/SKILL.md](../../skills/myrlet/SKILL.md) | Concise CLI operating instructions for external Owner Agents and Harnesses. |
+
+### Worker trust operations
+
+`myrlet workers show <worker-id>` displays approval, both revisions, and whether Apply is pending. `myrlet workers config show <worker-id>` reads the same Worker detail and displays both snapshots. `myrlet workers approve <worker-id>` and `myrlet workers config apply <worker-id> --revision <revision>` use the existing Admin authentication. Each command supports `--json`. Apply prints the applied revision on success and surfaces the Hub's specific error on failure.
+
+The Workers page identifies and filters pending Workers, shows both snapshots and their field differences, and submits the revision the Admin viewed. Pending Workers offer Approve and Revoke, approved Workers offer Revoke, and revoked Workers link to pairing. The Web Settings **Security & Trust** group edits the two Hub policies independently. These policies have no CLI settings commands.
 
 ### Execution-local CLI commands
 

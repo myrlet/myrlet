@@ -16,14 +16,31 @@ Workers initiate authenticated **WSS** connections to Hub so Workers behind NAT/
   2. Worker redeems it via `POST /v1/pair` and receives `{ hubId, workerId, credential }` in one step.
   3. Hub stores only the credential's SHA-256 verifier; Worker writes `worker/credentials.json` atomically (`0600`).
   4. Worker connects over WSS and reports its Slot/Capability/Executor inventory in `worker.hello` (and `worker.inventory` on config change).
-- **Trusted enrolled inventory**: Inventory reported by an enrolled Worker takes effect directly (no secondary enrollment approval or per-claim inventory approval in V1). Capability states use the closed enum `available | degraded | unavailable`.
+- Capability states use the closed enum `available | degraded | unavailable`.
 - Credential rotation (`rotate`) and revocation (`revoke`) immediately fence active WSS sessions.
+
+## Worker approval and configuration apply
+
+The Hub stores two independent policies under **Security & Trust**. Each defaults to on, including for the auto-paired Worker in the all-in-one image. A settings write takes effect for subsequent operations. Changing either switch leaves existing approval decisions and pending reports in place.
+
+| Policy | Decision point | On | Off |
+| --- | --- | --- | --- |
+| `requireWorkerApproval` | Successful Pair | Pending until Admin selects Approve | Approved immediately |
+| `requireConfigurationApply` | First or changed scheduling inventory | Keep current Applied Config until Admin selects Apply | Apply the report in the same transaction |
+
+A pending Worker can connect, send heartbeats, report inventory and perform ordinary reads. Admin may approve or revoke it. Approval and Apply may occur in either order. Rotation preserves both decisions. Re-pairing a revoked ID starts a fresh approval decision and clears both snapshots. The Hub retains its revision high-water mark so an Apply from a previous pairing cannot match a new report.
+
+**Reported Config** is the latest valid scheduling inventory received through `worker.hello` or `worker.inventory`. **Applied Config** is the snapshot the Hub uses for Slot matching. Before the first report both are absent. With manual Apply the first report is pending and Applied remains absent. The Hub retains at most these two snapshots per Worker.
+
+The reviewable content is the advertised Slots, including enabled flags, roles, capabilities and their states, advisory capacity, and ordered Executor IDs and kinds. Executor order matters for default selection. Host observations and timestamps remain ordinary telemetry. Hub URL, process commands, arguments, timeouts and credentials stay local. The Hub assigns an increasing per-Worker revision when reviewable content changes. A repeated report, including reconnect, refreshes observations and preserves any pending decision. The Worker-local inventory revision is independent of the revision an Admin approves. Stale epochs cannot change either snapshot.
+
+The Worker watches its local `worker.yaml` and validates a replacement before activating it. An invalid edit keeps the last valid runtime configuration and reports a local diagnostic. For a valid scheduling change it pauses new claims before switching adapters and reporting the change. It resumes processing hints once the Hub has acknowledged the current inventory. The Hub only offers new work when the Worker is approved and the latest report is applied. Configuration changes preserve the execution handle and cancellation/reporting path for each committed Delivery, including a claim whose reply is in flight. Apply never writes `worker.yaml`, installs a Harness or restarts one.
 
 ## Wakeup and Claim
 
-1. For a `queued` Task whose dependencies are all `finished`, the Hub selects one online, unrevoked Worker with an enabled Slot that meets the Task's required capabilities. It sends `hub.wakeup { taskId, eligibleSlotIds }`. The first hint may honor `preferredWorkerId`. The bounded periodic scan rotates subsequent hints in Worker ID order while the Task remains queued. Rotation is held in memory.
+1. For a `queued` Task whose dependencies are all `finished`, the Hub selects one online, approved and unrevoked Worker whose reported revision is applied, with an enabled Slot that meets the Task's required capabilities. It sends `hub.wakeup { taskId, eligibleSlotIds }`. The first hint may honor `preferredWorkerId`. The bounded periodic scan rotates subsequent hints in Worker ID order while the Task remains queued. Rotation is held in memory.
 2. The hint leaves the Task queued and creates neither a reservation nor a Delivery. The Worker selects one of the hinted Slots that is free locally and explicitly claims with the Task ID, Slot ID, and live `connectionEpoch` (`POST /v1/workers/claim`).
-3. The Hub atomically rechecks readiness, ownership, Slot eligibility, and Delivery uniqueness. The Worker keeps an unanswered claim in memory and retries the same Task and Slot after reconnect. The Hub returns the same active Delivery to its original Worker and Slot at the current epoch.
+3. Before creating a Delivery the Hub atomically rechecks approval, the reported and applied revisions, readiness, ownership, applied Slot eligibility, and Delivery uniqueness. Clearing the last approval gate triggers a wakeup pass for queued Tasks. The Worker keeps an unanswered claim in memory and retries the same Task and Slot after reconnect. The Hub returns the same active Delivery to its original Worker and Slot at the current epoch.
 4. The winning Worker durably registers the returned `deliveryId` before invoking the Harness. A replay for a registered Delivery does not invoke the Harness again. If the Worker process itself is lost before registration, the Hub retains the assignment and exposes the outstanding Delivery.
 
 Slot and Capability are hard constraints. `preferredWorkerId`, `preferredRole`, and `preferredExecutorId` are soft preferences that never block a claim.
