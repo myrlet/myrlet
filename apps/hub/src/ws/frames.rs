@@ -114,7 +114,10 @@ impl Session<'_> {
             .store
             .update_worker_inventory(self.worker_id.clone(), self.epoch, inventory.clone(), now)
             .await;
-        let accepted = update.unwrap_or(false);
+        let (accepted, events) = update.unwrap_or((false, Vec::new()));
+        for event in events {
+            self.state.publish_event(Some(event));
+        }
         self.reply(
             WorkerWireKind::WorkerInventoryAck,
             WorkerInventoryAckPayload {
