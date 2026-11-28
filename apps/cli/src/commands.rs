@@ -220,6 +220,24 @@ pub async fn execute<W: Write>(
                 .map_err(runtime)?;
             render(output::config_applied(stdout, &worker_id, &response, json))
         }
+        Command::PolicyShow => {
+            let settings = client.security_trust().await.map_err(runtime)?;
+            render(output::policy(stdout, &settings, json))
+        }
+        Command::PolicySet {
+            auto_approve,
+            auto_apply,
+        } => {
+            let request = myrlet_protocol::UpdateSecurityTrustRequest {
+                require_worker_approval: auto_approve.map(|enabled| !enabled),
+                require_configuration_apply: auto_apply.map(|enabled| !enabled),
+            };
+            let stored = client
+                .update_security_trust(&request)
+                .await
+                .map_err(runtime)?;
+            render(output::policy(stdout, &stored, json))
+        }
         Command::EventsWatch { cursor, limit } => watch(&client, cursor, limit, json, stdout).await,
         Command::Done { .. }
         | Command::ResultCheck { .. }

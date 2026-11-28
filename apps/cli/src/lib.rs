@@ -35,6 +35,9 @@ Hub reads (Owner or Worker credential):
   events watch [--cursor <seq>] [--limit <n>]
 
 Owner writes (Admin credential):
+  policy show                              Read automatic approval and apply policies
+  policy set [--auto-approve <bool>] [--auto-apply <bool>]
+                                           Enable/disable automatic approval or apply
   tasks submit --file <def.json> | --title <t> --prompt <p> [--idempotency-key <k>]
                [--parent-task-id <id>] [--depends-on <id>]... [--capability <name>]...
   tasks import --file <bundle.json> [--idempotency-key <k>]

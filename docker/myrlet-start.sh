@@ -113,6 +113,27 @@ worker_dir="${MYRLET_HOME}/worker"
 worker_credentials="${worker_dir}/credentials.json"
 worker_config="${worker_dir}/worker.yaml"
 
+# --- All-in-one trust policies ---------------------------------------------
+# A single-machine deployment enrolls exactly one Worker on first boot, so the Hub's
+# own policies decide whether that pair is approved and whether its first report is
+# applied; this script never inspects or names a Worker. Enable both automatic
+# policies once (they persist in the Hub database); an operator who turned either off
+# for a reason keeps that choice. The two switches stay independent, and every later
+# report still goes through the same Hub rules. Existing installs are left untouched.
+if [ ! -f "$worker_credentials" ]; then
+  log "enabling automatic approval and configuration apply for this Hub"
+  set +e
+  MYRLET_HUB_URL="$local_hub_url" \
+    "$CLI_BIN" --json policy set --auto-approve true --auto-apply true >/dev/null
+  policies_status=$?
+  set -e
+  if [ "$policies_status" -eq 0 ]; then
+    log "automatic approval and configuration apply are enabled"
+  else
+    log "warning: could not enable the Hub policies; approve the local worker manually if it stays pending"
+  fi
+fi
+
 # --- Auto-pair the local Worker (first boot only) ---------------------------
 if [ ! -f "$worker_credentials" ]; then
   log "no worker credentials in ${worker_credentials}; enrolling a local worker"
@@ -171,55 +192,6 @@ log "validating worker configuration"
 log "starting worker"
 "$WORKER_BIN" &
 worker_pid=$!
-
-# --- Approve and apply the local Worker -------------------------------------
-# The Hub keeps both Security & Trust policies on, so a fresh pair is pending and
-# its first inventory needs review. A single-machine deployment has one trusted
-# Worker, so this entrypoint performs that review explicitly through the same
-# Admin CLI an operator would use. It is idempotent: approval repeats harmlessly
-# and Apply only runs while the reported revision is newer than the applied one.
-approve_local_worker() {
-  local worker_id revision applied
-  worker_id="$(MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers list \
-    | sed -n 's/.*"workerId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-  if [ -z "$worker_id" ]; then
-    return 1
-  fi
-  if ! MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers approve "$worker_id" >/dev/null 2>&1; then
-    return 1
-  fi
-  revision="$(MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers show "$worker_id" \
-    | sed -n 's/.*"reportedRevision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
-  applied="$(MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers show "$worker_id" \
-    | sed -n 's/.*"appliedRevision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
-  if [ -z "$revision" ]; then
-    return 1
-  fi
-  if [ "$revision" = "$applied" ]; then
-    return 0
-  fi
-  MYRLET_HUB_URL="$local_hub_url" "$CLI_BIN" --json workers config apply "$worker_id" \
-    --revision "$revision" >/dev/null 2>&1
-}
-
-waited=0
-approved=0
-while [ "$waited" -lt "$READY_TIMEOUT_SECONDS" ]; do
-  if ! kill -0 "$worker_pid" 2>/dev/null; then
-    die "the local worker exited during startup."
-  fi
-  if approve_local_worker; then
-    approved=1
-    break
-  fi
-  sleep 1
-  waited=$((waited + 1))
-done
-if [ "$approved" -ne 1 ]; then
-  log "warning: could not approve the local worker within ${READY_TIMEOUT_SECONDS}s; it stays pending"
-else
-  log "local worker approved and its inventory applied"
-fi
 
 # --- Supervise --------------------------------------------------------------
 log "myrlet is running (hub pid ${hub_pid}, worker pid ${worker_pid})"

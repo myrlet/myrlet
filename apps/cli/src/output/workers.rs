@@ -3,8 +3,8 @@
 use std::io::{self, Write};
 
 use myrlet_protocol::{
-    ApplyWorkerConfigResponse, SnapshotWorker, WorkerApprovalStatus, WorkerDetail,
-    WorkerListResponse, WorkerSchedulingConfig,
+    ApplyWorkerConfigResponse, SecurityTrustSettings, SnapshotWorker, WorkerApprovalStatus,
+    WorkerDetail, WorkerListResponse, WorkerSchedulingConfig,
 };
 
 use super::{label, optional, to_json};
@@ -255,4 +255,25 @@ pub fn approved<W: Write>(
         return to_json(out, &payload);
     }
     writeln!(out, "Approved worker {worker_id}")
+}
+
+/// Print the two Hub-wide Security & Trust policies.
+pub fn policy<W: Write>(
+    out: &mut W,
+    settings: &SecurityTrustSettings,
+    as_json: bool,
+) -> io::Result<()> {
+    if as_json {
+        return to_json(out, settings);
+    }
+    writeln!(
+        out,
+        "AutoApproveWorkers: {}",
+        !settings.require_worker_approval
+    )?;
+    writeln!(
+        out,
+        "AutoApplyConfiguration: {}",
+        !settings.require_configuration_apply
+    )
 }

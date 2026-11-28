@@ -71,6 +71,13 @@ pub enum Command {
         ttl_seconds: Option<u64>,
         suggested_worker_id: Option<String>,
     },
+    /// Read both Hub-wide Security & Trust policy values.
+    PolicyShow,
+    /// Enable or disable automatic Worker approval and configuration application.
+    PolicySet {
+        auto_approve: Option<bool>,
+        auto_apply: Option<bool>,
+    },
     WorkersRotate {
         id: String,
     },
@@ -201,6 +208,19 @@ impl RawArgs {
         self.values.remove(flag).unwrap_or_default()
     }
 
+    fn boolean(&mut self, flag: &str) -> Result<Option<bool>, CliError> {
+        match self.single(flag) {
+            None => Ok(None),
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Ok(Some(true)),
+                "false" | "0" | "no" | "off" => Ok(Some(false)),
+                _ => Err(CliError::Usage(format!(
+                    "{flag} expects true or false, got {raw:?}"
+                ))),
+            },
+        }
+    }
+
     fn number<T: std::str::FromStr>(&mut self, flag: &str) -> Result<Option<T>, CliError> {
         match self.single(flag) {
             None => Ok(None),
@@ -235,6 +255,7 @@ fn parse_command(scanner: &mut Scanner) -> Result<Command, CliError> {
     match scanner.take_token().as_deref() {
         Some("tasks") => tasks::parse(scanner),
         Some("workers") => parse_workers(scanner),
+        Some("policy") => parse_policy(scanner),
         Some("events") => parse_events(scanner),
         Some("done") => {
             let mut raw = RawArgs::parse(scanner)?;
@@ -293,6 +314,35 @@ fn parse_workers(scanner: &mut Scanner) -> Result<Command, CliError> {
             "unknown workers command {other:?}"
         ))),
         None => Err(CliError::Usage("workers requires a command".to_string())),
+    }
+}
+
+/// `policy show` or `policy set [--auto-approve <bool>] [--auto-apply <bool>]`.
+///
+/// The two switches are independent: disabling one leaves the other stored value alone.
+fn parse_policy(scanner: &mut Scanner) -> Result<Command, CliError> {
+    match scanner.take_token().as_deref() {
+        Some("show") => {
+            RawArgs::parse(scanner)?.finish("policy show")?;
+            Ok(Command::PolicyShow)
+        }
+        Some("set") => {
+            let mut raw = RawArgs::parse(scanner)?;
+            let auto_approve = raw.boolean("--auto-approve")?;
+            let auto_apply = raw.boolean("--auto-apply")?;
+            raw.finish("policy set")?;
+            if auto_approve.is_none() && auto_apply.is_none() {
+                return Err(usage(
+                    "policy set requires --auto-approve and/or --auto-apply",
+                ));
+            }
+            Ok(Command::PolicySet {
+                auto_approve,
+                auto_apply,
+            })
+        }
+        Some(other) => Err(CliError::Usage(format!("unknown policy command {other:?}"))),
+        None => Err(CliError::Usage("policy requires show or set".to_string())),
     }
 }
 
