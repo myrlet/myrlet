@@ -95,6 +95,12 @@
   border-color: var(--status-revoked-border);
 }
 
+.status-badge[data-tone="pending"] {
+  color: var(--status-pending-fg);
+  background: var(--status-pending-bg);
+  border-color: var(--status-pending-border);
+}
+
 .connection-pill,
 .reachability-pill {
   display: inline-flex;

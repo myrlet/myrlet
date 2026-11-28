@@ -11,7 +11,7 @@ import { vi } from "vitest";
 
 import App from "../../App";
 import { stubColorScheme } from "./appearance";
-import { buildSnapshot, taskRecord, workerRecord } from "./fixtures";
+import { buildSnapshot, taskRecord, trustSettings, workerRecord } from "./fixtures";
 import { idleEventStream, jsonResponse, stubFetch } from "./hub";
 
 function defaultWorkspaceHandler(url: string): Response | Promise<Response> {
@@ -21,6 +21,9 @@ function defaultWorkspaceHandler(url: string): Response | Promise<Response> {
   }
   if (path.startsWith("/v1/snapshot")) {
     return jsonResponse(buildSnapshot());
+  }
+  if (path.startsWith("/v1/settings/security-trust")) {
+    return jsonResponse(trustSettings());
   }
   if (path.startsWith("/v1/workers")) {
     return jsonResponse({ workers: [workerRecord()] });

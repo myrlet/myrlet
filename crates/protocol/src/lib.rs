@@ -11,6 +11,7 @@ pub mod progress;
 pub mod result;
 pub mod snapshot;
 pub mod task;
+pub mod trust;
 pub mod ws;
 
 /// Protocol version identifier for the Myrlet Worker WSS channel.
@@ -30,4 +31,5 @@ pub use progress::*;
 pub use result::*;
 pub use snapshot::*;
 pub use task::*;
+pub use trust::*;
 pub use ws::*;

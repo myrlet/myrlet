@@ -10,7 +10,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HubClient } from "../../api/client";
-import { buildSnapshot, taskSummary, workerRecord } from "../support/fixtures";
+import { buildSnapshot, taskSummary, trustSettings, workerRecord } from "../support/fixtures";
 import { idleEventStream, jsonResponse, stubFetch } from "../support/hub";
 import {
   boardFloatingBar,
@@ -104,6 +104,9 @@ describe("Work Atlas Board", () => {
       }
       if (path.startsWith("/v1/snapshot")) {
         return jsonResponse({ ...buildSnapshot(), totalTasks: 2, tasks: snapshotTasks });
+      }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse(trustSettings());
       }
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });

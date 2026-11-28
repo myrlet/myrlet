@@ -2,12 +2,13 @@
  * Workers & Pairing — the inventory surface shared by the slide-over drawer.
  *
  * Three bands, top to bottom: a one-step pairing card that issues a single-use
- * enrollment code and a copy-ready `worker pair` command, a four-cell hardware
- * KPI strip, and the enrolled Worker cards with their reported Slots.
+ * enrollment code and a copy-ready `worker pair` command, a KPI strip, and the
+ * enrolled Worker cards with their Slots.
  *
- * Inventory is shown verbatim: advisory capacity of `null` is unknown and
- * renders as `—`, never `0`. Status filtering and search narrow the same list;
- * each Worker card owns its own credential actions.
+ * Trust is explicit. A pending Worker can connect but never claims until an
+ * Admin approves it; a changed scheduling report stays under review until an
+ * Admin applies the exact revision they saw. Inventory is shown verbatim:
+ * advisory capacity of `null` is unknown and renders as `—`, never `0`.
  */
 
 import { useMemo, useState } from "react";
@@ -17,6 +18,7 @@ import type {
   CreateEnrollmentCodeResponse,
   RotateWorkerResponse,
   WorkerRecord,
+  WorkerSchedulingConfig,
 } from "../api/types";
 import { PairingCard } from "./workers/PairingCard";
 import { WorkerCard } from "./workers/WorkerCard";
@@ -32,19 +34,35 @@ import type { WorkerFilter } from "./workers/workerFilters";
 export interface WorkersViewProps {
   readonly baseUrl: string;
   readonly workers: readonly WorkerRecord[];
+  readonly reported: Readonly<Record<string, WorkerSchedulingConfig | null>>;
   readonly issued: CreateEnrollmentCodeResponse | null;
   readonly busy: boolean;
   readonly onCreateEnrollmentCode: (
     request: CreateEnrollmentCodeRequest,
   ) => Promise<void>;
+  readonly onLoadReported: (workerId: string) => Promise<void>;
+  readonly onApproveWorker: (workerId: string) => Promise<void>;
+  readonly onApplyWorkerConfig: (workerId: string, revision: number) => Promise<void>;
   readonly onRotateWorker: (workerId: string) => Promise<RotateWorkerResponse>;
   readonly onRevokeWorker: (workerId: string) => Promise<void>;
+  readonly onOpenPairing: () => void;
   readonly onCopyText: (label: string, text: string) => void;
 }
 
 export function WorkersView(props: WorkersViewProps) {
-  const { baseUrl, workers, onCreateEnrollmentCode, onRotateWorker, onRevokeWorker, onCopyText } =
-    props;
+  const {
+    baseUrl,
+    workers,
+    reported,
+    onCreateEnrollmentCode,
+    onLoadReported,
+    onApproveWorker,
+    onApplyWorkerConfig,
+    onRotateWorker,
+    onRevokeWorker,
+    onOpenPairing,
+    onCopyText,
+  } = props;
 
   const [filter, setFilter] = useState<WorkerFilter>("all");
   const [query, setQuery] = useState("");
@@ -129,8 +147,13 @@ export function WorkersView(props: WorkersViewProps) {
               <WorkerCard
                 key={worker.workerId}
                 worker={worker}
+                reported={reported[worker.workerId] ?? null}
+                onLoadReported={onLoadReported}
+                onApproveWorker={onApproveWorker}
+                onApplyWorkerConfig={onApplyWorkerConfig}
                 onRotateWorker={onRotateWorker}
                 onRevokeWorker={onRevokeWorker}
+                onOpenPairing={onOpenPairing}
                 onCopyText={onCopyText}
               />
             ))}

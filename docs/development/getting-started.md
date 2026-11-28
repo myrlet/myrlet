@@ -53,6 +53,23 @@ cargo run -p myrlet-worker-daemon -- check-config
 cargo run -p myrlet-worker-daemon
 ```
 
+The Hub starts with both **Security & Trust** policies on, so a freshly paired Worker is
+`pending`. In the owner terminal, approve it and apply the inventory it reported:
+
+```bash
+export MYRLET_HUB_URL='http://127.0.0.1:4140'
+worker_id="$(cargo run --quiet -p myrlet-cli -- --json workers list | jq -er '.workers[0].workerId')"
+cargo run --quiet -p myrlet-cli -- --json workers config show "$worker_id"
+cargo run --quiet -p myrlet-cli -- --json workers approve "$worker_id"
+revision="$(cargo run --quiet -p myrlet-cli -- --json workers show "$worker_id" | jq -er '.worker.reportedRevision')"
+cargo run --quiet -p myrlet-cli -- --json workers config apply "$worker_id" --revision "$revision"
+```
+
+A later scheduling change to `worker.yaml` is picked up live: the Worker pauses claims,
+activates the new adapters, reports the change, and resumes once the Hub acknowledges it —
+but the Hub only schedules the new Slots after another `workers config apply` for the new
+revision.
+
 ## 4. Submit a Task
 
 In a third terminal:

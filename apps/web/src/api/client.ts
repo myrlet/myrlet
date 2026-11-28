@@ -10,6 +10,7 @@
  */
 
 import type {
+  ApplyWorkerConfigResponse,
   CreateEnrollmentCodeRequest,
   CreateEnrollmentCodeResponse,
   ErrorResponse,
@@ -18,9 +19,11 @@ import type {
   HubEventEnvelope,
   ListWorkersResponse,
   RotateWorkerResponse,
+  SecurityTrustSettings,
   TaskRecord,
   TaskTreeDirection,
   TaskTreeResponse,
+  UpdateSecurityTrustRequest,
   WorkerDetail,
 } from "./types";
 
@@ -85,7 +88,7 @@ export interface EventStreamHandlers {
   onDisconnect?: (error?: unknown) => void;
 }
 
-type HttpMethod = "GET" | "POST";
+type HttpMethod = "GET" | "POST" | "PATCH";
 
 type QueryValue = string | number | boolean | null | undefined;
 type QueryParams = Record<string, QueryValue>;
@@ -328,6 +331,37 @@ export class HubClient {
   /** Revoke a Worker's credential and disconnect its live WSS session. */
   async revokeWorker(workerId: string): Promise<void> {
     await this.request<void>("POST", `/v1/workers/${encodeURIComponent(workerId)}/revoke`);
+  }
+
+  /** Approve a pending Worker so it may claim Tasks. */
+  async approveWorker(workerId: string): Promise<void> {
+    await this.request<void>("POST", `/v1/workers/${encodeURIComponent(workerId)}/approve`);
+  }
+
+  /** Apply the scheduling revision the Admin actually reviewed. */
+  async applyWorkerConfig(
+    workerId: string,
+    revision: number,
+  ): Promise<ApplyWorkerConfigResponse> {
+    return this.request<ApplyWorkerConfigResponse>(
+      "POST",
+      `/v1/workers/${encodeURIComponent(workerId)}/config/apply`,
+      { body: { revision } },
+    );
+  }
+
+  /** Read the two Hub-wide Security & Trust policies. */
+  async getSecurityTrust(): Promise<SecurityTrustSettings> {
+    return this.request<SecurityTrustSettings>("GET", "/v1/settings/security-trust");
+  }
+
+  /** Update one or both policies; omitted fields keep their stored values. */
+  async updateSecurityTrust(
+    request: UpdateSecurityTrustRequest,
+  ): Promise<SecurityTrustSettings> {
+    return this.request<SecurityTrustSettings>("PATCH", "/v1/settings/security-trust", {
+      body: request,
+    });
   }
 
   /* -------------------------------- SSE -------------------------------- */

@@ -50,15 +50,14 @@ const WORKER: WorkerRecord = {
   workerId: "wkr_00000000000a",
   online: true,
   revoked: false,
+  approval: "approved",
   connectionEpoch: 4,
   lastSeenAtMs: 1_700_000_000_000,
   activeDeliveries: 1,
-  inventory: {
-    revision: 1,
-    observedAtMs: 1_700_000_000_000,
-    host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
-    slots: [],
-  },
+  host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+  reportedRevision: 1,
+  appliedRevision: 1,
+  appliedConfig: { slots: [] },
 };
 
 function summary(): SnapshotTaskSummary {

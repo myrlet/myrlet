@@ -8,7 +8,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { buildSnapshot, taskRecord, workerRecord } from "../support/fixtures";
+import { buildSnapshot, taskRecord, trustSettings, workerRecord } from "../support/fixtures";
 import { idleEventStream, jsonResponse, stubFetch } from "../support/hub";
 import {
   connectWorkspace,
@@ -30,6 +30,9 @@ describe("Task Detail reads", () => {
       }
       if (path.startsWith("/v1/snapshot")) {
         return jsonResponse(buildSnapshot());
+      }
+      if (path.startsWith("/v1/settings/security-trust")) {
+        return jsonResponse(trustSettings());
       }
       if (path.startsWith("/v1/workers")) {
         return jsonResponse({ workers: [workerRecord()] });

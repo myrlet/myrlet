@@ -23,13 +23,14 @@ function worker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     workerId: "wkr_00000000000a",
     online: true,
     revoked: false,
+    approval: "approved",
     connectionEpoch: 4,
     lastSeenAtMs: 1_700_000_000_000,
     activeDeliveries: 1,
-    inventory: {
-      revision: 2,
-      observedAtMs: 1_700_000_000_000,
-      host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    reportedRevision: 2,
+    appliedRevision: 2,
+    appliedConfig: {
       slots: [
         {
           slotId: "mac-default",
@@ -98,6 +99,7 @@ function Harness({
           onlineWorkerCount={workers.filter((record) => record.online).length}
           baseUrl=""
           workers={workers}
+          reported={{}}
           issued={null}
           busy={false}
           onRefresh={() => undefined}
@@ -108,6 +110,10 @@ function Harness({
           onCreateEnrollmentCode={
             onCreateEnrollmentCode ?? (async () => undefined)
           }
+          onLoadReported={async () => undefined}
+          onApproveWorker={async () => undefined}
+          onApplyWorkerConfig={async () => undefined}
+          onOpenPairing={() => undefined}
           onRotateWorker={
             onRotateWorker ??
             (async (workerId: string) => ({

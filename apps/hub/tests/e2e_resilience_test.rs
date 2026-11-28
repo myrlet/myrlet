@@ -272,6 +272,29 @@ fn worker_offline(cli: &Cli<'_>) -> bool {
     worker_json(cli)["online"].as_bool() == Some(false)
 }
 
+/// Approve the single enrolled Worker and apply the revision it reported, clearing both
+/// default-on trust gates before any Task can be claimed.
+fn clear_trust_gates(cli: &Cli<'_>) {
+    let worker_id = worker_json(cli)["workerId"]
+        .as_str()
+        .expect("worker id")
+        .to_owned();
+    cli.run(&["--json", "workers", "approve", &worker_id]);
+    let detail = cli.run(&["--json", "workers", "show", &worker_id]);
+    let revision = detail["worker"]["reportedRevision"]
+        .as_u64()
+        .expect("the online Worker reported an inventory");
+    cli.run(&[
+        "--json",
+        "workers",
+        "config",
+        "apply",
+        &worker_id,
+        "--revision",
+        &revision.to_string(),
+    ]);
+}
+
 fn json_file_count(dir: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -338,6 +361,10 @@ async fn a_queued_task_waits_for_a_compatible_worker_to_claim_it() {
     enroll_and_pair(&cli, &worker_bin, &home, &hub_url);
     std::fs::write(home.join("worker/worker.yaml"), gpu_yaml(&hub_url)).expect("write worker.yaml");
     let mut worker_guard = spawn_daemon(&worker_bin, &[("MYRLET_HOME", env_home)]);
+    poll("worker online", Duration::from_secs(10), || {
+        online_epoch(&cli)
+    });
+    clear_trust_gates(&cli);
 
     let shown = poll("the queued task to finish", Duration::from_secs(15), || {
         let shown = show(&cli, &task);
@@ -378,6 +405,7 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     let epoch_one = poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let counted = create_task(&cli, "resync-a", "Count one run", "shell", "exec-count");
     poll("Task A to finish", Duration::from_secs(15), || {
@@ -391,14 +419,21 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     });
     let deliveries = home.join("worker/state/deliveries");
     poll("Task B registered", Duration::from_secs(10), || {
-        (json_file_count(&deliveries) >= 2).then_some(())
+        let registered = json_file_count(&deliveries) >= 2;
+        registered.then_some(())
     });
+    // Registration precedes adapter submit; wait for the running sleep to be durable
+    // before killing the Worker, rather than racing its own start.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     first.0.kill().expect("kill worker instance 1");
     first.0.wait().expect("wait worker instance 1");
     poll("worker offline", Duration::from_secs(15), || {
         worker_offline(&cli).then_some(())
     });
+    // The killed Worker cannot flush a Finish queued just as it died; resync/retry at the
+    // new epoch must carry the outcome without rerunning the completed Task A.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
     let cancel_args = [
         "--json",
         "tasks",
@@ -424,6 +459,11 @@ async fn worker_restart_resync_prevents_double_submit_and_replays_offline_cancel
     poll("worker online again", Duration::from_secs(15), || {
         online_epoch(&cli).filter(|epoch| *epoch > epoch_one)
     });
+    // Rotation and restart preserve approval; only a changed inventory needs an Apply.
+    let current = worker_json(&cli);
+    if current["reportedRevision"] != current["appliedRevision"] {
+        clear_trust_gates(&cli);
+    }
     poll("cancel acknowledged", Duration::from_secs(10), || {
         let shown = show(&cli, &sleeping);
         let delivery = field(&shown, "currentDelivery")?;
@@ -486,6 +526,7 @@ async fn a_silent_long_task_without_progress_finishes_with_its_own_result() {
     poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let task = create_task(
         &cli,
@@ -544,6 +585,7 @@ async fn a_task_configured_for_more_than_two_hours_is_not_timed_out_early() {
     poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let task = create_task_with_timeout(
         &cli,
@@ -615,6 +657,7 @@ async fn a_real_duration_long_task_runs_and_finishes_once() {
     poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let timeout = seconds + 600;
     let task = create_task_with_timeout(&cli, "real-long", "Real long task", "exec-long", timeout);
@@ -664,6 +707,7 @@ async fn transport_disconnect_across_process_exit_replays_result_and_finish_once
     let first_epoch = poll("worker online", Duration::from_secs(10), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
 
     let task = create_task(
         &cli,
@@ -732,6 +776,7 @@ async fn worker_uses_second_slot_when_only_it_meets_capability() {
     poll("two-slot worker online", Duration::from_secs(4), || {
         online_epoch(&cli)
     });
+    clear_trust_gates(&cli);
     let id = create_task(&cli, "two-slots", "test", "gpu", "exec-gpu");
     let limit = Instant::now() + Duration::from_secs(4);
     loop {

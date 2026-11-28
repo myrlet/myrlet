@@ -44,6 +44,7 @@ pub fn claim_task(
     if let Some(existing) = current_delivery(&tx, &request.task_id)? {
         // A lost claim acknowledgement is recovered by replaying the same claim: the
         // owning Worker gets its committed Delivery back, never a second execution.
+        // The approval gates apply only to new Deliveries, so replay ignores them.
         let replay = existing.state == DeliveryStatus::Accepted
             && existing.worker_id == *worker_id
             && existing.slot_id == request.slot_id
@@ -62,6 +63,9 @@ pub fn claim_task(
         }
         return Err(StoreError::AlreadyClaimed);
     }
+    if !worker.may_claim() {
+        return Err(StoreError::InvalidTransition);
+    }
     if row.status != TaskStatus::Queued || !are_dependencies_satisfied(&tx, &request.task_id)? {
         return Err(StoreError::InvalidTransition);
     }
@@ -73,7 +77,7 @@ pub fn claim_task(
         .clone()
         .or_else(|| definition.routing.preferred_executor_id.clone());
     let slot = claimable_slot(
-        &worker.inventory_json,
+        &worker.applied_config_json,
         &request.slot_id,
         &definition,
         request.executor_id.as_ref(),
@@ -116,21 +120,22 @@ pub fn claim_task(
     Ok((ClaimTaskResponse { task, delivery }, Some(event)))
 }
 
-/// Return the claimed Slot only when it is enabled and satisfies the Task's hard rules.
+/// Return the claimed Slot only when the applied snapshot enables it and it satisfies the
+/// Task's hard rules.
 fn claimable_slot(
-    inventory_json: &Option<String>,
+    applied_config_json: &Option<String>,
     slot_id: &SlotId,
     definition: &TaskDefinition,
     executor_id: Option<&ExecutorId>,
 ) -> Result<myrlet_protocol::SlotInventory, StoreError> {
-    let inventory: Option<myrlet_protocol::WorkerInventory> = match inventory_json {
+    let applied: Option<myrlet_protocol::WorkerSchedulingConfig> = match applied_config_json {
         Some(raw) => Some(serde_json::from_str(raw)?),
         None => None,
     };
-    let slot = inventory
+    let slot = applied
         .as_ref()
-        .and_then(|inventory| inventory.slots.iter().find(|slot| &slot.slot_id == slot_id))
-        .ok_or_else(|| StoreError::invalid("the reported Slot does not exist"))?
+        .and_then(|applied| applied.slots.iter().find(|slot| &slot.slot_id == slot_id))
+        .ok_or_else(|| StoreError::invalid("the applied Slot does not exist"))?
         .clone();
     if !slot.accepts(&definition.routing, executor_id) {
         return Err(StoreError::invalid(

@@ -21,11 +21,16 @@ type WorkersSurfaceProps = Pick<
   WorkersViewProps,
   | "baseUrl"
   | "workers"
+  | "reported"
   | "issued"
   | "busy"
   | "onCreateEnrollmentCode"
+  | "onLoadReported"
+  | "onApproveWorker"
+  | "onApplyWorkerConfig"
   | "onRotateWorker"
   | "onRevokeWorker"
+  | "onOpenPairing"
   | "onCopyText"
 >;
 
@@ -42,13 +47,18 @@ export function WorkersDrawer(props: WorkersDrawerProps) {
     onlineWorkerCount,
     baseUrl,
     workers,
+    reported,
     issued,
     busy,
     onRefresh,
     onClose,
     onCreateEnrollmentCode,
+    onLoadReported,
+    onApproveWorker,
+    onApplyWorkerConfig,
     onRotateWorker,
     onRevokeWorker,
+    onOpenPairing,
     onCopyText,
     returnFocusRef,
   } = props;
@@ -101,9 +111,14 @@ export function WorkersDrawer(props: WorkersDrawerProps) {
             busy={busy}
             baseUrl={baseUrl}
             workers={workers}
+            reported={reported}
             onCreateEnrollmentCode={onCreateEnrollmentCode}
+            onLoadReported={onLoadReported}
+            onApproveWorker={onApproveWorker}
+            onApplyWorkerConfig={onApplyWorkerConfig}
             onRotateWorker={onRotateWorker}
             onRevokeWorker={onRevokeWorker}
+            onOpenPairing={onOpenPairing}
             onCopyText={onCopyText}
           />
         </div>

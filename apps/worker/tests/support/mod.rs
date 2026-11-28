@@ -14,8 +14,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
 use myrlet_protocol::{
-    ClaimTaskRequest, ClaimTaskResponse, DeliveryId, DeliveryStatus, DeliveryView, FinishReceipt,
-    FinishReportRequest, ProgressReceipt, ProgressReportRequest, ResultReceipt,
+    ClaimTaskRequest, ClaimTaskResponse, DeliveryId, DeliveryStatus, DeliveryView, ExecutorId,
+    FinishReceipt, FinishReportRequest, ProgressReceipt, ProgressReportRequest, ResultReceipt,
     ResultReportRequest, TaskId, TaskStatus, WorkerId, WORKER_PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
@@ -70,6 +70,10 @@ struct HubState {
     lose_first_claim_reply: Arc<Mutex<bool>>,
     /// The committed Delivery, replayed to the owning Worker on a repeated claim.
     committed: Arc<Mutex<Option<DeliveryView>>>,
+    /// Hold one successful claim response until `claim_held` is cleared.
+    claim_gate: Option<Arc<tokio::sync::Notify>>,
+    claim_held: Arc<std::sync::atomic::AtomicBool>,
+    claim_executor_id: Option<ExecutorId>,
 }
 
 /// A running stub Hub with channels for observing and driving one Worker.
@@ -79,6 +83,8 @@ pub struct StubHub {
     frames: UnboundedReceiver<Value>,
     outbound: UnboundedSender<Value>,
     authorized: UnboundedReceiver<bool>,
+    claim_gate: Option<Arc<tokio::sync::Notify>>,
+    claim_held: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl StubHub {
@@ -113,6 +119,15 @@ impl StubHub {
             .await
             .expect("worker posted no report")
             .expect("report channel closed")
+    }
+
+    /// Let a claim held by [`start_with_hold_claim`] return its committed response.
+    pub fn release_claim(&self) {
+        self.claim_held
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(gate) = &self.claim_gate {
+            gate.notify_one();
+        }
     }
 
     /// A `task.cancel` frame for one Delivery.
@@ -151,30 +166,55 @@ pub async fn start_with_result_gate(
         stale_epoch,
         result_gate.map(|gate| (gate, StatusCode::OK)),
         false,
+        None,
+        None,
     )
     .await
 }
 
 /// Hold Result A until the test releases a gateway timeout while WSS stays connected.
 pub async fn start_with_result_timeout(gate: Arc<tokio::sync::Notify>) -> StubHub {
-    launch(None, Some((gate, StatusCode::GATEWAY_TIMEOUT)), false).await
+    launch(
+        None,
+        Some((gate, StatusCode::GATEWAY_TIMEOUT)),
+        false,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Start a stub Hub whose first claim commits and then truncates its acknowledgement,
 /// so the Worker observes a transport loss after the Delivery already exists.
 pub async fn start_with_lost_claim_reply(stale_epoch: Option<u64>) -> StubHub {
-    launch(stale_epoch, None, true).await
+    launch(stale_epoch, None, true, None, None).await
+}
+
+/// Hold one claim response and return the named resolved Executor.
+pub async fn start_with_held_claim_for(stale_epoch: Option<u64>, executor_id: &str) -> StubHub {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    launch(
+        stale_epoch,
+        None,
+        false,
+        Some(Arc::clone(&gate)),
+        Some(ExecutorId::new(executor_id)),
+    )
+    .await
 }
 
 async fn launch(
     stale_epoch: Option<u64>,
     result_gate: Option<(Arc<tokio::sync::Notify>, StatusCode)>,
     lose_first_claim_reply: bool,
+    claim_gate: Option<Arc<tokio::sync::Notify>>,
+    claim_executor_id: Option<ExecutorId>,
 ) -> StubHub {
     let (reports_tx, reports) = mpsc::unbounded_channel();
     let (frames_tx, frames) = mpsc::unbounded_channel();
     let (outbound_tx, outbound) = mpsc::unbounded_channel();
     let (authorized_tx, authorized) = mpsc::unbounded_channel();
+    let claim_held = Arc::new(std::sync::atomic::AtomicBool::new(claim_gate.is_some()));
     let state = HubState {
         reports: reports_tx,
         frames: frames_tx,
@@ -184,6 +224,9 @@ async fn launch(
         result_gate,
         lose_first_claim_reply: Arc::new(Mutex::new(lose_first_claim_reply)),
         committed: Arc::default(),
+        claim_gate: claim_gate.clone(),
+        claim_held: Arc::clone(&claim_held),
+        claim_executor_id: claim_executor_id.clone(),
     };
     let router = Router::new()
         .route("/v1/workers/connect", get(ws_handler))
@@ -211,6 +254,8 @@ async fn launch(
         frames,
         outbound: outbound_tx,
         authorized,
+        claim_gate,
+        claim_held,
     }
 }
 
@@ -375,6 +420,10 @@ async fn claim(
             Json(json!({ "error": "StaleDelivery", "message": "stale epoch" })),
         );
     }
+    let executor_id = body
+        .executor_id
+        .clone()
+        .or_else(|| state.claim_executor_id.clone());
     let losing = std::mem::take(&mut *state.lose_first_claim_reply.lock().await);
     // Replaying the same claim after a lost reply returns the committed Delivery.
     if let Some(mut committed) = state.committed.lock().await.clone() {
@@ -400,7 +449,7 @@ async fn claim(
         task_id: body.task_id.clone(),
         worker_id: WorkerId::new(WORKER_ID),
         slot_id: body.slot_id.clone(),
-        executor_id: body.executor_id.clone(),
+        executor_id,
         connection_epoch: body.connection_epoch,
         state: DeliveryStatus::Accepted,
         cancel_state: None,
@@ -413,6 +462,12 @@ async fn claim(
         task: stub_task(&body.task_id),
         delivery,
     };
+    let gate_this_claim = !losing && state.claim_held.load(std::sync::atomic::Ordering::SeqCst);
+    if gate_this_claim {
+        if let Some(gate) = &state.claim_gate {
+            gate.notified().await;
+        }
+    }
     if losing {
         *state.committed.lock().await = Some(response.delivery.clone());
         // Committed at the Hub, but the acknowledgement is lost in transit: the
@@ -507,6 +562,14 @@ pub fn welcome_frame_with(heartbeat_interval_ms: u64, lease_ttl_ms: u64) -> Valu
             "heartbeatIntervalMs": heartbeat_interval_ms,
             "leaseTtlMs": lease_ttl_ms,
         }),
+    )
+}
+
+/// `worker.inventory_ack` for one inventory revision.
+pub fn inventory_ack(revision: u64, accepted: bool) -> Value {
+    hub_frame(
+        "worker.inventory_ack",
+        json!({ "revision": revision, "accepted": accepted }),
     )
 }
 

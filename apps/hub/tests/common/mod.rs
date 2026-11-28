@@ -1,4 +1,8 @@
 //! Shared loopback Hub harness for the integration tests.
+//!
+//! Each test binary compiles this module separately, so helpers a given binary does not
+//! use are expected rather than dead.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -148,6 +152,39 @@ impl Hub {
             socket,
             welcome["payload"]["connectionEpoch"].as_u64().unwrap(),
         )
+    }
+
+    /// Approve the Worker and apply its latest reported inventory, clearing both
+    /// default-on trust gates so ordinary claim tests can proceed.
+    pub async fn clear_trust_gates(&self, worker_id: &str) {
+        assert_eq!(
+            self.post_admin(&format!("/v1/workers/{worker_id}/approve"), None, None)
+                .await
+                .0,
+            204
+        );
+        let detail = self.get_admin(&format!("/v1/workers/{worker_id}")).await;
+        assert_eq!(detail.0, 200, "{}", detail.1);
+        let revision = detail.1["worker"]["reportedRevision"]
+            .as_u64()
+            .expect("the connected Worker reported an inventory");
+        let body = json!({ "revision": revision }).to_string();
+        let applied = self
+            .post_admin(
+                &format!("/v1/workers/{worker_id}/config/apply"),
+                None,
+                Some(&body),
+            )
+            .await;
+        assert_eq!(applied.0, 200, "{}", applied.1);
+    }
+
+    /// Pair, connect, and clear both trust gates in one step.
+    pub async fn enrolled(&self) -> (String, String, Socket, u64) {
+        let (worker_id, credential) = self.pair().await;
+        let (socket, epoch) = self.connect(&worker_id, &credential).await;
+        self.clear_trust_gates(&worker_id).await;
+        (worker_id, credential, socket, epoch)
     }
 
     /// Submit one Task, consume the wakeup, and claim it for `slot-a`.

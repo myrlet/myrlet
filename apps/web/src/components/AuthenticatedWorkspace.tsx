@@ -10,6 +10,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { HubApiError } from "../api/client";
+import type { UpdateSecurityTrustRequest } from "../api/types";
 import { TASK_STATUS_META } from "../format";
 import { isWorkerOnline } from "../model/workerPresence";
 import type { Theme } from "../state/useAppearance";
@@ -44,7 +46,20 @@ type WorkspaceHub = Pick<ReturnType<typeof useHub>,
   | "selectedTaskId" | "selectedTask" | "selectedTree" | "detailLoading" | "detailError"
   | "selectTask" | "retrySelected" | "clearDetailError" | "refresh" | "disconnect"
   | "enrollmentCode" | "issuingCode" | "createEnrollmentCode" | "rotateWorker" | "revokeWorker"
+  | "approveWorker" | "applyWorkerConfig" | "reportedConfigs" | "loadReportedConfig"
+  | "settings" | "updateSecurityTrust"
 >;
+
+/** One Hub failure as short operator-facing text. */
+function describeHubError(error: unknown): string {
+  if (error instanceof HubApiError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "The Hub command could not be completed.";
+}
 
 interface AuthenticatedWorkspaceProps {
   readonly hub: WorkspaceHub;
@@ -68,6 +83,8 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /* Phone layout: the five status counters collapse into one filter menu. */
   const [compactStatusBar, setCompactStatusBar] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const workspaceRef = useRef<HTMLDivElement>(null);
   const atlasRef = useRef<TaskGraphControls | null>(null);
@@ -155,6 +172,38 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
       notify("Worker revoked");
     },
     [hub.revokeWorker, notify],
+  );
+
+  const approveWorker = useCallback(
+    async (workerId: string): Promise<void> => {
+      await hub.approveWorker(workerId);
+      notify("Worker approved");
+    },
+    [hub.approveWorker, notify],
+  );
+
+  const applyWorkerConfig = useCallback(
+    async (workerId: string, revision: number): Promise<void> => {
+      await hub.applyWorkerConfig(workerId, revision);
+      notify(`Applied revision ${revision}`);
+    },
+    [hub.applyWorkerConfig, notify],
+  );
+
+  const changeSecurityTrust = useCallback(
+    async (request: UpdateSecurityTrustRequest): Promise<void> => {
+      setSettingsBusy(true);
+      setSettingsError(null);
+      try {
+        await hub.updateSecurityTrust(request);
+      } catch (trustError) {
+        setSettingsError(describeHubError(trustError));
+        throw trustError;
+      } finally {
+        setSettingsBusy(false);
+      }
+    },
+    [hub.updateSecurityTrust],
   );
 
   /* ---------------------------- Responsiveness ------------------------- */
@@ -260,6 +309,10 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
         onChangeTheme={onChangeTheme}
         onDisconnect={hub.disconnect}
         onOpenShortcuts={openShortcuts}
+        settings={hub.settings}
+        settingsBusy={settingsBusy}
+        settingsError={settingsError}
+        onChangeSecurityTrust={changeSecurityTrust}
       />
 
       <div className="workspace-split">
@@ -382,13 +435,18 @@ export function AuthenticatedWorkspace({ hub, baseUrl, theme, onChangeTheme, not
           onlineWorkerCount={onlineWorkerCount}
           baseUrl={baseUrl}
           workers={workers}
+          reported={hub.reportedConfigs}
           issued={hub.enrollmentCode}
           busy={hub.issuingCode}
           onRefresh={refresh}
           onClose={() => setWorkersOpen(false)}
           onCreateEnrollmentCode={hub.createEnrollmentCode}
+          onLoadReported={hub.loadReportedConfig}
+          onApproveWorker={approveWorker}
+          onApplyWorkerConfig={applyWorkerConfig}
           onRotateWorker={rotateWorker}
           onRevokeWorker={revokeWorker}
+          onOpenPairing={openWorkers}
           onCopyText={copyText}
         />
       ) : null}

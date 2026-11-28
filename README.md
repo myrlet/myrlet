@@ -109,6 +109,20 @@ unset MYRLET_ADMIN_TOKEN
 ./target/release/worker
 ```
 
+A new Worker is `pending` until an Admin approves it, and its first scheduling report is
+applied explicitly. In the owner terminal:
+
+```bash
+worker_id="$(./target/release/myrlet --json workers list | jq -er '.workers[0].workerId')"
+./target/release/myrlet --json workers approve "$worker_id"
+revision="$(./target/release/myrlet --json workers show "$worker_id" | jq -er '.worker.reportedRevision')"
+./target/release/myrlet --json workers config apply "$worker_id" --revision "$revision"
+```
+
+Both gates default on and can be changed per installation under Web **Settings → Security
+& Trust** or `PATCH /v1/settings/security-trust`. Changing a policy never alters an
+existing approval or a pending report.
+
 ### 3. Submit & Watch a Task
 
 In an owner terminal, set the same Hub URL and admin token used for enrollment.

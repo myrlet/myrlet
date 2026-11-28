@@ -77,10 +77,14 @@ function workerRecord(): WorkerRecord {
     workerId: "wkr_00000000000a",
     online: true,
     revoked: false,
+    approval: "approved",
     connectionEpoch: 2,
     lastSeenAtMs: Date.now(),
     activeDeliveries: 0,
-    inventory: null,
+    host: null,
+    reportedRevision: null,
+    appliedRevision: null,
+    appliedConfig: null,
   };
 }
 
@@ -180,6 +184,9 @@ beforeEach(() => {
     }
     if (path.startsWith("/v1/snapshot")) {
       return jsonResponse(snapshot());
+    }
+    if (path.startsWith("/v1/settings/security-trust")) {
+      return jsonResponse({ requireWorkerApproval: true, requireConfigurationApply: true });
     }
     if (path.startsWith("/v1/workers")) {
       return jsonResponse({ workers: [workerRecord()] });

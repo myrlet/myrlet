@@ -242,24 +242,57 @@ export interface WorkerInventory {
   slots: SlotInventory[];
 }
 
-/** One enrolled Worker's connectivity and last reported inventory. */
+/** The reviewable scheduling content the Hub keeps per Worker revision. */
+export interface WorkerSchedulingConfig {
+  slots: SlotInventory[];
+}
+
+/** Effective trust state of one enrolled Worker. */
+export type WorkerApprovalStatus = "pending" | "approved" | "revoked";
+
+/** One enrolled Worker's connectivity, approval, and applied scheduling inventory. */
 export interface WorkerRecord {
   workerId: WorkerId;
   online: boolean;
   revoked: boolean;
+  approval: WorkerApprovalStatus;
   connectionEpoch: number;
   lastSeenAtMs: number | null;
   activeDeliveries: number;
-  inventory: WorkerInventory | null;
+  /** Host facts from the latest accepted report; ordinary telemetry, never a gate. */
+  host: HostDescriptor | null;
+  /** Hub-assigned revision of the latest accepted report, or `null` before one arrives. */
+  reportedRevision: number | null;
+  /** Hub-assigned revision the Hub schedules with, or `null` before an Apply. */
+  appliedRevision: number | null;
+  appliedConfig: WorkerSchedulingConfig | null;
 }
 
 /** Alias matching the Rust `SnapshotWorker` name. */
 export type SnapshotWorker = WorkerRecord;
 
-/** One Worker's detail, inventory, and the Task IDs it could claim next. */
+/** One Worker's detail, its reported snapshot under review, and claimable Task IDs. */
 export interface WorkerDetail {
   worker: WorkerRecord;
+  reportedConfig: WorkerSchedulingConfig | null;
   claimableTaskIds: TaskId[];
+}
+
+/** The two Hub-wide Security & Trust policies; both default to on. */
+export interface SecurityTrustSettings {
+  requireWorkerApproval: boolean;
+  requireConfigurationApply: boolean;
+}
+
+/** `PATCH /v1/settings/security-trust` request; omitted fields retain their values. */
+export interface UpdateSecurityTrustRequest {
+  requireWorkerApproval?: boolean;
+  requireConfigurationApply?: boolean;
+}
+
+/** `POST /v1/workers/{id}/config/apply` response. */
+export interface ApplyWorkerConfigResponse {
+  appliedRevision: number;
 }
 
 /* --------------------------------------------------------------------- */

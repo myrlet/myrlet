@@ -101,8 +101,20 @@ fn router(hub: Hub) -> Router {
         .route(
             "/v1/workers/:id",
             get(|| async {
-                Json(json!({ "worker": worker_value(), "claimableTaskIds": ["task_02"] }))
+                Json(json!({
+                    "worker": worker_value(),
+                    "reportedConfig": null,
+                    "claimableTaskIds": ["task_02"],
+                }))
             }),
+        )
+        .route(
+            "/v1/workers/:id/approve",
+            post(|| async { StatusCode::NO_CONTENT }),
+        )
+        .route(
+            "/v1/workers/:id/config/apply",
+            post(|| async { Json(json!({ "appliedRevision": 1 })) }),
         )
         .route("/v1/events", get(events_route))
         .layer(axum::middleware::from_fn_with_state(hub, capture))
@@ -187,8 +199,9 @@ fn snapshot_value() -> Value {
 
 fn worker_value() -> Value {
     json!({
-        "workerId":"wkr_000000000000","online":true,"revoked":false,"connectionEpoch":7,
-        "lastSeenAtMs":null,"activeDeliveries":0,"inventory":null
+        "workerId":"wkr_000000000000","online":true,"revoked":false,"approval":"approved",
+        "connectionEpoch":7,"lastSeenAtMs":null,"activeDeliveries":0,"host":null,
+        "reportedRevision":1,"appliedRevision":1,"appliedConfig":null
     })
 }
 
@@ -372,7 +385,46 @@ async fn list_import_workers_show_and_events_watch() {
     assert_eq!(workers["workers"][0]["workerId"], "wkr_000000000000");
 
     let (detail, _) = ok(&["workers", "show", "wkr_000000000000"], &url).await;
+    assert!(detail.contains("Approval: approved"), "{detail}");
     assert!(detail.contains("ClaimableTasks: task_02"), "{detail}");
+    let (config, _) = ok(&["workers", "config", "show", "wkr_000000000000"], &url).await;
+    assert!(config.contains("ReportedRevision: 1"), "{config}");
+    assert!(config.contains("ApplyPending: false"), "{config}");
+
+    let _ = ok(&["workers", "approve", "wkr_000000000000"], &url).await;
+    let approve = hub.all().pop().unwrap();
+    assert_eq!(approve.method, "POST");
+    assert_eq!(approve.path, "/v1/workers/wkr_000000000000/approve");
+
+    let (applied, _) = ok(
+        &[
+            "--json",
+            "workers",
+            "config",
+            "apply",
+            "wkr_000000000000",
+            "--revision",
+            "1",
+        ],
+        &url,
+    )
+    .await;
+    let applied: Value = serde_json::from_str(&applied).unwrap();
+    assert_eq!(applied["workerId"], "wkr_000000000000");
+    assert_eq!(applied["appliedRevision"], 1);
+    let apply = hub.all().pop().unwrap();
+    assert_eq!(apply.method, "POST");
+    assert_eq!(apply.path, "/v1/workers/wkr_000000000000/config/apply");
+    assert_eq!(apply.body["revision"], 1);
+
+    let (code, _, err) = run(
+        &["workers", "config", "apply", "wkr_000000000000"],
+        Some(url.as_str()),
+        Some("admin-token"),
+    )
+    .await;
+    assert_eq!(code, ExitCode::from(2u8));
+    assert!(err.contains("--revision"), "{err}");
 
     let (events, _) = ok(&["events", "watch", "--limit", "1", "--json"], &url).await;
     let lines: Vec<&str> = events.lines().collect();

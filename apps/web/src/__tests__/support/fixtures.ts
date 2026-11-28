@@ -1,9 +1,21 @@
 import type {
   GlobalSnapshot,
+  SecurityTrustSettings,
   SnapshotTaskSummary,
   TaskRecord,
   WorkerRecord,
 } from "../../api/types";
+
+/** The Hub's default Security & Trust policies: both gates on. */
+export function trustSettings(
+  overrides: Partial<SecurityTrustSettings> = {},
+): SecurityTrustSettings {
+  return {
+    requireWorkerApproval: true,
+    requireConfigurationApply: true,
+    ...overrides,
+  };
+}
 
 /** A Snapshot Task summary with truthful defaults; override per test. */
 export function taskSummary(
@@ -29,19 +41,20 @@ export function taskSummary(
   };
 }
 
-/** One enrolled Worker whose Slot capacity is unknown (`null`, never `0`). */
+/** One approved, enrolled Worker whose Slot capacity is unknown (`null`, never `0`). */
 export function workerRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
   return {
     workerId: "wkr_00000000000a",
     online: true,
     revoked: false,
+    approval: "approved",
     connectionEpoch: 4,
     lastSeenAtMs: Date.now(),
     activeDeliveries: 1,
-    inventory: {
-      revision: 2,
-      observedAtMs: 1_700_000_000_000,
-      host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    host: { os: "darwin", arch: "arm64", deploymentMode: "native" },
+    reportedRevision: 2,
+    appliedRevision: 2,
+    appliedConfig: {
       slots: [
         {
           slotId: "mac-default",

@@ -205,6 +205,60 @@
   color: var(--status-cancelled-fg);
 }
 
+.settings-trust {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-menu-item[role="menuitemcheckbox"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-switch {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--border-default);
+  transition: var(--transition-colors);
+}
+
+.settings-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+  transition: transform 140ms var(--ease-out);
+}
+
+.settings-switch[data-on="true"] {
+  background: var(--status-online-border);
+}
+
+.settings-switch[data-on="true"]::after {
+  transform: translateX(12px);
+  background: var(--status-online-fg);
+}
+
+.settings-hint {
+  margin: 4px 6px 2px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.settings-hint-error {
+  color: var(--status-cancelled-fg);
+}
+
 .mode-switch {
   display: inline-flex;
   align-items: center;

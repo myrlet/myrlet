@@ -77,6 +77,16 @@ pub enum Command {
     WorkersRevoke {
         id: String,
     },
+    WorkersApprove {
+        id: String,
+    },
+    WorkersConfigShow {
+        id: String,
+    },
+    WorkersConfigApply {
+        id: String,
+        revision: u64,
+    },
     EventsWatch {
         cursor: Option<u64>,
         limit: Option<usize>,
@@ -272,10 +282,44 @@ fn parse_workers(scanner: &mut Scanner) -> Result<Command, CliError> {
             raw.finish("workers revoke")?;
             Ok(Command::WorkersRevoke { id })
         }
+        Some("approve") => {
+            let mut raw = RawArgs::parse(scanner)?;
+            let id = raw.positional("workers approve <id>")?;
+            raw.finish("workers approve")?;
+            Ok(Command::WorkersApprove { id })
+        }
+        Some("config") => parse_workers_config(scanner),
         Some(other) => Err(CliError::Usage(format!(
             "unknown workers command {other:?}"
         ))),
         None => Err(CliError::Usage("workers requires a command".to_string())),
+    }
+}
+
+/// `workers config show <id>` or `workers config apply <id> --revision <n>`.
+fn parse_workers_config(scanner: &mut Scanner) -> Result<Command, CliError> {
+    match scanner.take_token().as_deref() {
+        Some("show") => {
+            let mut raw = RawArgs::parse(scanner)?;
+            let id = raw.positional("workers config show <id>")?;
+            raw.finish("workers config show")?;
+            Ok(Command::WorkersConfigShow { id })
+        }
+        Some("apply") => {
+            let mut raw = RawArgs::parse(scanner)?;
+            let id = raw.positional("workers config apply <id>")?;
+            let revision = raw
+                .number::<u64>("--revision")?
+                .ok_or_else(|| usage("workers config apply requires --revision"))?;
+            raw.finish("workers config apply")?;
+            Ok(Command::WorkersConfigApply { id, revision })
+        }
+        Some(other) => Err(CliError::Usage(format!(
+            "unknown workers config command {other:?}"
+        ))),
+        None => Err(CliError::Usage(
+            "workers config requires show or apply".to_string(),
+        )),
     }
 }
 

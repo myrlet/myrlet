@@ -17,6 +17,10 @@ pub enum StoreError {
     AlreadyClaimed,
     #[error("stale delivery report or connection epoch")]
     StaleDelivery,
+    #[error("worker has no scheduling report awaiting Apply")]
+    NoPendingConfig,
+    #[error("the pending scheduling report has a different revision")]
+    ConfigRevisionMismatch,
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("event cursor is older than the retained window")]

@@ -67,7 +67,7 @@ export function PairingCard({
         <h2 className="pairing-title">Pair a Worker</h2>
         <p className="pairing-description">
           Issue a single-use code, then run the command once on the new host. The code is shown
-          once and expires automatically.
+          once and expires automatically. A new Worker stays pending until an Admin approves it.
         </p>
       </div>
 

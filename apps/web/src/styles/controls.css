@@ -235,6 +235,12 @@
   color: var(--status-cancelled-fg);
 }
 
+.alert-info {
+  background: var(--status-pending-bg);
+  border-color: var(--status-pending-border);
+  color: var(--status-pending-fg);
+}
+
 .tag {
   display: inline-flex;
   align-items: center;

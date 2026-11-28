@@ -1,16 +1,17 @@
 /**
- * Worker inventory presentation: the four-cell KPI strip and the reported Slot
- * table. Advisory capacity of `null` is unknown and renders as `—`, never `0`.
+ * Worker inventory presentation: the KPI strip and the scheduling Slot table.
+ * Advisory capacity of `null` is unknown and renders as `—`, never `0`.
  */
 
-import type { WorkerRecord } from "../../api/types";
+import type { SlotInventory } from "../../api/types";
 import { CAPABILITY_STATE_LABELS, formatCapacity } from "../../format";
 import type { WorkerCounts } from "./workerFilters";
 
-export function KpiStrip({ registered, online, offline, activeDeliveries }: WorkerCounts) {
+export function KpiStrip({ registered, online, offline, pending, activeDeliveries }: WorkerCounts) {
   const cells: readonly { readonly label: string; readonly value: number }[] = [
     { label: "Registered", value: registered },
     { label: "Online", value: online },
+    { label: "Awaiting approval", value: pending },
     { label: "Offline", value: offline },
     { label: "Active Deliveries", value: activeDeliveries },
   ];
@@ -26,17 +27,20 @@ export function KpiStrip({ registered, online, offline, activeDeliveries }: Work
   );
 }
 
-export function SlotTable({ worker }: { readonly worker: WorkerRecord }) {
-  const slots = worker.inventory?.slots ?? [];
+export function SlotTable({
+  slots,
+  caption,
+}: {
+  readonly slots: readonly SlotInventory[];
+  /** Row context for this table; every caller states what the Slots are. */
+  readonly caption: string;
+}) {
   if (slots.length === 0) {
     return <p className="detail-empty">No Slots reported yet.</p>;
   }
   return (
     <table className="slot-table">
-      <caption className="visually-hidden">
-        Reported Slots for {worker.workerId}: enabled state, advisory capacity, roles,
-        capabilities, and executors
-      </caption>
+      <caption className="visually-hidden">{caption}</caption>
       <thead>
         <tr>
           <th scope="col">Slot</th>

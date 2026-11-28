@@ -26,6 +26,7 @@ import {
 import { THEMES } from "../state/useAppearance";
 import type { Theme } from "../state/useAppearance";
 import type { ConnectionStatus } from "../state/useHub";
+import type { SecurityTrustSettings, UpdateSecurityTrustRequest } from "../api/types";
 import { BrandMark } from "./BrandMark";
 
 /** The two presentations of the single workspace. `list` is the home. */
@@ -48,6 +49,14 @@ export interface TopBarProps {
   readonly onChangeTheme: (theme: Theme) => void;
   readonly onDisconnect: () => void;
   readonly onOpenShortcuts: () => void;
+  /** Hub-wide Security & Trust policies, or `null` while unknown. */
+  readonly settings: SecurityTrustSettings | null;
+  /** Persisting one policy switch is in flight. */
+  readonly settingsBusy: boolean;
+  readonly settingsError: string | null;
+  readonly onChangeSecurityTrust: (
+    request: UpdateSecurityTrustRequest,
+  ) => Promise<void>;
 }
 
 const CONNECTION_LABELS: Readonly<Record<ConnectionStatus, string>> = {
@@ -93,6 +102,10 @@ export function TopBar(props: TopBarProps) {
     onChangeTheme,
     onDisconnect,
     onOpenShortcuts,
+    settings,
+    settingsBusy,
+    settingsError,
+    onChangeSecurityTrust,
   } = props;
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -229,6 +242,61 @@ export function TopBar(props: TopBarProps) {
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="settings-divider" role="separator" />
+
+              <div className="settings-section-label">SECURITY &amp; TRUST</div>
+              <div className="settings-trust" role="group" aria-label="Security and trust">
+                <button
+                  type="button"
+                  className="settings-menu-item"
+                  role="menuitemcheckbox"
+                  aria-checked={settings?.requireWorkerApproval ?? false}
+                  disabled={settings === null || settingsBusy}
+                  onClick={() => {
+                    if (settings === null) return;
+                    void onChangeSecurityTrust({
+                      requireWorkerApproval: !settings.requireWorkerApproval,
+                    }).catch(() => undefined);
+                  }}
+                >
+                  <span className="settings-menu-item-label">Require Worker approval</span>
+                  <span
+                    className="settings-switch"
+                    data-on={settings?.requireWorkerApproval ?? false}
+                    aria-hidden="true"
+                  />
+                </button>
+                <button
+                  type="button"
+                  className="settings-menu-item"
+                  role="menuitemcheckbox"
+                  aria-checked={settings?.requireConfigurationApply ?? false}
+                  disabled={settings === null || settingsBusy}
+                  onClick={() => {
+                    if (settings === null) return;
+                    void onChangeSecurityTrust({
+                      requireConfigurationApply: !settings.requireConfigurationApply,
+                    }).catch(() => undefined);
+                  }}
+                >
+                  <span className="settings-menu-item-label">Require config apply</span>
+                  <span
+                    className="settings-switch"
+                    data-on={settings?.requireConfigurationApply ?? false}
+                    aria-hidden="true"
+                  />
+                </button>
+                <p className="settings-hint">
+                  These apply to the next Pair or inventory report; existing decisions and
+                  pending reports are unchanged.
+                </p>
+                {settingsError ? (
+                  <p className="settings-hint settings-hint-error" role="alert">
+                    {settingsError}
+                  </p>
+                ) : null}
               </div>
 
               <div className="settings-divider" role="separator" />

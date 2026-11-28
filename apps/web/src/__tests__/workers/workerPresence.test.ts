@@ -8,7 +8,7 @@ describe("isWorkerOnline", () => {
     expect(isWorkerOnline(undefined)).toBe(false);
   });
 
-  it("treats a connected, unrevoked Worker as online", () => {
+  it("treats a connected, unrevoked, approved Worker as online", () => {
     expect(isWorkerOnline(workerRecord())).toBe(true);
   });
 
@@ -16,5 +16,9 @@ describe("isWorkerOnline", () => {
     expect(isWorkerOnline(workerRecord({ online: false }))).toBe(false);
     expect(isWorkerOnline(workerRecord({ revoked: true }))).toBe(false);
     expect(isWorkerOnline(workerRecord({ online: false, revoked: true }))).toBe(false);
+  });
+
+  it("never calls a pending Worker online, even while it is connected", () => {
+    expect(isWorkerOnline(workerRecord({ approval: "pending" }))).toBe(false);
   });
 });

@@ -6,8 +6,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use myrlet_protocol::{
-    ClaimTaskRequest, CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest, WorkerDetail,
-    WorkerId, WorkerListResponse,
+    ApplyWorkerConfigRequest, ApplyWorkerConfigResponse, ClaimTaskRequest,
+    CreateEnrollmentCodeRequest, HealthResponse, PairWorkerRequest, WorkerDetail, WorkerId,
+    WorkerListResponse,
 };
 
 use crate::auth;
@@ -149,6 +150,49 @@ pub async fn revoke_worker(
         state.disconnect_worker(&worker_id);
         spawn_wakeup(&state);
         Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
+/// `POST /v1/workers/{id}/approve`: admit a pending Worker to scheduling.
+///
+/// Repeating approval for an approved Worker succeeds; a revoked Worker requires a new Pair.
+pub async fn approve_worker(
+    State(state): State<HubState>,
+    headers: HeaderMap,
+    Path(worker_id): Path<String>,
+) -> Result<Response, ApiError> {
+    auth::require_admin(&state, &headers)?;
+    run_bounded(state.clone(), async move {
+        let event = state
+            .store
+            .approve_worker(WorkerId::new(worker_id), now_ms())
+            .await?;
+        state.publish_event(Some(event));
+        // Clearing the last approval gate makes queued Tasks wakeable again.
+        spawn_wakeup(&state);
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
+/// `POST /v1/workers/{id}/config/apply`: apply the reported revision the Admin reviewed.
+pub async fn apply_worker_config(
+    State(state): State<HubState>,
+    headers: HeaderMap,
+    Path(worker_id): Path<String>,
+    body: Body,
+) -> Result<Response, ApiError> {
+    auth::require_admin(&state, &headers)?;
+    run_bounded(state.clone(), async move {
+        let request: ApplyWorkerConfigRequest =
+            read_bounded_json(body, state.config.max_body_bytes).await?;
+        let applied_revision = state
+            .store
+            .apply_worker_config(WorkerId::new(worker_id), request.revision, now_ms())
+            .await?;
+        spawn_wakeup(&state);
+        Ok(Json(ApplyWorkerConfigResponse { applied_revision }).into_response())
     })
     .await
 }

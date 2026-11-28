@@ -192,6 +192,29 @@ fn spawn_daemon(bin: &Path, envs: &[(&str, &str)]) -> ChildGuard {
     ChildGuard(child)
 }
 
+/// Approve the single enrolled Worker and apply the revision it reported, clearing both
+/// default-on trust gates before any Task can be claimed.
+fn clear_trust_gates(cli: &Cli<'_>) {
+    let worker_id = cli.run(&["--json", "workers", "list"])["workers"][0]["workerId"]
+        .as_str()
+        .expect("worker id")
+        .to_owned();
+    cli.run(&["--json", "workers", "approve", &worker_id]);
+    let detail = cli.run(&["--json", "workers", "show", &worker_id]);
+    let revision = detail["worker"]["reportedRevision"]
+        .as_u64()
+        .expect("the online Worker reported an inventory");
+    cli.run(&[
+        "--json",
+        "workers",
+        "config",
+        "apply",
+        &worker_id,
+        "--revision",
+        &revision.to_string(),
+    ]);
+}
+
 /// Poll the hub health endpoint until it answers `200 OK` (max 10s).
 async fn wait_healthy(hub_url: &str) {
     let health = format!("{hub_url}/v1/health");
@@ -258,6 +281,7 @@ async fn cross_process_hub_worker_cli_end_to_end() {
         let listed = cli.run(&["--json", "workers", "list"]);
         (listed["workers"][0]["online"] == serde_json::json!(true)).then_some(())
     });
+    clear_trust_gates(&cli);
 
     // 6. Submit authorizes work; the Worker claims it after a wakeup and runs it.
     let first = cli.submit("e2e-1", "E2E progress", "Write progress", "exec-progress");
@@ -376,6 +400,7 @@ async fn a_harness_can_call_done_and_clear_its_result_after_finish() {
         let listed = cli.run(&["--json", "workers", "list"]);
         (listed["workers"][0]["online"] == serde_json::json!(true)).then_some(())
     });
+    clear_trust_gates(&cli);
 
     let task = cli.submit("done-1", "Done via CLI", "Write the result", "exec-done");
     // `done` syncs the Result independently of Finish, so the Result can arrive while

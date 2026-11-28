@@ -43,6 +43,8 @@ enum Step {
     Heartbeat,
     LeaseExpired,
     Reconnect,
+    /// A locally reloaded inventory must be reported now.
+    InventoryChanged,
     Frame(Box<Result<Option<WorkerWireEnvelope<Value>>, WssError>>),
 }
 
@@ -52,7 +54,8 @@ impl RuntimeCore {
         &self,
         shutdown: &mut watch::Receiver<bool>,
     ) -> Result<Outcome, RuntimeError> {
-        let socket = wss::connect(&self.config.hub_url, &self.creds.credential, &self.tls).await?;
+        let hub_url = self.hub_url();
+        let socket = wss::connect(&hub_url, &self.creds.credential, &self.tls).await?;
         let (mut sink, mut source) = wss::split(socket);
         self.send_hello(&mut sink).await?;
         let welcome = await_welcome(&mut source).await?;
@@ -73,6 +76,10 @@ impl RuntimeCore {
             "worker session established"
         );
         self.send_resync(&mut sink).await?;
+        // A reload that happened while disconnected still needs its acknowledgement.
+        if self.inventory_pending() {
+            self.send_inventory(&mut sink).await?;
+        }
         self.retry_pending_claim().await?;
         self.flush_pending(&mut sink).await?;
 
@@ -86,6 +93,7 @@ impl RuntimeCore {
             let step = tokio::select! {
                 changed = shutdown.changed() => Step::Signal(changed.is_err()),
                 () = self.reconnect.notified() => Step::Reconnect,
+                () = self.inventory_changed.notified() => Step::InventoryChanged,
                 _ = ticker.tick() => {
                     if Instant::now() >= deadline {
                         Step::LeaseExpired
@@ -109,6 +117,13 @@ impl RuntimeCore {
                 Step::Reconnect => {
                     // A notification from the preceding session may still be queued.
                     if self.epoch() != epoch {
+                        return Ok(self.lost());
+                    }
+                }
+                Step::InventoryChanged => {
+                    // Report the reloaded inventory on the live session; claims stay paused
+                    // until the Hub acknowledges this revision.
+                    if self.inventory_pending() && self.send_inventory(&mut sink).await.is_err() {
                         return Ok(self.lost());
                     }
                 }
@@ -174,7 +189,10 @@ impl RuntimeCore {
                 let _: HubHeartbeatAckPayload = serde_json::from_value(payload)?;
             }
             WorkerWireKind::WorkerInventoryAck => {
-                let _: WorkerInventoryAckPayload = serde_json::from_value(payload)?;
+                let ack: WorkerInventoryAckPayload = serde_json::from_value(payload)?;
+                if ack.accepted {
+                    self.inventory_acknowledged(ack.revision);
+                }
             }
             WorkerWireKind::TaskCancelledAck => {
                 let ack: TaskCancelledAckPayload = serde_json::from_value(payload)?;
@@ -195,12 +213,22 @@ impl RuntimeCore {
 
     async fn send_hello(&self, sink: &mut HubSink) -> Result<(), RuntimeError> {
         let payload = WorkerHelloPayload {
-            inventory: self.inventory.clone(),
+            inventory: self.inventory(),
             active_delivery_ids: self.active_delivery_ids(),
         };
         let envelope = self.envelope(WorkerWireKind::WorkerHello, None, None, payload);
         wss::send(sink, &envelope).await?;
         Ok(())
+    }
+
+    async fn send_inventory(&self, sink: &mut HubSink) -> Result<(), RuntimeError> {
+        self.send_frame(
+            sink,
+            WorkerWireKind::WorkerInventory,
+            None,
+            self.inventory(),
+        )
+        .await
     }
 
     async fn send_resync(&self, sink: &mut HubSink) -> Result<(), RuntimeError> {

@@ -16,6 +16,7 @@ use crate::state::HubState;
 
 pub mod events;
 pub mod reports;
+pub mod settings;
 pub mod tasks;
 pub mod ui;
 pub mod workers;
@@ -51,6 +52,15 @@ pub fn build_router(state: HubState) -> Router {
         .route("/v1/workers/:id", get(workers::get_worker))
         .route("/v1/workers/:id/rotate", post(workers::rotate_worker))
         .route("/v1/workers/:id/revoke", post(workers::revoke_worker))
+        .route("/v1/workers/:id/approve", post(workers::approve_worker))
+        .route(
+            "/v1/workers/:id/config/apply",
+            post(workers::apply_worker_config),
+        )
+        .route(
+            "/v1/settings/security-trust",
+            get(settings::read_settings).patch(settings::update_settings),
+        )
         .route(
             "/v1/worker/deliveries/:delivery_id/progress",
             post(reports::report_progress),
