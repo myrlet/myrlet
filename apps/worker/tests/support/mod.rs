@@ -78,6 +78,8 @@ struct HubState {
     claim_executor_id: Option<ExecutorId>,
     /// Refuse every claim as if another Worker already held the Task.
     claim_refused: bool,
+    /// Fail every `/finish`, so only a cancellation ACK can end handling.
+    finish_fails: bool,
 }
 
 /// A running stub Hub with channels for observing and driving one Worker.
@@ -202,6 +204,12 @@ pub async fn start_with_refused_claim(stale_epoch: Option<u64>) -> StubHub {
     launch_with(stale_epoch, None, false, None, None, true).await
 }
 
+/// Start a stub Hub that accepts claims and cancellations but fails every `/finish`, so a
+/// Delivery's pinned adapter can only be released through the cancellation acknowledgement.
+pub async fn start_with_failing_finish(stale_epoch: Option<u64>) -> StubHub {
+    launch_full(stale_epoch, None, false, None, None, false, true).await
+}
+
 /// Hold one claim response and return the named resolved Executor.
 pub async fn start_with_held_claim_for(stale_epoch: Option<u64>, executor_id: &str) -> StubHub {
     let gate = Arc::new(tokio::sync::Notify::new());
@@ -242,6 +250,28 @@ async fn launch_with(
     claim_executor_id: Option<ExecutorId>,
     claim_refused: bool,
 ) -> StubHub {
+    launch_full(
+        stale_epoch,
+        result_gate,
+        lose_first_claim_reply,
+        claim_gate,
+        claim_executor_id,
+        claim_refused,
+        false,
+    )
+    .await
+}
+
+/// `launch_with` plus the finish-failure switch.
+async fn launch_full(
+    stale_epoch: Option<u64>,
+    result_gate: Option<(Arc<tokio::sync::Notify>, StatusCode)>,
+    lose_first_claim_reply: bool,
+    claim_gate: Option<Arc<tokio::sync::Notify>>,
+    claim_executor_id: Option<ExecutorId>,
+    claim_refused: bool,
+    finish_fails: bool,
+) -> StubHub {
     let (reports_tx, reports) = mpsc::unbounded_channel();
     let (frames_tx, frames) = mpsc::unbounded_channel();
     let (outbound_tx, outbound) = mpsc::unbounded_channel();
@@ -260,6 +290,7 @@ async fn launch_with(
         claim_held: Arc::clone(&claim_held),
         claim_executor_id: claim_executor_id.clone(),
         claim_refused,
+        finish_fails,
     };
     let router = Router::new()
         .route("/v1/workers/connect", get(ws_handler))
@@ -380,6 +411,12 @@ async fn finish(
 ) -> (StatusCode, Json<Value>) {
     if !bearer_ok(&headers) {
         return unauthorized();
+    }
+    if state.finish_fails {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "Unavailable", "message": "finish blocked for test" })),
+        );
     }
     let receipt = FinishReceipt {
         delivery_id: DeliveryId::new(delivery_id.clone()),
