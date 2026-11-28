@@ -25,7 +25,7 @@ export const MAX_SCALE = 1.65;
 export const ZOOM_FACTOR = 1.15;
 export const WHEEL_ZOOM_FACTOR = 1.12;
 export const DRAG_THRESHOLD = 5;
-export const SNAP_STEP = 12;
+const SNAP_STEP = 12;
 
 const FIT_PAD_X = 48;
 /* The dock row already clears the canvas, so padding only needs to keep the
@@ -71,8 +71,7 @@ export interface AtlasViewportSize {
 
 export type AtlasDensity = "compact" | "regular";
 
-export const clampScale = (scale: number): number =>
-  Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+const clampScale = (scale: number): number => Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
 
 export const snapToStep = (value: number): number =>
   Math.round(value / SNAP_STEP) * SNAP_STEP;

@@ -14,7 +14,7 @@ import type { AtlasEdge, AtlasFramingBounds, AtlasLayout, AtlasPosition } from "
 import { atlasBounds } from "./atlasViewport";
 import type { AtlasOffsets } from "./atlasOffsets";
 
-export interface AtlasModel {
+interface AtlasModel {
   readonly layout: AtlasLayout;
   readonly positions: ReadonlyMap<string, AtlasPosition>;
   readonly edges: readonly AtlasEdge[];

@@ -15,7 +15,6 @@ import {
   minimapScaleFor,
   scaleAroundPoint,
   settleOffset,
-  snapToStep,
   visibleWorldRect,
   worldPointFromMinimap,
 } from "../components/atlas/atlasViewport";
@@ -119,9 +118,9 @@ describe("atlas viewport transform", () => {
 
 describe("atlas drag settling and minimap mapping", () => {
   it("snaps a dragged card to the shared grid measured from its base", () => {
-    expect(snapToStep(100)).toBe(96);
-    expect(snapToStep(4)).toBe(0);
     expect(settleOffset({ x: 0, y: 34 }, { x: 100, y: 60 })).toEqual({ x: 96, y: 62 });
+    // A 1px nudge still lands on the grid around the card's base offset.
+    expect(settleOffset({ x: 0, y: 34 }, { x: 4, y: 1 })).toEqual({ x: 0, y: 2 });
   });
 
   it("maps a minimap click back to a world point", () => {

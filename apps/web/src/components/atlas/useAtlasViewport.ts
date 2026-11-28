@@ -30,7 +30,7 @@ interface UseAtlasViewportArgs {
   readonly selectedTaskId: string | null;
 }
 
-export interface AtlasViewport {
+interface AtlasViewport {
   readonly view: AtlasView;
   readonly setView: Dispatch<SetStateAction<AtlasView>>;
   readonly viewport: AtlasViewportSize;

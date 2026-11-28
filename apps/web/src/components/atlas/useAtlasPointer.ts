@@ -46,7 +46,7 @@ interface UseAtlasPointerArgs {
   readonly onClearSelection: () => void;
 }
 
-export interface AtlasPointerState {
+interface AtlasPointerState {
   readonly panning: boolean;
   readonly nodeDragId: string | null;
   readonly handlePointerDown: (event: ReactPointerEvent<HTMLElement>) => void;

@@ -16,13 +16,13 @@ import type { AtlasEdge, AtlasLayout, AtlasPosition, AtlasSubgraph, AtlasView } 
 import type { WorkerRecord } from "../../api/types";
 
 /** What the camera currently shows. */
-export interface AtlasFrame {
+interface AtlasFrame {
   readonly view: AtlasView;
   readonly panning: boolean;
 }
 
 /** Everything computed from Tasks, Workers, and persisted offsets. */
-export interface AtlasModelView {
+interface AtlasModelView {
   readonly layout: AtlasLayout;
   readonly positions: ReadonlyMap<string, AtlasPosition>;
   readonly edges: readonly AtlasEdge[];
@@ -31,7 +31,7 @@ export interface AtlasModelView {
 }
 
 /** Hover, selection, and the highlighted relationship path. */
-export interface AtlasFocusView {
+interface AtlasFocusView {
   readonly selectedTaskId: string | null;
   readonly hoveredTaskId: string | null;
   readonly subgraph: AtlasSubgraph | null;
@@ -40,7 +40,7 @@ export interface AtlasFocusView {
 }
 
 /** Pointer gestures that move the camera or a card. */
-export interface AtlasInteraction {
+interface AtlasInteraction {
   readonly draggingTaskId: string | null;
   readonly onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;

@@ -13,7 +13,7 @@ import { NODE_HEIGHT, NODE_WIDTH } from "../workAtlasLayout";
 import type { AtlasDensity } from "./atlasViewport";
 import { TaskStatusBadge } from "../StatusBadge";
 
-export interface AtlasTaskNodeProps {
+interface AtlasTaskNodeProps {
   readonly task: SnapshotTaskSummary;
   readonly x: number;
   readonly y: number;
