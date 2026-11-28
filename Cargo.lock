@@ -991,6 +991,7 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "myrlet-protocol",
+ "myrlet-store",
  "rand 0.8.8",
  "rusqlite",
  "serde",

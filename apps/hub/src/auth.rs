@@ -101,11 +101,18 @@ fn is_admin(state: &HubState, token: &str) -> bool {
 }
 
 /// Resolve the Worker principal from its stored SHA-256 verifier in constant time.
+///
+/// The Admin principal is a distinct identity, so its token is never accepted here even if
+/// an operator misconfigured it to equal a stored Worker verifier. This keeps WSS, claims,
+/// Progress, Result, and Finish strictly Worker-originated.
 pub async fn require_worker(
     state: &HubState,
     headers: &HeaderMap,
 ) -> Result<AuthenticatedWorker, ApiError> {
     let token = extract_bearer(headers).ok_or_else(ApiError::unauthorized)?;
+    if is_admin(state, token) {
+        return Err(ApiError::unauthorized());
+    }
     match state.store.authenticate_worker(token.to_string()).await {
         Ok(worker) => Ok(worker),
         Err(StoreError::Unauthorized) => Err(ApiError::unauthorized()),
@@ -129,7 +136,8 @@ pub async fn authenticate(state: &HubState, headers: &HeaderMap) -> Result<Calle
 /// Require the Admin principal for system and Worker administration.
 ///
 /// A missing or unknown credential is `401`; a valid Worker credential (either tier) is
-/// `403`, because the credential authenticates but the tier is insufficient.
+/// `403`, because the credential authenticates but the tier is insufficient. The Admin
+/// token is checked first and never reaches the Worker verifier.
 pub async fn require_admin(state: &HubState, headers: &HeaderMap) -> Result<(), ApiError> {
     let token = extract_bearer(headers).ok_or_else(ApiError::unauthorized)?;
     if is_admin(state, token) {

@@ -101,6 +101,7 @@ pub async fn get_task(
             task: Some(task),
             summary: None,
             related: Vec::new(),
+            related_truncated: false,
         })
         .into_response());
     }

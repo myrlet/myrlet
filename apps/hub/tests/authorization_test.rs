@@ -219,6 +219,9 @@ async fn a_worker_reads_only_its_assigned_task_and_one_hop_relatives() {
     assert!(!related_ids.iter().any(|id| id == &stranger));
     assert!(!related_ids.iter().any(|id| id == &unrelated));
 
+    // The bounded page carries its truncation indicator (false on a small sibling set).
+    assert_eq!(owned.1["relatedTruncated"], false);
+
     // A related summary never carries prompt, Delivery, Progress, or Result.
     let related_task = owned.1["related"]
         .as_array()

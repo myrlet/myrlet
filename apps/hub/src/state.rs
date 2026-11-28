@@ -14,8 +14,16 @@ use crate::wakeup::WakeupRotation;
 
 /// Capacity of the in-process Hub event broadcast channel.
 const EVENTS_CHANNEL_CAPACITY: usize = 1024;
+/// Capacity of the Worker-authorization invalidation channel; only wakeups, never payloads.
+const AUTH_INVALIDATIONS_CAPACITY: usize = 256;
 /// Outbound frame queue depth of one live Worker session.
 pub const CONNECTION_QUEUE: usize = 256;
+
+/// One Worker whose global-read authorization may have changed (tier, revocation, rotation).
+///
+/// Streams subscribe to this signal so they can revalidate their original credential
+/// without polling SQLite on every emitted event.
+pub type AuthInvalidations = broadcast::Sender<WorkerId>;
 
 /// One live Worker WSS session bound to a single `connectionEpoch`.
 pub struct LiveWorker {
@@ -31,6 +39,8 @@ pub struct HubState {
     pub store: Arc<HubStore>,
     pub admin: AdminVerifier,
     pub events_tx: broadcast::Sender<HubEventEnvelope>,
+    /// Fired after a Worker's trust state changes, so open streams revalidate lazily.
+    pub auth_invalidations: AuthInvalidations,
     pub connections: Arc<RwLock<HashMap<WorkerId, LiveWorker>>>,
     pub command_permits: Arc<Semaphore>,
     pub shutting_down: Arc<AtomicBool>,
@@ -43,11 +53,13 @@ impl HubState {
     /// Build the shared state, including the constant-time Admin verifier.
     pub fn new(config: HubConfig, store: Arc<HubStore>, hub_id: String) -> Self {
         let (events_tx, _) = broadcast::channel(EVENTS_CHANNEL_CAPACITY);
+        let (auth_invalidations, _) = broadcast::channel(AUTH_INVALIDATIONS_CAPACITY);
         Self {
             hub_id,
             store,
             admin: AdminVerifier::new(&config.admin_token),
             events_tx,
+            auth_invalidations,
             connections: Arc::default(),
             command_permits: Arc::new(Semaphore::new(config.max_concurrent_requests.max(1))),
             shutting_down: Arc::new(AtomicBool::new(false)),
@@ -59,6 +71,11 @@ impl HubState {
     /// Fan one committed event out to live subscribers; no receivers is not an error.
     pub fn publish_event(&self, event: Option<HubEventEnvelope>) {
         if let Some(event) = event {
+            // A trust-state change must wake open streams so they revalidate promptly; the
+            // event itself is still delivered for the normal invalidation path.
+            if let Some(worker_id) = worker_trust_subject(&event) {
+                let _ = self.auth_invalidations.send(worker_id);
+            }
             let _ = self.events_tx.send(event);
         }
     }
@@ -122,4 +139,25 @@ pub fn now_ms() -> i64 {
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or(0);
     i64::try_from(millis).unwrap_or(i64::MAX)
+}
+
+/// Event kinds that can change a Worker's trust state or global-read authorization.
+const TRUST_EVENT_KINDS: &[&str] = &[
+    "worker.permission_tier",
+    "worker.revoked",
+    "worker.rotated",
+    "worker.paired",
+    "worker.approved",
+];
+
+/// The `workerId` behind a trust-state event, or `None` for ordinary Task events.
+fn worker_trust_subject(event: &HubEventEnvelope) -> Option<WorkerId> {
+    if !TRUST_EVENT_KINDS.contains(&event.kind.as_str()) {
+        return None;
+    }
+    event
+        .payload
+        .get("workerId")
+        .and_then(serde_json::Value::as_str)
+        .map(WorkerId::new)
 }

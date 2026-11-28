@@ -27,6 +27,7 @@ pub type Socket =
 pub struct Hub {
     pub base: String,
     pub connect_url: String,
+    state: Option<HubState>,
 }
 
 fn config(retention_window: usize, ui_enabled: bool) -> HubConfig {
@@ -55,18 +56,30 @@ pub async fn start(retention_window: usize) -> Hub {
 
 /// Start one Hub with the embedded Web UI explicitly enabled or disabled.
 pub async fn start_with_ui(retention_window: usize, ui_enabled: bool) -> Hub {
+    start_with_config(retention_window, |config| config.ui_enabled = ui_enabled).await
+}
+
+/// Start one Hub after the caller adjusts the configuration (for example its Admin token).
+pub async fn start_with_config(
+    retention_window: usize,
+    adjust: impl FnOnce(&mut HubConfig),
+) -> Hub {
+    let mut config = config(retention_window, true);
+    adjust(&mut config);
     let state = HubState::new(
-        config(retention_window, ui_enabled),
+        config,
         Arc::new(HubStore::open_in_memory().unwrap()),
         "hub_test".to_string(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     myrlet_hub::wakeup::spawn_wakeup_loop(&state);
-    tokio::spawn(async move { axum::serve(listener, build_router(state)).await.unwrap() });
+    let served = state.clone();
+    tokio::spawn(async move { axum::serve(listener, build_router(served)).await.unwrap() });
     Hub {
         base: format!("http://{address}"),
         connect_url: format!("ws://{address}/v1/workers/connect"),
+        state: Some(state),
     }
 }
 
@@ -109,6 +122,36 @@ impl Hub {
         self.request("POST", path, Some(ADMIN), key, body).await
     }
 
+    /// Send one `POST` under an explicit Admin token (for collision tests).
+    pub async fn post_admin_with(
+        &self,
+        token: &str,
+        path: &str,
+        key: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, Value) {
+        self.request("POST", path, Some(token), key, body).await
+    }
+
+    /// The shared Hub state, for tests that need direct store access.
+    pub fn state(&self) -> &HubState {
+        self.state.as_ref().expect("Hub state is captured")
+    }
+
+    /// Attempt the WSS upgrade with a raw token, returning the handshake result.
+    pub async fn connect_with(
+        &self,
+        token: &str,
+    ) -> Result<Socket, Box<tokio_tungstenite::tungstenite::Error>> {
+        let mut request = self.connect_url.clone().into_client_request().unwrap();
+        let bearer = HeaderValue::from_str(&format!("Bearer {token}")).unwrap();
+        request.headers_mut().insert("authorization", bearer);
+        tokio_tungstenite::connect_async(request)
+            .await
+            .map(|(socket, _)| socket)
+            .map_err(Box::new)
+    }
+
     pub async fn post_worker(&self, path: &str, credential: &str, body: &str) -> (u16, Value) {
         self.request("POST", path, Some(credential), None, Some(body))
             .await
@@ -134,6 +177,28 @@ impl Hub {
     /// Issue an enrollment code and redeem it in one step.
     pub async fn pair(&self) -> (String, String) {
         self.pair_as(None).await
+    }
+
+    /// Pair using a custom Admin token (for tests whose Hub does not use `ADMIN`).
+    pub async fn pair_with_admin(&self, admin_token: &str) -> (String, String) {
+        let issued = self
+            .request(
+                "POST",
+                "/v1/enrollment-codes",
+                Some(admin_token),
+                None,
+                Some("{}"),
+            )
+            .await;
+        assert_eq!(issued.0, 200, "{}", issued.1);
+        let body = json!({ "enrollmentCode": issued.1["enrollmentCode"] }).to_string();
+        let paired = self
+            .request("POST", "/v1/pair", None, None, Some(&body))
+            .await;
+        assert!(paired.0 == 200, "pairing failed");
+        let worker_id = paired.1["workerId"].as_str().unwrap().to_string();
+        let credential = paired.1["credential"].as_str().unwrap().to_string();
+        (worker_id, credential)
     }
 
     /// Issue an enrollment code that suggests `worker_id` and redeem it, so a revoked
@@ -184,21 +249,42 @@ impl Hub {
     /// Approve the Worker and apply its latest reported inventory, clearing both
     /// default-on trust gates so ordinary claim tests can proceed.
     pub async fn clear_trust_gates(&self, worker_id: &str) {
+        self.clear_trust_gates_with(ADMIN, worker_id).await;
+    }
+
+    /// Clear both trust gates using an explicit Admin token.
+    pub async fn clear_trust_gates_with(&self, admin_token: &str, worker_id: &str) {
         assert_eq!(
-            self.post_admin(&format!("/v1/workers/{worker_id}/approve"), None, None)
-                .await
-                .0,
+            self.request(
+                "POST",
+                &format!("/v1/workers/{worker_id}/approve"),
+                Some(admin_token),
+                None,
+                None,
+            )
+            .await
+            .0,
             204
         );
-        let detail = self.get_admin(&format!("/v1/workers/{worker_id}")).await;
+        let detail = self
+            .request(
+                "GET",
+                &format!("/v1/workers/{worker_id}"),
+                Some(admin_token),
+                None,
+                None,
+            )
+            .await;
         assert_eq!(detail.0, 200, "{}", detail.1);
         let revision = detail.1["worker"]["reportedRevision"]
             .as_u64()
             .expect("the connected Worker reported an inventory");
         let body = json!({ "revision": revision }).to_string();
         let applied = self
-            .post_admin(
+            .request(
+                "POST",
                 &format!("/v1/workers/{worker_id}/config/apply"),
+                Some(admin_token),
                 None,
                 Some(&body),
             )
@@ -308,4 +394,50 @@ pub async fn next_sse_event(response: &mut reqwest::Response) -> Value {
         let chunk = response.chunk().await.unwrap().expect("event stream ended");
         buffer.push_str(&String::from_utf8_lossy(&chunk));
     }
+}
+
+/// Open the global SSE stream as `token` and assert it was authorized.
+pub async fn open_events(hub: &Hub, token: &str, cursor: Option<u64>) -> reqwest::Response {
+    let path = match cursor {
+        Some(seq) => format!("/v1/events?cursor={seq}"),
+        None => "/v1/events".to_string(),
+    };
+    let response = reqwest::Client::new()
+        .get(format!("{}{path}", hub.base))
+        .bearer_auth(token)
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200, "SSE open rejected");
+    response
+}
+
+/// Await the next SSE data frame, or `None` once the stream ends.
+pub async fn try_next_sse_event(
+    response: &mut reqwest::Response,
+    timeout: Duration,
+) -> Option<Value> {
+    let read = async {
+        let mut buffer = String::new();
+        loop {
+            while let Some(index) = buffer.find("\n\n") {
+                let frame: String = buffer.drain(..index + 2).collect();
+                if let Some(data) = frame.lines().find_map(|line| line.strip_prefix("data: ")) {
+                    return Some(serde_json::from_str(data).unwrap());
+                }
+            }
+            match response.chunk().await {
+                Ok(Some(chunk)) => buffer.push_str(&String::from_utf8_lossy(&chunk)),
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    };
+    tokio::time::timeout(timeout, read).await.unwrap_or(None)
+}
+
+/// Drain an SSE stream to its end, returning whether it terminated within `timeout`.
+pub async fn sse_ends(response: &mut reqwest::Response, timeout: Duration) -> bool {
+    let drain = async { while (response.chunk().await).is_ok_and(|chunk| chunk.is_some()) {} };
+    tokio::time::timeout(timeout, drain).await.is_ok()
 }

@@ -165,4 +165,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(root_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_deliveries_worker_state ON deliveries(worker_id, state);
+-- Worker-scoped read authorization joins Deliveries by owner without a state predicate.
+CREATE INDEX IF NOT EXISTS idx_deliveries_worker_task ON deliveries(worker_id, task_id);
+-- Reverse dependency lookups (a Task's direct dependents) need their own index.
+CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_deps(depends_on_task_id);
 "#;

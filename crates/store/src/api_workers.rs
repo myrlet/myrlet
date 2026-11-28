@@ -254,6 +254,29 @@ impl HubStore {
             .await
     }
 
+    /// Pair a Worker with an explicit credential value (test-support only).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn pair_with_credential(
+        &self,
+        worker_id: WorkerId,
+        token: String,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
+        self.db
+            .call(move |conn| enrollment::pair_with_credential(conn, &worker_id, &token, now_ms))
+            .await
+    }
+
+    /// Revalidate a stream's original Worker credential and its current tier.
+    pub async fn reauthenticate_worker(
+        &self,
+        bearer_token: String,
+    ) -> Result<Option<enrollment::AuthenticatedWorker>, StoreError> {
+        self.db
+            .call(move |conn| enrollment::reauthenticate(conn, &bearer_token))
+            .await
+    }
+
     pub async fn get_delivery(&self, delivery_id: DeliveryId) -> Result<DeliveryView, StoreError> {
         self.db
             .call(move |conn| {

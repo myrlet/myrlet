@@ -79,8 +79,16 @@ fn router(hub: Hub) -> Router {
         )
         .route(
             "/v1/tasks/:id",
-            get(|| async { Json(task_read("dispatched", 3, delivery())) })
-                .post(|| async { Json(task("queued", 4, Value::Null)) }),
+            get(
+                |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    if id == "task_related" {
+                        Json(summary_only_read(&id, 7))
+                    } else {
+                        Json(task_read("dispatched", 3, delivery()))
+                    }
+                },
+            )
+            .post(|| async { Json(task("queued", 4, Value::Null)) }),
         )
         .route(
             "/v1/tasks/:id/cancel",
@@ -640,4 +648,44 @@ async fn worker_commands_fail_closed_without_any_credential() {
         run_with_home(&["tasks", "list"], &url, None, home.to_str().unwrap()).await;
     assert_eq!(code, ExitCode::from(1u8));
     assert!(err.contains("credential"), "{err}");
+}
+
+fn summary_only_read(id: &str, version: u64) -> Value {
+    json!({
+        "task": null,
+        "summary": {
+            "id": id,
+            "parentTaskId": null,
+            "depth": 1,
+            "dependencies": [],
+            "blockedBy": [],
+            "title": "Related work",
+            "status": "queued",
+            "version": version,
+        },
+        "related": []
+    })
+}
+
+#[tokio::test]
+async fn a_worker_coordination_command_reads_the_summary_version() {
+    // A Worker may read a directly related Task only as a summary; a coordination command
+    // that omits `--expected-version` must still reach the Hub and surface its 403.
+    let hub = Hub::default();
+    let url = start(hub.clone()).await;
+    let home = worker_home("worker-bearer");
+
+    let (code, _, err) =
+        run_with_home(&["tasks", "cancel", "task_related"], &url, None, &home).await;
+    // The Hub stub answers 200, but the important part is that the CLI reached it using
+    // the summary version rather than failing locally.
+    assert_eq!(code, ExitCode::SUCCESS, "{err}");
+    let requests = hub.all();
+    assert_eq!(requests[0].path, "/v1/tasks/task_related");
+    assert_eq!(requests[1].path, "/v1/tasks/task_related/cancel");
+    assert_eq!(requests[1].body["expectedTaskVersion"], 7);
+    assert_eq!(
+        requests[1].authorization.as_deref(),
+        Some("Bearer worker-bearer")
+    );
 }

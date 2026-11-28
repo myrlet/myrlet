@@ -47,12 +47,12 @@ function taskRecord(id: string, rootTaskId = id): TaskRecord {
 }
 
 function taskTree(rootTaskId: string): TaskTreeResponse {
-  return { rootTaskId, tasks: [taskRecord(rootTaskId)], related: [], truncated: false };
+  return { rootTaskId, tasks: [taskRecord(rootTaskId)], related: [], relatedTruncated: false, truncated: false };
 }
 
 /** Wrap a full Task record as the `{ task, summary, related }` read response. */
 function taskRead(record: TaskRecord | null): TaskReadResponse {
-  return { task: record, summary: null, related: [] };
+  return { task: record, summary: null, related: [], relatedTruncated: false };
 }
 
 

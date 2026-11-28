@@ -80,6 +80,9 @@ pub fn task_read<W: Write>(out: &mut W, read: &TaskReadResponse, as_json: bool) 
                 truncate(&related.title, 40)
             )?;
         }
+        if read.related_truncated {
+            writeln!(out, "  (more related Tasks exist than shown)")?;
+        }
     }
     Ok(())
 }
@@ -215,6 +218,9 @@ pub fn task_tree<W: Write>(out: &mut W, tree: &TaskTreeResponse, as_json: bool) 
             label(&related.status),
             truncate(&related.title, 40)
         )?;
+    }
+    if tree.related_truncated {
+        writeln!(out, "related truncated: true")?;
     }
     writeln!(out, "truncated: {}", tree.truncated)
 }

@@ -31,6 +31,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 myrlet-client.workspace = true
+# Integration tests import explicit Worker credentials to prove principal separation.
+myrlet-store = { workspace = true, features = ["test-support"] }
 reqwest.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
