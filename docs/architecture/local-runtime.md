@@ -77,7 +77,7 @@ V1 (`0.1.0`) ships **three pure-Rust binaries** (`hub`, `worker`, `myrlet`), the
 
 `myrlet workers show <worker-id>` is available to Owner and Admin for Worker status and scheduling observation. Owner sees operational status and scheduling-relevant inventory; Admin also sees administration-only fields. The following operations require Admin: `workers enroll`, `workers rotate`, `workers revoke`, `workers approve`, `workers config apply`, and `workers permission set <worker-id> --tier worker|owner`. The permission command changes the server-stored Worker tier; it does not create a new credential or Agent identity. Each command supports `--json`.
 
-The Workers page and Security & Trust settings are Admin-only. The Web UI cannot be used with Worker-tier or Owner-tier credentials. The Security & Trust policies have no CLI settings commands.
+The Workers page and Security & Trust settings are Admin-only. The Workers page identifies and filters pending Workers, shows the Reported and Applied snapshots and their field differences, and submits the revision the Admin reviewed. Pending Workers offer Approve and Revoke, approved Workers offer Revoke, and revoked Workers link to pairing. The Web UI cannot be used with Worker-tier or Owner-tier credentials. The Security & Trust policies have no CLI settings commands.
 
 ### Desktop Shell (next iteration)
 
