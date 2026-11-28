@@ -152,12 +152,13 @@ docker run --rm \
 Set `MYRLET_HUB_UI=false` on the `hub` or `myrlet` image to serve the API only.
 
 The all-in-one image starts the Hub with both Security & Trust policies on, exactly like
-the other images. On first boot only, the container entrypoint enables the Hub's own
-automatic policies (`myrlet policy set --auto-approve true --auto-apply true`) and then
-pairs its local Worker, so that Worker is approved and its first report applied through the
-ordinary Hub rules — no per-Worker discovery or manual CLI approval step. Data directories
-that already hold credentials are left untouched, so an operator who deliberately turned a
-policy off keeps it. The default local `slotId` is `local`, and its single `process`
+the other images. The container entrypoint never changes those policies. Instead it
+identifies the Worker it enrolled from the `workerId` the pairing reported, waits for that
+Worker to come online and report its inventory, then approves it and applies its latest
+reported revision through the same Admin CLI an operator would use — converging again on
+every restart. Because the policies are untouched, any other Worker enrolled with the same
+Hub stays subject to the configured approval and review rules, and no other Worker is ever
+approved or applied. The default local `slotId` is `local`, and its single `process`
 Executor writes one Progress line so a first Task visibly completes.
 
 ### Readiness and Health
